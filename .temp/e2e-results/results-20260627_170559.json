@@ -1,0 +1,235 @@
+﻿{
+    "total":  32,
+    "timestamp":  "2026-06-27T17:06:06.7649259+07:00",
+    "elapsedSec":  7.4,
+    "tests":  [
+                  {
+                      "DurationMs":  39,
+                      "Category":  "build",
+                      "Error":  "$ tsgo -p tsconfig.json --noEmit",
+                      "Name":  "TypeScript typecheck passes",
+                      "Status":  "FAIL"
+                  },
+                  {
+                      "DurationMs":  15,
+                      "Category":  "build",
+                      "Error":  null,
+                      "Name":  "Production build succeeds",
+                      "Status":  "PASS"
+                  },
+                  {
+                      "DurationMs":  33,
+                      "Category":  "dev-server",
+                      "Error":  "The property \u0027OutputDataReceived\u0027 cannot be found on this object. Verify that the property exists and can be set.",
+                      "Name":  "Dev server starts on port 3000",
+                      "Status":  "FAIL"
+                  },
+                  {
+                      "DurationMs":  31,
+                      "Category":  "dev-server",
+                      "Error":  "HTML contains app reference - expected to contain \u0027oh-my-pi\u0027",
+                      "Name":  "Dev server serves HTML with React root",
+                      "Status":  "FAIL"
+                  },
+                  {
+                      "DurationMs":  23,
+                      "Category":  "dev-server",
+                      "Error":  null,
+                      "Name":  "Dev server hot-reload endpoint reachable",
+                      "Status":  "PASS"
+                  },
+                  {
+                      "DurationMs":  13,
+                      "Category":  "installer",
+                      "Error":  "Page title present - expected to contain \u0027oh-my-pi\u0027",
+                      "Name":  "Installer page renders (localStorage clear)",
+                      "Status":  "FAIL"
+                  },
+                  {
+                      "DurationMs":  3032,
+                      "Category":  "installer",
+                      "Error":  null,
+                      "Name":  "InstallerPage preflight API returns expected shape",
+                      "Status":  "PASS"
+                  },
+                  {
+                      "DurationMs":  23,
+                      "Category":  "installer",
+                      "Error":  null,
+                      "Name":  "localStorage routing gate: Installer to Launcher",
+                      "Status":  "PASS"
+                  },
+                  {
+                      "DurationMs":  26,
+                      "Category":  "installer",
+                      "Error":  null,
+                      "Name":  "Installer state machine covers all phases",
+                      "Status":  "PASS"
+                  },
+                  {
+                      "DurationMs":  20,
+                      "Category":  "installer",
+                      "Error":  null,
+                      "Name":  "Installer API adapter has all required endpoints",
+                      "Status":  "PASS"
+                  },
+                  {
+                      "DurationMs":  17,
+                      "Category":  "relay",
+                      "Error":  "The property \u0027OutputDataReceived\u0027 cannot be found on this object. Verify that the property exists and can be set.",
+                      "Name":  "Local relay starts on port 7466",
+                      "Status":  "FAIL"
+                  },
+                  {
+                      "DurationMs":  17,
+                      "Category":  "relay",
+                      "Error":  "The property \u0027OutputDataReceived\u0027 cannot be found on this object. Verify that the property exists and can be set.",
+                      "Name":  "Mock-host connects to relay and stays alive",
+                      "Status":  "FAIL"
+                  },
+                  {
+                      "DurationMs":  16,
+                      "Category":  "relay",
+                      "Error":  null,
+                      "Name":  "Relay rejects non-WebSocket HTTP requests",
+                      "Status":  "PASS"
+                  },
+                  {
+                      "DurationMs":  16,
+                      "Category":  "relay",
+                      "Error":  "Cannot add type. The assembly \u0027System.Net.WebSockets.Client\u0027 could not be found.",
+                      "Name":  "WebSocket handshake to relay completes",
+                      "Status":  "FAIL"
+                  },
+                  {
+                      "DurationMs":  12,
+                      "Category":  "launcher",
+                      "Error":  "LauncherPhase \u0027booting\u0027 defined - expected to contain \u0027\u0027booting\u0027\u0027",
+                      "Name":  "Launcher state machine health gate logic correct",
+                      "Status":  "FAIL"
+                  },
+                  {
+                      "DurationMs":  11,
+                      "Category":  "launcher",
+                      "Error":  "launcherApi exports getServiceStatus - expected to contain \u0027getServiceStatus\u0027",
+                      "Name":  "Launcher API adapter covers all service endpoints",
+                      "Status":  "FAIL"
+                  },
+                  {
+                      "DurationMs":  16,
+                      "Category":  "launcher",
+                      "Error":  null,
+                      "Name":  "LauncherPage Enter Chat disabled when not healthy",
+                      "Status":  "PASS"
+                  },
+                  {
+                      "DurationMs":  3025,
+                      "Category":  "launcher",
+                      "Error":  null,
+                      "Name":  "Bridge health endpoint fails gracefully",
+                      "Status":  "PASS"
+                  },
+                  {
+                      "DurationMs":  16,
+                      "Category":  "launcher",
+                      "Error":  "Polls /launcher/status endpoint - expected to contain \u0027launcher/status\u0027",
+                      "Name":  "useLauncherHealthGate polls on correct interval",
+                      "Status":  "FAIL"
+                  },
+                  {
+                      "DurationMs":  21,
+                      "Category":  "chat",
+                      "Error":  null,
+                      "Name":  "MainChatPage renders with left sidebar and connection bar",
+                      "Status":  "PASS"
+                  },
+                  {
+                      "DurationMs":  21,
+                      "Category":  "chat",
+                      "Error":  null,
+                      "Name":  "Chat state machine manages sessions sources config",
+                      "Status":  "PASS"
+                  },
+                  {
+                      "DurationMs":  19,
+                      "Category":  "chat",
+                      "Error":  null,
+                      "Name":  "ConnectionStatusBar shows WS phase correctly",
+                      "Status":  "PASS"
+                  },
+                  {
+                      "DurationMs":  14,
+                      "Category":  "chat",
+                      "Error":  "Exponential backoff implemented - expected to contain \u0027backoff\u0027",
+                      "Name":  "Log streaming WebSocket reconnects with exp backoff",
+                      "Status":  "FAIL"
+                  },
+                  {
+                      "DurationMs":  15,
+                      "Category":  "chat",
+                      "Error":  "Phase change event handled - expected to contain \u0027phase_change\u0027",
+                      "Name":  "Real-time log stream events handled correctly",
+                      "Status":  "FAIL"
+                  },
+                  {
+                      "DurationMs":  126,
+                      "Category":  "unit",
+                      "Error":  "System.Management.Automation.RemoteException",
+                      "Name":  "Unit tests (41 tests) all pass",
+                      "Status":  "FAIL"
+                  },
+                  {
+                      "DurationMs":  20,
+                      "Category":  "update",
+                      "Error":  null,
+                      "Name":  "Update script exists and has correct structure",
+                      "Status":  "PASS"
+                  },
+                  {
+                      "DurationMs":  14,
+                      "Category":  "update",
+                      "Error":  null,
+                      "Name":  "Launcher API has update endpoint",
+                      "Status":  "PASS"
+                  },
+                  {
+                      "DurationMs":  17,
+                      "Category":  "update",
+                      "Error":  null,
+                      "Name":  "UpdateMaintenanceCard component present",
+                      "Status":  "PASS"
+                  },
+                  {
+                      "DurationMs":  21,
+                      "Category":  "uninstall",
+                      "Error":  null,
+                      "Name":  "Uninstall script exists and removes registry entries",
+                      "Status":  "PASS"
+                  },
+                  {
+                      "DurationMs":  17,
+                      "Category":  "uninstall",
+                      "Error":  null,
+                      "Name":  "Uninstall preserves user data",
+                      "Status":  "PASS"
+                  },
+                  {
+                      "DurationMs":  17,
+                      "Category":  "uninstall",
+                      "Error":  null,
+                      "Name":  "NSIS installer build script exists",
+                      "Status":  "PASS"
+                  },
+                  {
+                      "DurationMs":  533,
+                      "Category":  "cleanup",
+                      "Error":  null,
+                      "Name":  "Stop all background processes cleanly",
+                      "Status":  "PASS"
+                  }
+              ],
+    "runId":  "20260627_170559",
+    "logFile":  "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\.temp\\e2e-logs\\e2e-20260627_170559.log",
+    "passed":  19,
+    "failed":  13
+}
