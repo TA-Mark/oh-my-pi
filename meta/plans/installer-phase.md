@@ -31,10 +31,11 @@ TYPE: note
 - [x] Create installer phase plan
 - [x] Create TS contracts skeleton
 - [x] Add OpenAPI installer contract draft
-- [ ] Wire contracts into UI state machine (Day 2)
-- [ ] Wire contracts into API client (Day 2)
-- [ ] Build UI blocks (Day 2)
-- [ ] Build preflight + install adapter (Day 2)
+- [x] Wire contracts into UI state machine (useInstallerStateMachine.ts)
+- [x] Wire contracts into API client (installerApi.ts — REST + WS)
+- [x] Build UI blocks (SourceSetupCard, PreflightChecklistCard, InstallProgressCard, InstallerActionBar, installer.css)
+- [x] Build InstallerPage orchestration
+- [x] Wire InstallerPage into app.tsx routing
 
 ## Risks / notes
 - Desktop runtime command bridge might vary by host shell (PowerShell / CMD) — Windows-first.
@@ -54,3 +55,24 @@ CANCELLED -> IDLE
 - Implement installerApi.ts (REST + WS/SSE adapter).
 - Build UI blocks: SourceSetupCard, PreflightChecklistCard, InstallProgressCard, InstallerActionBar.
 - Connect InstallerPage into app routing.
+
+## Launcher Phase ✅ DONE (all on disk, unstaged)
+
+### Files created
+- packages/collab-web/src/features/launcher/types/launcher.ts
+- packages/collab-web/src/features/launcher/api/launcherApi.ts
+- packages/collab-web/src/features/launcher/hooks/useServiceStateMachine.ts
+- packages/collab-web/src/features/launcher/components/launcher.css
+- packages/collab-web/src/features/launcher/components/RuntimeStatusCard.tsx
+- packages/collab-web/src/features/launcher/components/LaunchControlCard.tsx
+- packages/collab-web/src/features/launcher/components/WorkspaceCard.tsx
+- packages/collab-web/src/features/launcher/components/UpdateMaintenanceCard.tsx
+- packages/collab-web/src/features/launcher/components/DiagnosticsCard.tsx
+- packages/collab-web/src/features/launcher/components/LauncherLogDrawer.tsx
+- packages/collab-web/src/features/launcher/pages/LauncherPage.tsx
+- packages/collab-web/src/app.tsx (modified — wired routing step 2: Installer → Launcher → Chat)
+
+### Routing flow (gated)
+Installer → Launcher (start/stop/diag) → Main Chat (only when running_healthy)
+
+NEXT: Main Chat phase

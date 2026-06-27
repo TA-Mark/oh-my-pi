@@ -1,0 +1,127 @@
+name: Desktop WebUI CI
+
+on:
+  push:
+    branches: [main, "_desktopap", "feature/desktop-*"]
+    paths:
+      - "packages/collab-web/src/features/**"
+      - "packages/collab-web/test/**"
+      - "packages/collab-web/src/app.tsx"
+      - ".github/workflows/desktop-webui-ci.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "packages/collab-web/src/features/**"
+      - "packages/collab-web/test/**"
+      - "packages/collab-web/src/app.tsx"
+
+concurrency:
+  group: desktop-webui-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ──────────────────────────────────────────────────────────────────────────
+  # 1. Type check — catch TS errors before tests
+  # ──────────────────────────────────────────────────────────────────────────
+  typecheck:
+    name: TypeScript check (collab-web)
+    runs-on: windows-latest        # Windows-first per project requirement
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/bun-install
+
+      - name: Type check collab-web
+        working-directory: packages/collab-web
+        run: bun run check:types
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # 2. Unit tests — bun test --parallel
+  # ──────────────────────────────────────────────────────────────────────────
+  unit-tests:
+    name: Unit tests (collab-web)
+    runs-on: windows-latest
+    needs: typecheck
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/bun-install
+
+      - name: Run unit tests
+        working-directory: packages/collab-web
+        run: bun test --parallel
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-windows
+          path: packages/collab-web/.test-results/
+          if-no-files-found: ignore
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # 3. Build — verify production bundle builds cleanly
+  # ──────────────────────────────────────────────────────────────────────────
+  build:
+    name: Production build (collab-web)
+    runs-on: windows-latest
+    needs: unit-tests
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/bun-install
+
+      - name: Build production bundle
+        working-directory: packages/collab-web
+        run: bun run build
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: collab-web-dist-windows
+          path: packages/collab-web/dist/
+          retention-days: 7
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # 4. Lint — biome check (non-blocking on warnings)
+  # ──────────────────────────────────────────────────────────────────────────
+  lint:
+    name: Lint (biome)
+    runs-on: ubuntu-latest        # lint can run on Linux — faster
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/bun-install
+
+      - name: Biome check
+        working-directory: packages/collab-web
+        run: bun run check
+        continue-on-error: true   # warn only for now; remove when all issues resolved
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # 5. Smoke test: feature gate — ensure installer/launcher/chat are wired
+  # ──────────────────────────────────────────────────────────────────────────
+  feature-gate-check:
+    name: Feature routing gate check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify InstallerPage import in app.tsx
+        run: grep -q "InstallerPage" packages/collab-web/src/app.tsx
+
+      - name: Verify LauncherPage import in app.tsx
+        run: grep -q "LauncherPage" packages/collab-web/src/app.tsx
+
+      - name: Verify MainChatPage import in app.tsx
+        run: grep -q "MainChatPage" packages/collab-web/src/app.tsx
+
+      - name: Verify core oh-my-pi not modified (wrapper-only guard)
+        run: |
+          # Ensure our feature files only import from relative paths or collab-web libs
+          # They must NOT import from oh-my-pi core packages directly (except pi-wire types)
+          if grep -r "from \"@oh-my-pi/pi-[^w]" packages/collab-web/src/features/; then
+            echo "ERROR: Feature files importing from oh-my-pi core (non pi-wire) packages!"
+            exit 1
+          fi
+          echo "Core isolation check passed."

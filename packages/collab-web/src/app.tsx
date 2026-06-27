@@ -1,5 +1,8 @@
 import type { ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { InstallerPage } from "./features/installer/pages/InstallerPage";
+import { LauncherPage } from "./features/launcher/pages/LauncherPage";
+import { MainChatPage } from "./features/chat/pages/MainChatPage";
 import { AgentDrawer } from "./components/agents/AgentDrawer";
 import { AgentsPanel } from "./components/agents/AgentsPanel";
 import { Banners } from "./components/shell/Banners";
@@ -14,6 +17,8 @@ import type { ToolRenderHost } from "./tool-render";
 import "./components/shell/shell.css";
 
 const NAME_KEY = "omp.collab.name";
+const INSTALLED_KEY = "omp.desktop.installed";
+const LAUNCHER_DONE_KEY = "omp.desktop.launcher.entered";
 
 interface Creds {
 	link: string;
@@ -36,10 +41,65 @@ function hashLink(): string | null {
 	return href.slice(i + 1);
 }
 
+function isInstalled(): boolean {
+	try { return localStorage.getItem(INSTALLED_KEY) === "1"; } catch { return false; }
+}
+
+function markInstalled(): void {
+	try { localStorage.setItem(INSTALLED_KEY, "1"); } catch { /* storage unavailable */ }
+}
+
+function isLauncherDone(): boolean {
+	try { return localStorage.getItem(LAUNCHER_DONE_KEY) === "1"; } catch { return false; }
+}
+
 export function App(): ReactNode {
+	const [installerDone, setInstallerDone] = useState(isInstalled);
+	const [launcherDone, setLauncherDone] = useState(isLauncherDone);
 	const [client, setClient] = useState<GuestClient | null>(null);
 	const [connectError, setConnectError] = useState<string | null>(null);
 	const credsRef = useRef<Creds | null>(null);
+
+	// 1. Show Installer if not yet installed and no deep-link hash present
+	if (!installerDone && !hashLink()) {
+		return (
+			<InstallerPage
+				onInstallerDone={() => {
+					markInstalled();
+					setInstallerDone(true);
+				}}
+			/>
+		);
+	}
+
+	// 2. Show Launcher if installed but not yet entered chat this session
+	if (installerDone && !launcherDone && !hashLink()) {
+		return (
+			<LauncherPage
+				onEnterChat={() => {
+					try { localStorage.setItem(LAUNCHER_DONE_KEY, "1"); } catch { /* ignore */ }
+					setLauncherDone(true);
+				}}
+				onBackToInstaller={() => {
+					try { localStorage.removeItem(INSTALLED_KEY); } catch { /* ignore */ }
+					setInstallerDone(false);
+				}}
+			/>
+		);
+	}
+
+	// 3. Main Chat phase — desktop WebUI wrapper
+	// Only enter if launcher is done and no legacy deep-link hash
+	if (installerDone && launcherDone && !hashLink()) {
+		return (
+			<MainChatPage
+				onGoToLauncher={() => {
+					try { localStorage.removeItem(LAUNCHER_DONE_KEY); } catch { /* ignore */ }
+					setLauncherDone(false);
+				}}
+			/>
+		);
+	}
 
 	const connect = useCallback((link: string, name: string): void => {
 		let next: GuestClient;

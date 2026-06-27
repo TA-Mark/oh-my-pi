@@ -1,0 +1,91 @@
+/**
+ * chatApi — Desktop WebUI wrapper adapter for Main Chat phase.
+ * Connects React chat UI ↔ local desktop bridge server.
+ * Never imports oh-my-pi core logic.
+ *
+ * REST base: http://localhost:8787/api/v1
+ */
+
+import type {
+  SessionListResponse,
+  DataSourceListResponse,
+  RuntimeConfigResponse,
+  RuntimeConfig,
+  LauncherHealthStatus,
+} from '../types/chat';
+
+const BASE = 'http://localhost:8787/api/v1';
+
+async function get<T>(path: string, timeoutMs = 5000): Promise<T> {
+  const res = await fetch(`${BASE}${path}`, { signal: AbortSignal.timeout(timeoutMs) });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ code: 'UNKNOWN', message: res.statusText }));
+    throw Object.assign(new Error(err.message ?? res.statusText), { code: err.code });
+  }
+  return res.json() as Promise<T>;
+}
+
+async function post<T>(path: string, body: unknown = {}): Promise<T> {
+  const res = await fetch(`${BASE}${path}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ code: 'UNKNOWN', message: res.statusText }));
+    throw Object.assign(new Error(err.message ?? res.statusText), { code: err.code });
+  }
+  return res.json() as Promise<T>;
+}
+
+// ---------------------------------------------------------------------------
+// Launcher health gate
+// ---------------------------------------------------------------------------
+
+export async function getLauncherHealth(): Promise<LauncherHealthStatus> {
+  return get<LauncherHealthStatus>('/launcher/status');
+}
+
+// ---------------------------------------------------------------------------
+// Sessions
+// ---------------------------------------------------------------------------
+
+export async function listSessions(): Promise<SessionListResponse> {
+  return get<SessionListResponse>('/chat/sessions');
+}
+
+export async function createSession(name?: string): Promise<{ session: { id: string; link: string; name: string } }> {
+  return post('/chat/sessions', { name: name ?? `Session ${new Date().toLocaleString()}` });
+}
+
+export async function deleteSession(id: string): Promise<void> {
+  await fetch(`${BASE}/chat/sessions/${id}`, { method: 'DELETE' });
+}
+
+export async function renameSession(id: string, name: string): Promise<void> {
+  await post(`/chat/sessions/${id}/rename`, { name });
+}
+
+// ---------------------------------------------------------------------------
+// Data sources
+// ---------------------------------------------------------------------------
+
+export async function listDataSources(): Promise<DataSourceListResponse> {
+  return get<DataSourceListResponse>('/chat/data-sources');
+}
+
+export async function refreshDataSource(id: string): Promise<void> {
+  await post(`/chat/data-sources/${id}/refresh`);
+}
+
+// ---------------------------------------------------------------------------
+// Runtime config
+// ---------------------------------------------------------------------------
+
+export async function getRuntimeConfig(): Promise<RuntimeConfigResponse> {
+  return get<RuntimeConfigResponse>('/chat/runtime-config');
+}
+
+export async function updateRuntimeConfig(patch: Partial<RuntimeConfig>): Promise<RuntimeConfigResponse> {
+  return post<RuntimeConfigResponse>('/chat/runtime-config', patch);
+}
