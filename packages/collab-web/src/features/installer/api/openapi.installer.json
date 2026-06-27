@@ -1,0 +1,318 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Oh-My-Pi Desktop Installer API",
+    "version": "0.1.0",
+    "description": "Installer orchestration layer for the oh-my-pi desktop WebUI wrapper. Does NOT expose or modify oh-my-pi core internals."
+  },
+  "servers": [
+    { "url": "http://localhost:8787/api/v1", "description": "Local desktop bridge (Windows default port)" }
+  ],
+  "paths": {
+    "/installer/preflight": {
+      "post": {
+        "operationId": "runPreflight",
+        "summary": "Run preflight checks before installation",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/PreflightRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Preflight check results",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/PreflightResponse" }
+              }
+            }
+          },
+          "500": {
+            "description": "Bridge error",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/InstallerError" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/installer/jobs": {
+      "post": {
+        "operationId": "startInstall",
+        "summary": "Start an installation job",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/InstallRequest" }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Job created",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/InstallJobCreated" }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/InstallerError" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/installer/jobs/{jobId}/status": {
+      "get": {
+        "operationId": "getInstallStatus",
+        "summary": "Poll installation job status",
+        "parameters": [
+          { "name": "jobId", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": {
+            "description": "Current job status",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/InstallStatusResponse" }
+              }
+            }
+          },
+          "404": {
+            "description": "Job not found",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/InstallerError" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/installer/jobs/{jobId}/cancel": {
+      "post": {
+        "operationId": "cancelInstall",
+        "summary": "Cancel a running installation job",
+        "parameters": [
+          { "name": "jobId", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": {
+            "description": "Job cancelled",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/InstallActionResponse" } }
+            }
+          }
+        }
+      }
+    },
+    "/installer/jobs/{jobId}/repair": {
+      "post": {
+        "operationId": "repairInstall",
+        "summary": "Repair a failed installation job",
+        "parameters": [
+          { "name": "jobId", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": {
+            "description": "Repair started",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/InstallActionResponse" } }
+            }
+          }
+        }
+      }
+    },
+    "/installer/jobs/{jobId}/logs": {
+      "get": {
+        "operationId": "getInstallLogs",
+        "summary": "Get buffered log lines for a job",
+        "parameters": [
+          { "name": "jobId", "in": "path", "required": true, "schema": { "type": "string" } },
+          {
+            "name": "since",
+            "in": "query",
+            "required": false,
+            "description": "ISO 8601 — return only lines after this time",
+            "schema": { "type": "string", "format": "date-time" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Log lines array",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["jobId", "lines"],
+                  "properties": {
+                    "jobId": { "type": "string" },
+                    "lines": { "type": "array", "items": { "$ref": "#/components/schemas/LogLine" } }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "PreflightRequest": {
+        "type": "object",
+        "required": ["repoUrl", "branch", "installPath"],
+        "properties": {
+          "repoUrl": { "type": "string", "example": "https://github.com/myorg/oh-my-pi.git" },
+          "branch": { "type": "string", "example": "main" },
+          "installPath": { "type": "string", "example": "C:\\oh-my-pi" }
+        }
+      },
+      "PreflightCheck": {
+        "type": "object",
+        "required": ["id", "label", "status"],
+        "properties": {
+          "id": { "type": "string" },
+          "label": { "type": "string" },
+          "status": { "type": "string", "enum": ["pending", "running", "pass", "fail", "warn"] },
+          "detail": { "type": "string" },
+          "fixHint": { "type": "string" }
+        }
+      },
+      "PreflightResponse": {
+        "type": "object",
+        "required": ["checks", "allPassed", "hasWarnings"],
+        "properties": {
+          "checks": { "type": "array", "items": { "$ref": "#/components/schemas/PreflightCheck" } },
+          "allPassed": { "type": "boolean" },
+          "hasWarnings": { "type": "boolean" }
+        }
+      },
+      "InstallRequest": {
+        "type": "object",
+        "required": ["repoUrl", "branch", "installPath"],
+        "properties": {
+          "repoUrl": { "type": "string" },
+          "branch": { "type": "string" },
+          "installPath": { "type": "string" },
+          "windowsInstallPath": { "type": "string", "description": "Windows absolute path override" }
+        }
+      },
+      "InstallJobCreated": {
+        "type": "object",
+        "required": ["jobId", "startedAt"],
+        "properties": {
+          "jobId": { "type": "string" },
+          "startedAt": { "type": "string", "format": "date-time" }
+        }
+      },
+      "InstallStep": {
+        "type": "object",
+        "required": ["id", "label", "status"],
+        "properties": {
+          "id": { "type": "string" },
+          "label": { "type": "string" },
+          "status": { "type": "string", "enum": ["pending", "running", "pass", "fail", "warn"] },
+          "startedAt": { "type": "string", "format": "date-time" },
+          "completedAt": { "type": "string", "format": "date-time" }
+        }
+      },
+      "InstallStatusResponse": {
+        "type": "object",
+        "required": ["jobId", "phase", "progress", "currentStep", "steps"],
+        "properties": {
+          "jobId": { "type": "string" },
+          "phase": {
+            "type": "string",
+            "enum": ["idle", "checking", "check_fail", "ready", "installing", "success", "failed", "cancelled"]
+          },
+          "progress": { "type": "number", "minimum": 0, "maximum": 100 },
+          "currentStep": { "type": "string" },
+          "steps": { "type": "array", "items": { "$ref": "#/components/schemas/InstallStep" } },
+          "error": { "$ref": "#/components/schemas/InstallerError" }
+        }
+      },
+      "LogLine": {
+        "type": "object",
+        "required": ["ts", "level", "message"],
+        "properties": {
+          "ts": { "type": "string", "format": "date-time" },
+          "level": { "type": "string", "enum": ["info", "warn", "error", "debug"] },
+          "message": { "type": "string" },
+          "raw": { "type": "string" }
+        }
+      },
+      "InstallActionResponse": {
+        "type": "object",
+        "required": ["jobId", "ok"],
+        "properties": {
+          "jobId": { "type": "string" },
+          "ok": { "type": "boolean" },
+          "message": { "type": "string" }
+        }
+      },
+      "InstallerError": {
+        "type": "object",
+        "required": ["code", "message"],
+        "properties": {
+          "code": { "type": "string" },
+          "message": { "type": "string" },
+          "detail": { "type": "string" },
+          "actions": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["label", "action"],
+              "properties": {
+                "label": { "type": "string" },
+                "action": { "type": "string", "enum": ["retry", "repair", "cancel", "logs"] }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "x-websocket": {
+    "description": "Live log + phase streaming via WebSocket",
+    "url": "ws://localhost:8787/api/v1/installer/jobs/{jobId}/stream",
+    "events": {
+      "log": {
+        "description": "Single log line from running job",
+        "schema": {
+          "type": "object",
+          "required": ["type", "jobId", "line"],
+          "properties": {
+            "type": { "type": "string", "enum": ["log"] },
+            "jobId": { "type": "string" },
+            "line": { "$ref": "#/components/schemas/LogLine" }
+          }
+        }
+      },
+      "phase_change": {
+        "description": "Phase transition notification",
+        "schema": {
+          "type": "object",
+          "required": ["type", "jobId", "phase", "progress"],
+          "properties": {
+            "type": { "type": "string", "enum": ["phase_change"] },
+            "jobId": { "type": "string" },
+            "phase": { "type": "string" },
+            "progress": { "type": "number" }
+          }
+        }
+      }
+    }
+  }
+}
