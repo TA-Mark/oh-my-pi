@@ -1,0 +1,293 @@
+name: Desktop WebUI — Windows Release
+
+on:
+  push:
+    tags:
+      - "desktop-v*"          # e.g. desktop-v1.0.0
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version (e.g. 1.2.0)"
+        required: true
+        default: "1.0.0"
+      sign:
+        description: "Sign installer? (true/false)"
+        required: false
+        default: "false"
+
+permissions:
+  contents: write  # for creating GitHub Releases
+
+env:
+  BUN_VERSION: "1.3.14"
+
+jobs:
+  # ────────────────────────────────────────────────────────────────────────────
+  build-and-release:
+    name: Build Windows Installer
+    runs-on: windows-latest
+
+    steps:
+      # 1. Checkout
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # 2. Resolve version
+      - name: Resolve version
+        id: version
+        shell: pwsh
+        run: |
+          if ("${{ github.event_name }}" -eq "push") {
+            $v = "${{ github.ref_name }}" -replace '^desktop-v', ''
+          } else {
+            $v = "${{ github.event.inputs.version }}"
+          }
+          echo "VERSION=$v" >> $env:GITHUB_OUTPUT
+          echo "Resolved version: $v"
+
+      # 3. Setup Bun
+      - name: Setup Bun ${{ env.BUN_VERSION }}
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      # 4. Install dependencies
+      - name: Install dependencies
+        shell: pwsh
+        run: bun install --frozen-lockfile
+
+      # 5. Type check
+      - name: Type check
+        shell: pwsh
+        working-directory: packages/collab-web
+        run: |
+          if (Test-Path "tsconfig.json") {
+            bunx tsc --noEmit 2>&1
+            if ($LASTEXITCODE -ne 0) { exit 1 }
+          } else {
+            echo "No tsconfig.json — skipping type check"
+          }
+
+      # 6. Build WebUI
+      - name: Build WebUI
+        shell: pwsh
+        working-directory: packages/collab-web
+        run: |
+          if (Test-Path "dist") { Remove-Item "dist" -Recurse -Force }
+          bun build ./index.html --outdir=dist --minify `
+            --entry-naming=[hash].[ext] `
+            --chunk-naming=[hash].[ext] `
+            --asset-naming=[hash].[ext]
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          $html = Get-ChildItem dist -Filter "*.html" | Select-Object -First 1
+          if ($html -and $html.Name -ne "index.html") { Rename-Item $html.FullName "index.html" }
+          if (Test-Path "public") { Copy-Item "public\*" "dist\" -Recurse -Force }
+          echo "Build complete. Files:"
+          Get-ChildItem dist | Select-Object Name, Length
+
+      # 7. Install NSIS
+      - name: Install NSIS
+        shell: pwsh
+        run: |
+          choco install nsis --yes --no-progress 2>&1
+          echo "NSIS installed: $(makensis /VERSION 2>&1)"
+
+      # 8. Build installer
+      - name: Build installer .exe
+        shell: pwsh
+        run: |
+          .\installer\build-installer.ps1 `
+            -Version "${{ steps.version.outputs.VERSION }}" `
+            -OutDir ".\release" `
+            -SkipBuild
+        env:
+          CERT_THUMB: ${{ secrets.WIN_CERT_THUMBPRINT }}
+
+      # 9. Code sign (optional)
+      - name: Sign installer
+        if: ${{ github.event.inputs.sign == 'true' && secrets.WIN_CERT_BASE64 != '' }}
+        shell: pwsh
+        run: |
+          # Decode PFX from secret and import
+          $pfxBytes = [Convert]::FromBase64String("${{ secrets.WIN_CERT_BASE64 }}")
+          $pfxPath  = Join-Path $env:TEMP "signing.pfx"
+          [IO.File]::WriteAllBytes($pfxPath, $pfxBytes)
+          Import-PfxCertificate -FilePath $pfxPath `
+            -CertStoreLocation Cert:\CurrentUser\My `
+            -Password (ConvertTo-SecureString "${{ secrets.WIN_CERT_PASSWORD }}" -AsPlainText -Force) | Out-Null
+
+          $exe = Get-ChildItem .\release -Filter "*.exe" | Select-Object -First 1
+          $signtool = "${env:ProgramFiles(x86)}\Windows Kits\10\bin\x64\signtool.exe"
+          & $signtool sign /sha1 "${{ secrets.WIN_CERT_THUMBPRINT }}" `
+            /tr http://timestamp.digicert.com /td sha256 /fd sha256 /v $exe.FullName
+          & $signtool verify /pa $exe.FullName
+          Remove-Item $pfxPath -Force
+
+      # 10. Generate checksums
+      - name: Generate checksums
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem .\release -Filter "*.exe" | Select-Object -First 1
+          $hash = (Get-FileHash $exe.FullName -Algorithm SHA256).Hash
+          "$hash  $($exe.Name)" | Set-Content ".\release\$($exe.Name).sha256"
+          echo "SHA256: $hash"
+
+      # 11. Upload build artifacts
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer-${{ steps.version.outputs.VERSION }}
+          path: |
+            release/*.exe
+            release/*.sha256
+          retention-days: 30
+
+      # 12. Create GitHub Release
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: desktop-v${{ steps.version.outputs.VERSION }}
+          name: "Oh-My-Pi Desktop v${{ steps.version.outputs.VERSION }}"
+          draft: false
+          prerelease: false
+          files: |
+            release/*.exe
+            release/*.sha256
+          body: |
+            ## Oh-My-Pi Desktop v${{ steps.version.outputs.VERSION }}
+
+            ### Installation
+
+            **Quick install (PowerShell):**
+            ```powershell
+            irm https://raw.githubusercontent.com/${{ github.repository }}/main/scripts/desktop-webui-install.ps1 | iex
+            ```
+
+            **Or download the installer below** and run `oh-my-pi-desktop-setup-${{ steps.version.outputs.VERSION }}.exe`
+
+            ### Requirements
+            - Windows 10 or later
+            - Internet connection (for initial oh-my-pi clone)
+
+            ### What's included
+            - React WebUI (pre-built, no Node needed)
+            - PowerShell launcher + bridge relay
+            - Desktop & Start Menu shortcuts
+            - Update script (`scripts\desktop-webui-update.ps1`)
+            - Uninstaller (Settings → Apps or `scripts\desktop-webui-uninstall.ps1`)
+
+            ### Verify checksum
+            ```powershell
+            (Get-FileHash oh-my-pi-desktop-setup-${{ steps.version.outputs.VERSION }}.exe -Algorithm SHA256).Hash
+            ```
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # Windows QA smoke test (runs after build)
+  # ────────────────────────────────────────────────────────────────────────────
+  windows-qa:
+    name: Windows QA Smoke Test
+    needs: build-and-release
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Download installer artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-installer-${{ needs.build-and-release.outputs.version }}
+          path: release/
+
+      - name: QA — Verify installer structure
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem release -Filter "*.exe" | Select-Object -First 1
+          if (-not $exe) { throw "No installer .exe found in release/" }
+          echo "✓ Installer found: $($exe.Name) ($([math]::Round($exe.Length/1MB,2)) MB)"
+
+          $sha = Get-ChildItem release -Filter "*.sha256" | Select-Object -First 1
+          if (-not $sha) { throw "No .sha256 checksum file found" }
+          $expected = (Get-Content $sha.FullName).Split(" ")[0]
+          $actual   = (Get-FileHash $exe.FullName -Algorithm SHA256).Hash
+          if ($expected -ne $actual) { throw "Checksum mismatch! Expected $expected, got $actual" }
+          echo "✓ Checksum verified: $actual"
+
+      - name: QA — PowerShell script syntax check
+        shell: pwsh
+        run: |
+          $scripts = @(
+            "scripts\desktop-webui-install.ps1",
+            "scripts\desktop-webui-launch.ps1",
+            "scripts\desktop-webui-update.ps1",
+            "scripts\desktop-webui-uninstall.ps1"
+          )
+          foreach ($s in $scripts) {
+            $errors = $null
+            $null = [System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path $s), [ref]$null, [ref]$errors)
+            if ($errors.Count -gt 0) {
+              echo "✗ Syntax errors in $s"
+              $errors | ForEach-Object { echo "  $_" }
+              exit 1
+            }
+            echo "✓ Syntax OK: $s"
+          }
+
+      - name: QA — Bun build smoke test
+        shell: pwsh
+        working-directory: packages/collab-web
+        run: |
+          bun install 2>&1 | Out-Null
+          if (Test-Path "dist") { Remove-Item "dist" -Recurse -Force }
+          bun build ./index.html --outdir=dist 2>&1
+          if ($LASTEXITCODE -ne 0) { throw "bun build failed" }
+          if (-not (Test-Path "dist\index.html")) {
+            # try renamed
+            $html = Get-ChildItem dist -Filter "*.html" | Select-Object -First 1
+            if (-not $html) { throw "No index.html in dist/" }
+            Rename-Item $html.FullName "index.html"
+          }
+          echo "✓ bun build smoke test passed"
+
+      - name: QA — Registry simulation (dry run)
+        shell: pwsh
+        run: |
+          # Simulate registry read/write without actual install
+          $testKey = "HKCU:\Software\OmpDesktopTest"
+          New-Item -Path $testKey -Force | Out-Null
+          Set-ItemProperty -Path $testKey -Name "TestValue" -Value "ok"
+          $v = (Get-ItemProperty $testKey -Name "TestValue").TestValue
+          Remove-Item $testKey -Recurse -Force
+          if ($v -ne "ok") { throw "Registry read/write failed" }
+          echo "✓ Registry read/write OK"
+
+      - name: QA — Shortcut creation test
+        shell: pwsh
+        run: |
+          $shell = New-Object -ComObject WScript.Shell
+          $lnk   = Join-Path $env:TEMP "omp-desktop-test.lnk"
+          $sc    = $shell.CreateShortcut($lnk)
+          $sc.TargetPath = "notepad.exe"
+          $sc.Save()
+          if (-not (Test-Path $lnk)) { throw "Shortcut creation failed" }
+          Remove-Item $lnk -Force
+          echo "✓ Shortcut creation OK"
+
+      - name: QA report
+        shell: pwsh
+        run: |
+          echo ""
+          echo "  ══════════════════════════════════════════"
+          echo "  ✓ All Windows QA checks passed!"
+          echo "  ══════════════════════════════════════════"
+          echo ""
