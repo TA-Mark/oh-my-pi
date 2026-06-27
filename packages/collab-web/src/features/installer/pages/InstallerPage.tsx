@@ -224,7 +224,7 @@ export function InstallerPage({ onInstallerDone }: Props): ReactNode {
                 running={state.phase === 'checking'}
               />
 
-              {(state.phase === 'installing' || state.phase === 'failed' || state.phase === 'success') && (
+              {(state.phase === 'installing' || state.phase === 'failed') && (
                 <InstallProgressCard
                   steps={state.steps}
                   logs={state.logs}
