@@ -1,59 +1,45 @@
-# Oh-My-Pi Desktop WebUI — Windows Installer (npm-package mode)
+# Oh-My-Pi Desktop WebUI - Windows Installer (upstream-binary mode)
 #
-# Installs the official `@oh-my-pi/pi-coding-agent` npm package globally via
-# Bun. No git clone, no source build — production-style install.
+# Defers to the official upstream installer at https://omp.sh/install.ps1
+# (canonical source: scripts/install.ps1 in this repo, published via omp.sh).
+# Adds a thin wrapper that:
+#   - emits "Preflight checks" / "Installing dependencies" / "Registering"
+#     log lines so the bridge step advancer drives the UI progress bar,
+#   - writes a desktop-config.json and a HKCU registry entry so the launcher
+#     phase can find the omp.exe that was just installed.
 #
-# Designed to be spawned by packages/desktop-bridge `runInstall` with -Silent.
-# Can also be run standalone:
+# Spawned by packages/desktop-bridge `runInstall` with -Silent. Standalone:
 #   powershell -ExecutionPolicy Bypass -File scripts/desktop-webui-install.ps1 -Silent
 
 param(
-    [string]$InstallDir    = "",
-    [string]$Package       = "@oh-my-pi/pi-coding-agent",
-    [string]$Version       = "latest",
-    [string]$Port          = "8787",
+    [string]$InstallDir   = "",
+    [string]$Port         = "8787",
+    [string]$Mode         = "binary",   # binary | source
+    [string]$Ref          = "",         # forwarded as upstream -Ref when set
     [switch]$NoShortcut,
-    [switch]$NoAutoLaunch,
     [switch]$Silent
 )
 
 $ErrorActionPreference = "Stop"
 $ProgressPreference    = "SilentlyContinue"
 
-# Bridge passes OMP_DESKTOP_DIR / OMP_BRIDGE_PORT via env; honor them when
-# the matching flag was not supplied on the command line.
 if (-not $InstallDir -and $env:OMP_DESKTOP_DIR) { $InstallDir = $env:OMP_DESKTOP_DIR }
 if ($env:OMP_BRIDGE_PORT) { $Port = $env:OMP_BRIDGE_PORT }
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Constants
-# ──────────────────────────────────────────────────────────────────────────────
-$APP_NAME         = "Oh-My-Pi Desktop"
-$APP_ID           = "omp-desktop"
-$MIN_BUN_VERSION  = "1.3.14"
-$MIN_DISK_GB      = 1
+$APP_NAME        = "Oh-My-Pi Desktop"
+$DEFAULT_INSTALL = Join-Path $env:LOCALAPPDATA "omp-desktop"
+$INSTALL_DIR     = if ($InstallDir) { $InstallDir } else { $DEFAULT_INSTALL }
+$LOG_DIR         = Join-Path $INSTALL_DIR "logs"
+$REGISTRY_ROOT   = "HKCU:\Software\OhMyPi\Desktop"
 
-$DEFAULT_INSTALL  = Join-Path $env:LOCALAPPDATA "omp-desktop"
-$INSTALL_DIR      = if ($InstallDir) { $InstallDir } else { $DEFAULT_INSTALL }
-$LOG_DIR          = Join-Path $INSTALL_DIR "logs"
-$REGISTRY_ROOT    = "HKCU:\Software\OhMyPi\Desktop"
+# omp upstream installer defaults the binary path here (see install.ps1):
+$OMP_BIN_DIR     = if ($env:PI_INSTALL_DIR) { $env:PI_INSTALL_DIR } else { "$env:LOCALAPPDATA\omp" }
+$UPSTREAM_PS1    = "https://omp.sh/install.ps1"
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Helpers — log markers are matched by the bridge step advancer:
-#   "Preflight checks" → preflight
-#   "Installing.*dependencies" or "bun install" → install
-#   "Registering" → register
-# ──────────────────────────────────────────────────────────────────────────────
 function Write-Step  { param($msg) Write-Host "  -> $msg" -ForegroundColor Cyan }
 function Write-Ok    { param($msg) Write-Host "  [ok] $msg" -ForegroundColor Green }
 function Write-Warn  { param($msg) Write-Host "  [warn] $msg" -ForegroundColor Yellow }
 function Write-Err   { param($msg) Write-Host "  [err] $msg" -ForegroundColor Red }
-
-function Write-Banner {
-    Write-Host ""
-    Write-Host "  $APP_NAME - Installer (npm-package mode)" -ForegroundColor Blue
-    Write-Host ""
-}
 
 function Get-DiskFreeGB {
     param([string]$Path)
@@ -61,30 +47,6 @@ function Get-DiskFreeGB {
     $disk  = Get-PSDrive -Name ($drive.TrimEnd(':')) -ErrorAction SilentlyContinue
     if ($disk) { return [math]::Round($disk.Free / 1GB, 2) }
     return 99
-}
-
-function Test-CommandExists {
-    param([string]$Name)
-    return $null -ne (Get-Command $Name -ErrorAction SilentlyContinue)
-}
-
-function Get-BunVersion {
-    try {
-        $v = (bun --version 2>$null).Trim().Split("-")[0]
-        return [version]$v
-    } catch { return $null }
-}
-
-function Install-Bun {
-    Write-Step "Installing Bun..."
-    irm bun.sh/install.ps1 | iex
-    $env:Path = [System.Environment]::GetEnvironmentVariable("Path","User") + ";" +
-                [System.Environment]::GetEnvironmentVariable("Path","Machine")
-    $v = Get-BunVersion
-    if (-not $v -or $v -lt [version]$MIN_BUN_VERSION) {
-        throw "Bun install completed but version is still $v (need >= $MIN_BUN_VERSION)"
-    }
-    Write-Ok "Bun installed: $v"
 }
 
 function Write-Registry {
@@ -97,31 +59,13 @@ function Write-Registry {
     }
 }
 
-function Get-BunGlobalBin {
-    try {
-        $raw = (& bun pm bin -g 2>$null).Trim()
-        if ($raw) { return $raw }
-    } catch { }
-    return Join-Path $env:USERPROFILE ".bun\bin"
-}
-
 # ──────────────────────────────────────────────────────────────────────────────
-# Step 1/3: Preflight checks
+# Step 1/3: Preflight
 # ──────────────────────────────────────────────────────────────────────────────
 function Invoke-PreflightChecks {
     Write-Host ""
     Write-Host "  [1/3] Preflight checks" -ForegroundColor White
 
-    # Disk
-    Write-Step "Checking disk space (need >= ${MIN_DISK_GB} GB at $INSTALL_DIR)..."
-    $parent = if (Test-Path $INSTALL_DIR) { $INSTALL_DIR } else { Split-Path $INSTALL_DIR }
-    $freeGB = Get-DiskFreeGB $parent
-    if ($freeGB -lt $MIN_DISK_GB) {
-        throw "Insufficient disk space: ${freeGB} GB free, need ${MIN_DISK_GB} GB at $parent"
-    }
-    Write-Ok "Disk: ${freeGB} GB free"
-
-    # Write permissions
     Write-Step "Checking write permissions at $INSTALL_DIR..."
     $testFile = Join-Path $INSTALL_DIR ".__write_test"
     try {
@@ -133,54 +77,70 @@ function Invoke-PreflightChecks {
         throw "Cannot write to $INSTALL_DIR -- try running as Administrator or pick a different path."
     }
 
-    # Bun
-    Write-Step "Checking Bun >= $MIN_BUN_VERSION..."
-    if (Test-CommandExists "bun") {
-        $v = Get-BunVersion
-        if ($v -ge [version]$MIN_BUN_VERSION) {
-            Write-Ok "Bun: $v"
-        } else {
-            Write-Warn "Bun $v is below minimum. Upgrading..."
-            Install-Bun
-        }
-    } else {
-        Write-Warn "Bun not found. Installing..."
-        Install-Bun
-    }
+    Write-Step "Checking disk space..."
+    $parent = if (Test-Path $INSTALL_DIR) { $INSTALL_DIR } else { Split-Path $INSTALL_DIR }
+    $freeGB = Get-DiskFreeGB $parent
+    Write-Ok "Disk: ${freeGB} GB free at $parent"
 
-    Write-Ok "All preflight checks passed."
+    Write-Step "Checking network (github.com)..."
+    try {
+        $null = Invoke-WebRequest -Uri "https://github.com" -UseBasicParsing -TimeoutSec 10
+        Write-Ok "Network: reachable"
+    } catch {
+        throw "Cannot reach github.com. Check your network or proxy."
+    }
 }
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Step 2/3: Install npm package globally via Bun
+# Step 2/3: Install via upstream PS1
 # ──────────────────────────────────────────────────────────────────────────────
-function Invoke-InstallPackage {
+function Invoke-UpstreamInstaller {
     Write-Host ""
-    Write-Host "  [2/3] Installing dependencies" -ForegroundColor White
+    Write-Host "  [2/3] Installing dependencies (bun install -g via upstream)" -ForegroundColor White
 
-    $spec = if ($Version -eq "latest") { $Package } else { "$Package@$Version" }
-    Write-Step "Installing $spec (bun install -g)..."
+    # Download the upstream installer to a temp file so we can pass parameters
+    # to it. `irm | iex` is the documented form but it does not accept params.
+    $tmpPs1 = Join-Path $env:TEMP ("omp-upstream-install-" + [System.Guid]::NewGuid().ToString("N") + ".ps1")
+    Write-Step "Fetching upstream installer: $UPSTREAM_PS1"
+    Invoke-WebRequest -Uri $UPSTREAM_PS1 -OutFile $tmpPs1 -UseBasicParsing
 
-    # Use Start-Process so we can capture exit code reliably even when bun
-    # writes spinners; redirect both streams to the parent (bridge) console.
-    & bun install -g $spec 2>&1
-    if ($LASTEXITCODE -ne 0) {
-        throw "bun install -g $spec failed (exit $LASTEXITCODE)"
+    try {
+        $upstreamArgs = @()
+        switch ($Mode.ToLowerInvariant()) {
+            "binary" { $upstreamArgs += "-Binary" }
+            "source" { $upstreamArgs += "-Source" }
+            default  { } # let upstream choose (bun if available else binary)
+        }
+        if ($Ref) {
+            $upstreamArgs += "-Ref"
+            $upstreamArgs += $Ref
+        }
+
+        Write-Step "Running upstream installer: $($upstreamArgs -join ' ')"
+        # Stream upstream's own stdout/stderr through so log lines like
+        # "Downloading omp-windows-x64.exe..." and "Installed omp to ..."
+        # surface in the bridge job logs.
+        & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $tmpPs1 @upstreamArgs 2>&1 |
+            ForEach-Object { Write-Host $_ }
+        if ($LASTEXITCODE -ne 0) {
+            throw "Upstream installer exited with code $LASTEXITCODE"
+        }
+    } finally {
+        Remove-Item -Force $tmpPs1 -ErrorAction SilentlyContinue
     }
 
-    $bunBin = Get-BunGlobalBin
-    $ompPath = Join-Path $bunBin "omp.exe"
-    if (-not (Test-Path $ompPath)) {
-        # Bun may install without .exe extension on some shells; try plain.
-        $alt = Join-Path $bunBin "omp"
-        if (Test-Path $alt) { $ompPath = $alt }
+    # Resolve the installed omp binary path. Upstream installs to either
+    # $env:LOCALAPPDATA\omp\omp.exe (binary mode) or the bun global bin
+    # ($env:USERPROFILE\.bun\bin\omp.exe).
+    $candidates = @(
+        (Join-Path $OMP_BIN_DIR "omp.exe"),
+        (Join-Path $env:USERPROFILE ".bun\bin\omp.exe"),
+        (Join-Path $env:USERPROFILE ".bun\bin\omp")
+    )
+    foreach ($p in $candidates) {
+        if (Test-Path $p) { return $p }
     }
-    if (-not (Test-Path $ompPath)) {
-        Write-Warn "omp launcher not found in $bunBin after install. PATH may need a session restart."
-    } else {
-        Write-Ok "omp launcher: $ompPath"
-    }
-    return $ompPath
+    return $null
 }
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -192,50 +152,46 @@ function Invoke-Register {
     Write-Host ""
     Write-Host "  [3/3] Registering installation" -ForegroundColor White
 
-    # Ensure logs dir
     New-Item -ItemType Directory -Force -Path $LOG_DIR | Out-Null
     Write-Ok "Log directory: $LOG_DIR"
 
-    # Write app config
     $configPath = Join-Path $INSTALL_DIR "desktop-config.json"
     @{
         installDir  = $INSTALL_DIR
-        package     = $Package
-        version     = $Version
-        port        = $Port
+        ompBinDir   = $OMP_BIN_DIR
         ompPath     = $OmpPath
+        mode        = $Mode
+        ref         = $Ref
+        port        = $Port
         installedAt = (Get-Date -Format "o")
-        schema      = "npm-global-v1"
+        schema      = "upstream-v1"
     } | ConvertTo-Json | Set-Content $configPath -Encoding UTF8
     Write-Ok "Config written -> $configPath"
 
-    # Desktop + Start Menu shortcuts pointing at the installed Tauri app, not at omp.
-    # The Tauri shell is what the user double-clicks; omp runs as a child of the bridge.
     if (-not $NoShortcut) {
         $tauriExe = Join-Path $env:LOCALAPPDATA "Programs\Oh-My-Pi Desktop\omp-desktop-shell.exe"
         if (Test-Path $tauriExe) {
-            Write-Step "Creating Desktop shortcut..."
-            $WshShell   = New-Object -ComObject WScript.Shell
-            $shortcut   = $WshShell.CreateShortcut("$env:USERPROFILE\Desktop\$APP_NAME.lnk")
+            $WshShell  = New-Object -ComObject WScript.Shell
+            $shortcut  = $WshShell.CreateShortcut("$env:USERPROFILE\Desktop\$APP_NAME.lnk")
             $shortcut.TargetPath       = $tauriExe
             $shortcut.WorkingDirectory = Split-Path $tauriExe
-            $shortcut.Description      = "$APP_NAME"
+            $shortcut.Description      = $APP_NAME
             $shortcut.Save()
-            Write-Ok "Desktop shortcut created"
+            Write-Ok "Desktop shortcut -> $tauriExe"
         } else {
-            Write-Warn "Tauri shell not found at $tauriExe -- skipping shortcut (NSIS installer normally puts one there)."
+            Write-Warn "Tauri shell not at $tauriExe; skipping shortcut (NSIS installer normally puts one there)."
         }
     }
 
-    # App registry
     Write-Registry @{
         InstallDir  = $INSTALL_DIR
-        Package     = $Package
-        Version     = $Version
+        OmpBinDir   = $OMP_BIN_DIR
+        OmpPath     = if ($OmpPath) { $OmpPath } else { "" }
+        Mode        = $Mode
+        Ref         = $Ref
         Port        = $Port
-        OmpPath     = $OmpPath
         InstalledAt = (Get-Date -Format "o")
-        Schema      = "npm-global-v1"
+        Schema      = "upstream-v1"
     }
     Write-Ok "App registry written"
 }
@@ -244,17 +200,23 @@ function Invoke-Register {
 # Main
 # ──────────────────────────────────────────────────────────────────────────────
 try {
-    Write-Banner
+    Write-Host ""
+    Write-Host "  $APP_NAME - Installer (upstream mode: $Mode)" -ForegroundColor Blue
+    Write-Host ""
 
     Invoke-PreflightChecks
-    $ompPath = Invoke-InstallPackage
+    $ompPath = Invoke-UpstreamInstaller
     Invoke-Register -OmpPath $ompPath
 
     Write-Host ""
     Write-Host "  ============================================" -ForegroundColor Green
     Write-Host "  $APP_NAME installed successfully!" -ForegroundColor Green
-    Write-Host "    Config   : $INSTALL_DIR" -ForegroundColor White
-    Write-Host "    omp CLI  : $ompPath" -ForegroundColor White
+    if ($ompPath) {
+        Write-Host "    omp CLI : $ompPath" -ForegroundColor White
+    } else {
+        Write-Host "    omp CLI : (could not auto-detect; check $OMP_BIN_DIR or restart shell)" -ForegroundColor Yellow
+    }
+    Write-Host "    Config  : $INSTALL_DIR" -ForegroundColor White
     Write-Host "  ============================================" -ForegroundColor Green
     Write-Host ""
 } catch {

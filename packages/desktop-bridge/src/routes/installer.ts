@@ -260,9 +260,14 @@ function parseLevel(line: string): "info" | "warn" | "error" | "debug" {
 	return tag as "info" | "warn" | "error" | "debug";
 }
 
+// Match log lines emitted by both our wrapper PS1 and the upstream
+// installer at https://omp.sh/install.ps1 so the UI progress bar tracks
+// either path (binary download or `bun install -g`).
 const STEP_MARKERS: Array<{ re: RegExp; step: string; progress: number }> = [
 	{ re: /Preflight checks/i, step: "preflight", progress: 10 },
-	{ re: /Installing.*dependencies|bun install/i, step: "install", progress: 60 },
+	{ re: /Fetching upstream installer|Fetching (?:latest )?release/i, step: "install", progress: 35 },
+	{ re: /Installing.*dependencies|bun install|Downloading omp|Installing via bun/i, step: "install", progress: 65 },
+	{ re: /Installed omp (?:to|via)/i, step: "install", progress: 85 },
 	{ re: /Registering/i, step: "register", progress: 95 },
 ];
 
