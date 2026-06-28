@@ -21,11 +21,12 @@ import {
 } from "../lib/preflight";
 import type { InstallRequest, PreflightResponse } from "../types";
 
+// npm-global install mode: PS1 runs `bun install -g @oh-my-pi/pi-coding-agent`,
+// no repo clone or source build. Keep the IDs the UI's InstallProgressCard
+// already renders.
 const INSTALL_STEPS = [
 	{ id: "preflight", label: "Preflight checks" },
-	{ id: "clone", label: "Clone or update repo" },
 	{ id: "install", label: "Install dependencies" },
-	{ id: "build", label: "Build WebUI bundle" },
 	{ id: "register", label: "Register launcher" },
 ];
 
@@ -120,9 +121,10 @@ export async function handleInstaller(ctx: BridgeContext, req: Request, url: URL
 async function runInstall(ctx: BridgeContext, jobId: string, req: InstallRequest): Promise<void> {
 	const installPath = req.windowsInstallPath ?? req.installPath;
 
-	// Step 1: preflight (a quick re-check inside the job)
+	// Step 1: preflight — only what npm-global install needs (network for the
+	// registry; the PS1 itself re-checks Bun + disk + write-perm).
 	ctx.jobs.setPhase(jobId, "installing", 5, "preflight");
-	const pre = await Promise.all([checkGit(), checkNetwork(req.repoUrl), checkSource(req.repoUrl)]);
+	const pre = await Promise.all([checkNetwork("https://registry.npmjs.org")]);
 	const preFail = pre.find((c) => c.status === "fail");
 	if (preFail) {
 		ctx.jobs.emitLog(jobId, "error", `preflight ${preFail.id}: ${preFail.detail ?? preFail.label}`);
@@ -130,7 +132,7 @@ async function runInstall(ctx: BridgeContext, jobId: string, req: InstallRequest
 		return;
 	}
 	ctx.jobs.completeStep(jobId, "preflight", "pass");
-	ctx.jobs.setPhase(jobId, "installing", 15, "clone");
+	ctx.jobs.setPhase(jobId, "installing", 15, "install");
 
 	// Step 2–5: delegate to the platform install script
 	const scriptInfo = locateInstallScript(ctx);
@@ -260,10 +262,8 @@ function parseLevel(line: string): "info" | "warn" | "error" | "debug" {
 
 const STEP_MARKERS: Array<{ re: RegExp; step: string; progress: number }> = [
 	{ re: /Preflight checks/i, step: "preflight", progress: 10 },
-	{ re: /Fetching source|Cloning|Updating/i, step: "clone", progress: 30 },
-	{ re: /Installing.*dependencies|bun install/i, step: "install", progress: 55 },
-	{ re: /Building.*WebUI|bun build/i, step: "build", progress: 80 },
-	{ re: /Registering|Creating launchers/i, step: "register", progress: 95 },
+	{ re: /Installing.*dependencies|bun install/i, step: "install", progress: 60 },
+	{ re: /Registering/i, step: "register", progress: 95 },
 ];
 
 function advanceFromLogLine(ctx: BridgeContext, jobId: string, line: string): void {
