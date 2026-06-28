@@ -1,0 +1,13 @@
+src-tauri/target/
+src-tauri/Cargo.lock
+node_modules/
+
+# Downloaded/extracted bundled deps (fetch-bundled-deps.ts repopulates these)
+.dep-cache/
+src-tauri/binaries/*
+!src-tauri/binaries/README.md
+src-tauri/resources/*
+!src-tauri/resources/README.md
+
+# Tauri-generated platform schemas
+src-tauri/gen/

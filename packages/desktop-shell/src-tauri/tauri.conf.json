@@ -1,0 +1,97 @@
+{
+	"$schema": "https://schema.tauri.app/config/2.0.0",
+	"productName": "Oh-My-Pi Desktop",
+	"version": "0.1.0",
+	"identifier": "sh.omp.desktop",
+	"build": {
+		"beforeDevCommand": "bun run prep",
+		"beforeBuildCommand": "bun run prep",
+		"devUrl": null,
+		"frontendDist": "../../collab-web/dist"
+	},
+	"app": {
+		"windows": [
+			{
+				"label": "main",
+				"title": "Oh-My-Pi",
+				"width": 1200,
+				"height": 800,
+				"minWidth": 900,
+				"minHeight": 600,
+				"resizable": true,
+				"decorations": true,
+				"alwaysOnTop": false,
+				"focus": true,
+				"center": true,
+				"theme": null,
+				"visible": false
+			}
+		],
+		"security": {
+			"csp": "default-src 'self' tauri:; connect-src 'self' http://127.0.0.1:8787 ws://127.0.0.1:8787 http://localhost:8787 ws://localhost:8787; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self' 'wasm-unsafe-eval'; font-src 'self' data:",
+			"capabilities": ["main"]
+		}
+	},
+	"bundle": {
+		"active": true,
+		"targets": ["nsis", "msi", "deb", "appimage", "dmg"],
+		"externalBin": ["binaries/omp-bridge", "binaries/bun"],
+		"resources": ["resources/mingit/**/*", "resources/native/*"],
+		"icon": [
+			"icons/32x32.png",
+			"icons/128x128.png",
+			"icons/128x128@2x.png",
+			"icons/icon.icns",
+			"icons/icon.ico"
+		],
+		"category": "DeveloperTool",
+		"shortDescription": "Oh-My-Pi desktop wrapper",
+		"longDescription": "Native desktop window for the oh-my-pi coding agent — installer, launcher, and chat in one app.",
+		"copyright": "© 2026 Can Bölük",
+		"licenseFile": "../../../LICENSE",
+		"windows": {
+			"certificateThumbprint": null,
+			"digestAlgorithm": "sha256",
+			"timestampUrl": "http://timestamp.digicert.com",
+			"tsp": false,
+			"webviewInstallMode": {
+				"type": "downloadBootstrapper",
+				"silent": true
+			},
+			"nsis": {
+				"installMode": "currentUser",
+				"installerIcon": "icons/icon.ico",
+				"languages": ["English"]
+			}
+		},
+		"macOS": {
+			"signingIdentity": null,
+			"providerShortName": null,
+			"entitlements": null,
+			"minimumSystemVersion": "10.15",
+			"hardenedRuntime": true,
+			"frameworks": []
+		},
+		"linux": {
+			"deb": {
+				"depends": []
+			},
+			"appimage": {
+				"bundleMediaFramework": false
+			}
+		}
+	},
+	"plugins": {
+		"shell": {
+			"open": true
+		},
+		"updater": {
+			"active": true,
+			"endpoints": [
+				"https://omp.sh/desktop/updates/{{target}}/{{arch}}/{{current_version}}"
+			],
+			"dialog": true,
+			"pubkey": "REPLACE_ME — generate with `bun run tauri signer generate -w ~/.omp/updater.key`"
+		}
+	}
+}

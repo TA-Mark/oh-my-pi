@@ -1,0 +1,33 @@
+{
+	"type": "module",
+	"name": "@oh-my-pi/desktop-shell",
+	"version": "0.1.0",
+	"private": true,
+	"description": "Tauri 2.x desktop wrapper for the oh-my-pi WebUI — bundles the React frontend (collab-web) and supervises the desktop-bridge as a child process.",
+	"homepage": "https://omp.sh",
+	"author": "Can Boluk",
+	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/can1357/oh-my-pi.git",
+		"directory": "packages/desktop-shell"
+	},
+	"bugs": {
+		"url": "https://github.com/can1357/oh-my-pi/issues"
+	},
+	"keywords": ["desktop", "tauri", "webui"],
+	"scripts": {
+		"prebuild:web": "bun --cwd=../collab-web run build",
+		"prep-sidecar": "bun run scripts/prep-sidecar.ts",
+		"prep-deps": "bun run scripts/fetch-bundled-deps.ts",
+		"prep": "bun run prebuild:web && bun run prep-sidecar && bun run prep-deps",
+		"dev": "bun run prep && tauri dev",
+		"build": "bun run prep && tauri build",
+		"tauri": "tauri",
+		"icon": "tauri icon"
+	},
+	"devDependencies": {
+		"@tauri-apps/cli": "^2.7.0"
+	},
+	"files": ["src-tauri", "README.md"]
+}
