@@ -106,7 +106,7 @@ export async function handleInstaller(ctx: BridgeContext, req: Request, url: URL
 		if (!job) return errorResponse("JOB_NOT_FOUND", "no such job", 404);
 		const since = url.searchParams.get("since");
 		const lines = since ? job.logs.filter((l) => l.ts > since) : job.logs;
-		return jsonResponse({ jobId: job.id, lines });
+		return jsonResponse({ jobId: job.id, lines, logFile: ctx.jobs.logFile(job.id) ?? null });
 	}
 
 	const cancelMatch = /^\/api\/v1\/installer\/jobs\/([^/]+)\/cancel$/.exec(p);

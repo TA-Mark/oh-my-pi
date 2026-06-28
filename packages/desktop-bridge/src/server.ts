@@ -28,7 +28,9 @@ interface SocketData {
 
 export function start(opts: { port?: number } = {}): { url: string; stop(): Promise<void> } {
 	const config = loadConfig({ port: opts.port });
-	const jobs = new JobManager();
+	// Persist job logs to <installDir>/logs/install-<jobId>.log so the user
+	// has a stable artifact to share when something fails.
+	const jobs = new JobManager({ logDir: `${config.installDir}/logs` });
 	const launcher = new LauncherSupervisor(config);
 	const omp = new OmpSessionManager(config);
 	const ctx: BridgeContext = { config, jobs, launcher, omp };

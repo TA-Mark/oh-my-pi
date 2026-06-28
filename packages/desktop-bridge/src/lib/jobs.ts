@@ -3,8 +3,13 @@
  * - Each job has an id, phase, log ring buffer, and a set of WS subscribers.
  * - Producers call emitLog/setPhase; subscribers receive serialized events.
  * - Jobs are kept in memory; restart of the bridge clears them.
+ * - When `logDir` is configured, every emitLog also appends the line to
+ *   `<logDir>/install-<jobId>.log` so the user has a stable file to share
+ *   when something goes wrong.
  */
 
+import { appendFileSync, existsSync, mkdirSync } from "node:fs";
+import { join } from "node:path";
 import type { CheckStatus, InstallStep, InstallerPhase, LogLevel, LogLine } from "../types";
 
 const MAX_LOG_LINES = 2000;
@@ -28,9 +33,30 @@ export interface Job {
 	cancel?: () => void;
 }
 
+export interface JobManagerOpts {
+	/** If set, every log line is also appended to <logDir>/install-<jobId>.log. */
+	logDir?: string;
+}
+
 export class JobManager {
 	private readonly jobs = new Map<string, Job>();
 	private readonly listeners = new Map<string, Set<Listener>>();
+	private readonly logDir?: string;
+
+	constructor(opts: JobManagerOpts = {}) {
+		this.logDir = opts.logDir;
+		if (this.logDir) {
+			try {
+				mkdirSync(this.logDir, { recursive: true });
+			} catch {
+				/* surface lazily — first append will warn */
+			}
+		}
+	}
+
+	logFile(jobId: string): string | undefined {
+		return this.logDir ? join(this.logDir, `install-${jobId}.log`) : undefined;
+	}
 
 	create(initialSteps: Array<{ id: string; label: string }>): Job {
 		const id = crypto.randomUUID();
@@ -64,6 +90,21 @@ export class JobManager {
 		job.logs.push(line);
 		if (job.logs.length > MAX_LOG_LINES) job.logs.splice(0, job.logs.length - MAX_LOG_LINES);
 		this.broadcast(jobId, { type: "log", jobId, line });
+		this.persist(jobId, line);
+	}
+
+	private persist(jobId: string, line: LogLine): void {
+		const path = this.logFile(jobId);
+		if (!path) return;
+		try {
+			if (this.logDir && !existsSync(this.logDir)) {
+				mkdirSync(this.logDir, { recursive: true });
+			}
+			const formatted = `${line.ts} [${line.level}] ${line.message}\n`;
+			appendFileSync(path, formatted, "utf-8");
+		} catch {
+			/* swallow — we're already on the failure path if disk is full */
+		}
 	}
 
 	setPhase(jobId: string, phase: InstallerPhase, progress: number, currentStep?: string): void {
