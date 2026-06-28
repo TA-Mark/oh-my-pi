@@ -1,13 +1,15 @@
 /**
  * ChatComposer — extends existing shell Composer pattern
  * with Regenerate button + launcher health gating.
- * Wraps GuestClient for send/abort/regenerate.
+ * Talks to any transport that satisfies {@link ChatClient}
+ * (GuestClient over collab, or RpcClient over the desktop bridge).
  */
 import { useCallback, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
-import type { GuestClient, GuestSnapshot } from '../../../lib/client';
+import type { GuestSnapshot } from '../../../lib/client';
+import type { ChatClient } from '../../../lib/chat-client';
 
 interface Props {
-  client: GuestClient;
+  client: ChatClient;
   snapshot: GuestSnapshot;
   launcherHealthy: boolean;
   onGoToLauncher(): void;
@@ -52,16 +54,13 @@ export function ChatComposer({ client, snapshot, launcherHealthy, onGoToLauncher
     }
   };
 
-  // Regenerate: re-send last user prompt (abort current if busy)
+  // Regenerate: abort current turn if busy, otherwise ask the transport to
+  // regenerate. RpcClient maps sendRegenerate→sendAbort intentionally, so
+  // calling both back-to-back would just send two aborts.
   const regenerate = useCallback((): void => {
     if (!live || readOnly || !launcherHealthy) return;
     if (busy) client.sendAbort();
-    // sendRegenerate if available, otherwise sendRetry
-    if (typeof (client as any).sendRegenerate === 'function') {
-      (client as any).sendRegenerate();
-    } else if (typeof (client as any).sendRetry === 'function') {
-      (client as any).sendRetry();
-    }
+    else client.sendRegenerate?.();
   }, [client, live, readOnly, busy, launcherHealthy]);
 
   const placeholder = !launcherHealthy

@@ -18,8 +18,9 @@
  * Never imports oh-my-pi core logic.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useSyncExternalStore, type ReactNode } from 'react';
-import { GuestClient } from '../../../lib/client';
+import { useCallback, useEffect, useMemo, useState, useSyncExternalStore, type ReactNode } from 'react';
+import type { ChatClient } from '../../../lib/chat-client';
+import { RpcClient } from '../../../lib/rpc-client';
 import { Transcript } from '../../../components/transcript/Transcript';
 import { useChatStateMachine } from '../hooks/useChatStateMachine';
 import { useLauncherHealthGate } from '../hooks/useLauncherHealthGate';
@@ -42,7 +43,17 @@ interface Props {
   onGoToLauncher(): void;
 }
 
-const GUEST_NAME = 'desktop-user';
+const BRIDGE_HTTP = 'http://127.0.0.1:8787/api/v1';
+const BRIDGE_WS = 'ws://127.0.0.1:8787/api/v1';
+
+async function startOmpForSession(id: string): Promise<boolean> {
+  try {
+    const res = await fetch(`${BRIDGE_HTTP}/chat/sessions/${id}/start`, { method: 'POST' });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
 
 export function MainChatPage({ onGoToLauncher }: Props): ReactNode {
   const [ui, actions] = useChatStateMachine();
@@ -53,48 +64,62 @@ export function MainChatPage({ onGoToLauncher }: Props): ReactNode {
     undefined,
   );
 
-  // ---- GuestClient (created when session link is set) ----
-  const clientRef = useRef<GuestClient | null>(null);
+  // ---- ChatClient (RpcClient backed by the desktop bridge) ----
+  // Stored in state, not a ref, so useSyncExternalStore re-subscribes when the
+  // client instance changes (e.g. user switches session). A ref would silently
+  // keep the stale subscription and the UI would freeze on "Connecting…".
+  const [client, setClient] = useState<ChatClient | null>(null);
 
-  const getClientSnapshot = useCallback(() => {
-    return clientRef.current?.getSnapshot() ?? null;
-  }, []);
+  const getClientSnapshot = useCallback(
+    () => client?.getSnapshot() ?? null,
+    [client],
+  );
 
-  const subscribeClient = useCallback((cb: () => void) => {
-    return clientRef.current?.subscribe(cb) ?? (() => {});
-  }, []);
+  const subscribeClient = useCallback(
+    (cb: () => void) => client?.subscribe(cb) ?? (() => {}),
+    [client],
+  );
 
   const snapshot = useSyncExternalStore(subscribeClient, getClientSnapshot);
 
-  // ---- Activate session: build GuestClient from link ----
+  // ---- Activate session: ensure omp child is spawned, then connect WS ----
   const activateSession = useCallback((id: string, link: string) => {
-    // Tear down previous client
-    if (clientRef.current) {
-      clientRef.current.close();
-      clientRef.current = null;
-    }
+    setClient(prev => {
+      prev?.close();
+      return null;
+    });
     actions.sessionActivated(id, link);
-    try {
-      const client = new GuestClient(link, GUEST_NAME);
-      clientRef.current = client;
-      client.connect();
-    } catch (err) {
-      actions.setError({
-        code: 'SESSION_LINK_INVALID',
-        message: `Cannot connect to session: ${err instanceof Error ? err.message : String(err)}`,
-        recoverable: false,
-      });
-    }
+    void startOmpForSession(id).then(ok => {
+      if (!ok) {
+        actions.setError({
+          code: 'OMP_SPAWN_FAILED',
+          message: 'Could not start omp child via desktop bridge. Check that the bridge is running on :8787.',
+          recoverable: true,
+        });
+        return;
+      }
+      try {
+        const next = new RpcClient({ sessionId: id, wsBase: BRIDGE_WS });
+        setClient(next);
+        next.connect();
+      } catch (err) {
+        actions.setError({
+          code: 'SESSION_CONNECT_FAILED',
+          message: `Cannot connect to session: ${err instanceof Error ? err.message : String(err)}`,
+          recoverable: false,
+        });
+      }
+    });
   }, [actions]);
 
   // ---- Reconnect (when WS ended) ----
   const handleReconnect = useCallback(() => {
-    if (clientRef.current) {
-      clientRef.current.connect();
+    if (client) {
+      client.connect();
     } else if (ui.activeSessionLink) {
       activateSession(ui.activeSessionId!, ui.activeSessionLink);
     }
-  }, [ui.activeSessionId, ui.activeSessionLink, activateSession]);
+  }, [client, ui.activeSessionId, ui.activeSessionLink, activateSession]);
 
   // ---- Create new session ----
   const handleNewSession = useCallback(async () => {
@@ -140,12 +165,24 @@ export function MainChatPage({ onGoToLauncher }: Props): ReactNode {
     try {
       const res = await updateRuntimeConfig(patch);
       actions.configUpdated(res);
+      // Forward live changes to the active omp child so the next prompt picks them up.
+      if (client) {
+        if (patch.model && client.sendSetModel) {
+          const slash = patch.model.indexOf('/');
+          if (slash > 0) {
+            client.sendSetModel(patch.model.slice(0, slash), patch.model.slice(slash + 1));
+          }
+        }
+        if (patch.thinkingEnabled !== undefined && client.sendSetThinkingLevel) {
+          client.sendSetThinkingLevel(patch.thinkingEnabled ? 'high' : 'off');
+        }
+      }
     } catch {
       // silently ignore
     } finally {
       actions.configLoading(false);
     }
-  }, [actions]);
+  }, [actions, client]);
 
   // ---- Data source refresh ----
   const handleSourceRefresh = useCallback(async (id: string) => {
@@ -179,9 +216,9 @@ export function MainChatPage({ onGoToLauncher }: Props): ReactNode {
   // ---- Cleanup on unmount ----
   useEffect(() => {
     return () => {
-      clientRef.current?.close();
+      client?.close();
     };
-  }, []);
+  }, [client]);
 
   // ---- Active session name for header ----
   const activeSession = useMemo(
@@ -304,7 +341,7 @@ export function MainChatPage({ onGoToLauncher }: Props): ReactNode {
           )}
 
           {/* Transcript + Composer — only when session is selected */}
-          {ui.activeSessionLink && snapshot && clientRef.current && (
+          {ui.activeSessionLink && snapshot && client && (
             <>
               <Transcript
                 entries={snapshot.entries}
@@ -315,7 +352,7 @@ export function MainChatPage({ onGoToLauncher }: Props): ReactNode {
               />
 
               <ChatComposer
-                client={clientRef.current}
+                client={client}
                 snapshot={snapshot}
                 launcherHealthy={healthGate.healthy}
                 onGoToLauncher={onGoToLauncher}
@@ -324,7 +361,7 @@ export function MainChatPage({ onGoToLauncher }: Props): ReactNode {
           )}
 
           {/* Session selected but client not yet built */}
-          {ui.activeSessionLink && !snapshot && (
+          {ui.activeSessionLink && (!snapshot || !client) && (
             <div className="mc-empty">
               <span className="mc-empty-title">Connecting…</span>
             </div>
