@@ -1,0 +1,9 @@
+{
+	"extends": "../tsconfig.workspace.json",
+	"include": ["src", "scripts"],
+	"compilerOptions": {
+		"lib": ["ES2024"],
+		"noEmit": true,
+		"types": ["bun"]
+	}
+}

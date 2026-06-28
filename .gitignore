@@ -11,6 +11,7 @@ target/
 *.tsbuildinfo
 *.node
 *.b64.js
+*.bun-build
 
 # Environment
 .env
