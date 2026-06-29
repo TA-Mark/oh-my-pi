@@ -88,6 +88,7 @@ export function UserControlsPanel({ client, snapshot }: Props): ReactNode {
 		[client],
 	);
 
+
 	const extras = snapshot?.sessionExtras ?? {};
 	const handleSteeringMode = useCallback(
 		(mode: "all" | "one-at-a-time") => client?.sendSetSteeringMode?.(mode),

@@ -134,6 +134,21 @@ export type InterruptMode = "immediate" | "wait";
 
 const MAX_NOTICES = 50;
 
+const STATE_REFRESH_COMMANDS = new Set([
+	"set_model",
+	"set_thinking_level",
+	"cycle_model",
+	"cycle_thinking_level",
+	"set_steering_mode",
+	"set_follow_up_mode",
+	"set_interrupt_mode",
+	"set_auto_compaction",
+	"set_auto_retry",
+	"compact",
+	"set_session_name",
+	"handoff",
+]);
+
 // ─── Bridge envelope shape (matches packages/desktop-bridge/src/lib/omp-manager.ts) ──
 
 interface BridgeEnvelope {
@@ -203,6 +218,7 @@ export class RpcClient {
 	>();
 	#pendingDialog: PendingDialog | null = null;
 	#dialogTimer: ReturnType<typeof setTimeout> | null = null;
+	#syntheticDialogHandler: ((payload: DialogResponse) => void) | null = null;
 	#statusEntries = new Map<string, string>();
 	#widgets = new Map<string, WidgetState>();
 	#titleOverride: string | null = null;
@@ -277,6 +293,49 @@ export class RpcClient {
 
 	sendSetThinkingLevel(level: string): void {
 		this.#send({ id: this.#nextReqId(), type: "set_thinking_level", level });
+	}
+
+	async sendBash(command: string): Promise<{ output?: string; exitCode?: number }> {
+		const data = (await this.#request("bash", { type: "bash", command }, 60000)) as {
+			output?: string;
+			exitCode?: number;
+		};
+		return data;
+	}
+
+	sendBashStreaming(
+		command: string,
+		hidden: boolean,
+		onChunk: (chunk: string) => void,
+	): Promise<{ exitCode: number | null; cancelled: boolean }> {
+		return new Promise((resolve, reject) => {
+			const wsUrl = `${this.#wsBase}/chat/sessions/${this.#sessionId}/shell`;
+			let ws: WebSocket;
+			try {
+				ws = new WebSocket(wsUrl);
+			} catch (err) {
+				reject(err);
+				return;
+			}
+			ws.addEventListener("open", () => {
+				ws.send(JSON.stringify({ command, hidden }));
+			});
+			ws.addEventListener("message", (evt) => {
+				try {
+					const frame = JSON.parse(typeof evt.data === "string" ? evt.data : "") as Record<string, unknown>;
+					if (frame.type === "chunk" && typeof frame.data === "string") {
+						onChunk(frame.data);
+					} else if (frame.type === "exit") {
+						resolve({
+							exitCode: typeof frame.exitCode === "number" ? frame.exitCode : null,
+							cancelled: frame.cancelled === true,
+						});
+					}
+				} catch { /* ignore malformed */ }
+			});
+			ws.addEventListener("error", () => reject(new Error("Shell WS error")));
+			ws.addEventListener("close", () => resolve({ exitCode: null, cancelled: false }));
+		});
 	}
 
 	/** Fetch the list of OAuth/login providers from omp. */
@@ -366,6 +425,12 @@ export class RpcClient {
 		return { path: data.path ?? "" };
 	}
 
+	sendHandoff(customInstructions?: string): void {
+		const body: Record<string, unknown> = { type: "handoff" };
+		if (customInstructions) body.customInstructions = customInstructions;
+		this.#send({ id: this.#nextReqId(), ...body });
+	}
+
 	sendSetSteeringMode(mode: SteeringMode): void {
 		this.#send({ id: this.#nextReqId(), type: "set_steering_mode", mode });
 	}
@@ -395,8 +460,23 @@ export class RpcClient {
 	respondToDialog(payload: DialogResponse): void {
 		const dialog = this.#pendingDialog;
 		if (!dialog) return;
+		if (this.#syntheticDialogHandler) {
+			const handler = this.#syntheticDialogHandler;
+			this.#syntheticDialogHandler = null;
+			this.#clearDialog();
+			this.#publish();
+			handler(payload);
+			return;
+		}
 		this.#send({ type: "extension_ui_response", id: dialog.id, ...payload });
 		this.#clearDialog();
+		this.#publish();
+	}
+
+	showSyntheticDialog(dialog: PendingDialog, onRespond: (payload: DialogResponse) => void): void {
+		this.#clearDialog();
+		this.#syntheticDialogHandler = onRespond;
+		this.#pendingDialog = dialog;
 		this.#publish();
 	}
 
@@ -678,6 +758,18 @@ export class RpcClient {
 				this.#publish();
 				return;
 			}
+			case "config_update": {
+				const update = frame as unknown as { model?: SessionState["model"]; thinkingLevel?: string };
+				if (this.#state) {
+					this.#state = {
+						...this.#state,
+						...(update.model !== undefined ? { model: update.model } : {}),
+						...(update.thinkingLevel !== undefined ? { thinkingLevel: update.thinkingLevel } : {}),
+					};
+					this.#publish();
+				}
+				return;
+			}
 			case "extension_ui_request": {
 				this.#handleExtensionUiRequest(frame);
 				return;
@@ -708,6 +800,9 @@ export class RpcClient {
 					}
 				}
 				// Side-effects on specific responses (state hydration, transcript seed).
+				if (frame.success && STATE_REFRESH_COMMANDS.has(frame.command)) {
+					this.#send({ id: this.#nextReqId(), type: "get_state" });
+				}
 				if (frame.command === "get_state" && frame.success && frame.data) {
 					this.#state = this.#buildState(frame.data);
 					const r = frame.data as {

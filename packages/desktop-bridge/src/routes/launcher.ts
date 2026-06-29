@@ -28,7 +28,7 @@ import type {
 } from "../types";
 
 const VERSION = "0.1.0";
-const POLL_HEALTH_MS = 4000;
+const POLL_HEALTH_MS = 15000;
 
 type Listener = (event: LauncherStreamEvent) => void;
 
@@ -47,6 +47,7 @@ export class LauncherSupervisor {
 	private ompPath: string | null = null;
 	private ompVersion: string | null = null;
 	private healthTimer: ReturnType<typeof setInterval> | null = null;
+	private lastFoundAt = 0;
 	private readonly listeners = new Set<Listener>();
 
 	constructor(_config: BridgeConfig) {
@@ -105,12 +106,18 @@ export class LauncherSupervisor {
 	}
 
 	private async probeHealth(): Promise<void> {
+		const now = Date.now();
+		const cacheValidMs = 120_000;
+		if (this.healthy && this.ompPath && now - this.lastFoundAt < cacheValidMs) {
+			return;
+		}
 		const detect = await findOmp();
 		const wasHealthy = this.healthy;
 		this.healthy = detect.found;
 		this.ompPath = detect.path;
 		this.ompVersion = detect.version;
 		if (detect.found) {
+			this.lastFoundAt = now;
 			if (this.status !== "running") this.transition("running", "running_healthy");
 		} else {
 			if (this.status === "running") this.transition("degraded", "error");

@@ -34,7 +34,6 @@ const TABS: { id: SidebarTab; label: string }[] = [
 	{ id: "providers", label: "Providers" },
 	{ id: "todos", label: "Todos" },
 	{ id: "sessions", label: "Sessions" },
-	{ id: "sources", label: "Sources" },
 ];
 
 export function LeftSidebar(props: Props): ReactNode {
@@ -88,7 +87,7 @@ export function LeftSidebar(props: Props): ReactNode {
 						onNew={onSessionNew}
 					/>
 				)}
-				{tab === "sources" && <DataSourcesPanel sources={dataSources} onRefresh={onSourceRefresh} />}
+				{/* Sources tab removed — no OMP RPC backend; use /mcp in chat instead */}
 			</div>
 		</aside>
 	);

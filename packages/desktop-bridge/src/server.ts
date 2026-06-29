@@ -13,6 +13,7 @@
 import { dirname } from "node:path";
 import { ApiKeyStore } from "./lib/api-keys";
 import { loadConfig } from "./lib/config";
+import { execShell } from "./lib/shell-exec";
 import type { BridgeContext } from "./lib/context";
 import { corsPreflight, errorResponse } from "./lib/http";
 import { JobManager } from "./lib/jobs";
@@ -44,6 +45,7 @@ interface SocketData {
 	topic: string;
 	jobId?: string;
 	chatSessionId?: string;
+	shellSessionId?: string;
 }
 
 export function start(opts: { port?: number } = {}): { url: string; stop(): Promise<void> } {
@@ -80,6 +82,15 @@ export function start(opts: { port?: number } = {}): { url: string; stop(): Prom
 			}
 			if (p === "/api/v1/launcher/stream") {
 				const data: SocketData = { topic: "launcher" };
+				if (srv.upgrade(req, { data })) return undefined;
+				return errorResponse("UPGRADE_REQUIRED", "WebSocket upgrade required", 426);
+			}
+			const wsShell = /^\/api\/v1\/chat\/sessions\/([^/]+)\/shell$/.exec(p);
+			if (wsShell) {
+				const data: SocketData = {
+					topic: `shell:${wsShell[1]}`,
+					shellSessionId: wsShell[1]!,
+				};
 				if (srv.upgrade(req, { data })) return undefined;
 				return errorResponse("UPGRADE_REQUIRED", "WebSocket upgrade required", 426);
 			}
@@ -143,16 +154,42 @@ export function start(opts: { port?: number } = {}): { url: string; stop(): Prom
 				subscribers.delete(ws);
 			},
 			message(ws, raw): void {
-				// Chat WS is bidirectional: client RPC commands forward to omp stdin.
-				if (!ws.data.chatSessionId) return;
 				const text = typeof raw === "string" ? raw : new TextDecoder().decode(raw);
-				let frame: unknown;
+				let frame: Record<string, unknown>;
 				try {
-					frame = JSON.parse(text);
+					frame = JSON.parse(text) as Record<string, unknown>;
 				} catch {
 					ws.send(JSON.stringify({ type: "error", message: "malformed JSON" }));
 					return;
 				}
+
+				if (ws.data.shellSessionId) {
+					const command = typeof frame.command === "string" ? frame.command : "";
+					const hidden = frame.hidden === true;
+					if (!command) {
+						ws.send(JSON.stringify({ type: "error", message: "command is required" }));
+						return;
+					}
+					void execShell(command, {
+						cwd: config.installDir,
+						timeout: 120_000,
+						onChunk: (chunk: string) => {
+							try { ws.send(JSON.stringify({ type: "chunk", data: chunk })); } catch { /* closed */ }
+						},
+					}).then(result => {
+						if (!hidden && result.output && ws.data.shellSessionId) {
+							const contextMsg = `User ran: \`${command}\`\nOutput:\n\`\`\`\n${result.output.slice(0, 8000)}\n\`\`\`\nExit code: ${result.exitCode ?? "unknown"}`;
+							omp.send(ws.data.shellSessionId, { id: `bridge-shell-${Date.now()}`, type: "prompt", message: contextMsg });
+						}
+						try {
+							ws.send(JSON.stringify({ type: "exit", exitCode: result.exitCode, cancelled: result.cancelled }));
+							ws.close(1000, "done");
+						} catch { /* closed */ }
+					});
+					return;
+				}
+
+				if (!ws.data.chatSessionId) return;
 				omp.send(ws.data.chatSessionId, frame);
 			},
 		},

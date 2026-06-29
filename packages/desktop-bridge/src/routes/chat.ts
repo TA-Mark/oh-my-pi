@@ -12,7 +12,11 @@
 import { randomBytes } from "node:crypto";
 import type { BridgeContext } from "../lib/context";
 import { errorResponse, jsonResponse } from "../lib/http";
+import { buildGoalContinuation, buildPlanPromptPrefix, clearSessionStates, getGoalState, getPlanState, readModelRoles, setGoalState, setPlanState } from "../lib/plan-mode";
+import { PromptHistory } from "../lib/prompt-history";
 import { PROVIDER_CATALOG, type ProviderType } from "../lib/provider-catalog";
+import { getKernel } from "../lib/python-kernel";
+import { execShell } from "../lib/shell-exec";
 import { makeStore } from "../lib/store";
 import type { ChatSession, DataSource, RuntimeConfig, RuntimeConfigResponse } from "../types";
 
@@ -51,11 +55,18 @@ function newLink(relayPort: number): string {
 	return `ws://127.0.0.1:${relayPort}/r/${roomId}.${key}`;
 }
 
+let historyInstance: PromptHistory | null = null;
+function getHistory(stateDir: string): PromptHistory {
+	if (!historyInstance) historyInstance = new PromptHistory(stateDir);
+	return historyInstance;
+}
+
 export async function handleChat(ctx: BridgeContext, req: Request, url: URL): Promise<Response> {
 	const p = url.pathname;
 	const sessions = makeStore<SessionsFile>(ctx.config.stateDir, "sessions", { sessions: [] });
 	const sources = makeStore<SourcesFile>(ctx.config.stateDir, "data-sources", { sources: [] });
 	const config = makeStore<RuntimeConfig>(ctx.config.stateDir, "runtime-config", DEFAULT_CONFIG);
+	const history = getHistory(ctx.config.stateDir);
 
 	// ─── Sessions ────────────────────────────────────────────────────────────
 	if (p === "/api/v1/chat/sessions" && req.method === "GET") {
@@ -123,7 +134,11 @@ export async function handleChat(ctx: BridgeContext, req: Request, url: URL): Pr
 			return errorResponse("BAD_REQUEST", "name and value are required", 400);
 		}
 		ctx.apiKeys.set(name, value);
-		return jsonResponse({ ok: true, name });
+		const runningSessions = ctx.omp.list().filter(s => s.running);
+		for (const s of runningSessions) {
+			await ctx.omp.stop(s.id);
+		}
+		return jsonResponse({ ok: true, name, sessionsRestarted: runningSessions.length });
 	}
 	const keyDeleteMatch = /^\/api\/v1\/chat\/keys\/([^/]+)$/.exec(p);
 	if (keyDeleteMatch && req.method === "DELETE") {
@@ -231,6 +246,188 @@ export async function handleChat(ctx: BridgeContext, req: Request, url: URL): Pr
 		});
 		const response: RuntimeConfigResponse = { ...next, availableModels: AVAILABLE_MODELS };
 		return jsonResponse(response);
+	}
+
+	// ─── Shell execution (bridge-owned, not OMP RPC) ────────────────────────
+	const bashMatch = /^\/api\/v1\/chat\/sessions\/([^/]+)\/bash$/.exec(p);
+	if (bashMatch && req.method === "POST") {
+		const body = (await req.json().catch(() => ({}))) as { command?: string; hidden?: boolean };
+		const command = body.command?.trim();
+		if (!command) return errorResponse("BAD_REQUEST", "command is required", 400);
+
+		const sessionId = bashMatch[1]!;
+		const result = await execShell(command, {
+			cwd: ctx.config.installDir,
+			timeout: 60_000,
+		});
+
+		if (!body.hidden && result.output) {
+			const contextMsg = `User ran shell command: \`${command}\`\nOutput:\n\`\`\`\n${result.output.slice(0, 8000)}\n\`\`\`\nExit code: ${result.exitCode ?? "unknown"}`;
+			ctx.omp.send(sessionId, { id: `bridge-bash-${Date.now()}`, type: "prompt", message: contextMsg });
+		}
+
+		return jsonResponse({
+			output: result.output,
+			exitCode: result.exitCode,
+			cancelled: result.cancelled,
+		});
+	}
+
+	// ─── Python execution (persistent kernel) ───────────────────────────────
+	const pythonMatch = /^\/api\/v1\/chat\/sessions\/([^/]+)\/python$/.exec(p);
+	if (pythonMatch && req.method === "POST") {
+		const body = (await req.json().catch(() => ({}))) as { code?: string; hidden?: boolean };
+		const code = body.code?.trim();
+		if (!code) return errorResponse("BAD_REQUEST", "code is required", 400);
+
+		const sessionId = pythonMatch[1]!;
+		const kernel = getKernel(sessionId);
+		try {
+			const result = await kernel.execute(code);
+
+			if (!body.hidden && result.output) {
+				const contextMsg = `User ran Python:\n\`\`\`python\n${code}\n\`\`\`\nOutput:\n\`\`\`\n${result.output.slice(0, 8000)}\n\`\`\``;
+				ctx.omp.send(sessionId, { id: `bridge-py-${Date.now()}`, type: "prompt", message: contextMsg });
+			}
+
+			return jsonResponse({ output: result.output, error: result.error, exitCode: result.exitCode });
+		} catch (err) {
+			return errorResponse("PYTHON_ERROR", err instanceof Error ? err.message : String(err), 500);
+		}
+	}
+
+	// ─── File search (for @file autocomplete) ───────────────────────────────
+	if (p === "/api/v1/chat/files/search" && req.method === "GET") {
+		const query = url.searchParams.get("q") ?? "";
+		const cwd = url.searchParams.get("cwd") ?? ctx.config.installDir;
+		const limit = Math.min(Number(url.searchParams.get("limit")) || 20, 50);
+
+		try {
+			const glob = new Bun.Glob("**/*");
+			const matches: string[] = [];
+			const q = query.toLowerCase();
+			for await (const path of glob.scan({ cwd, onlyFiles: true })) {
+				if (path.includes("node_modules") || path.includes(".git/")) continue;
+				if (!q || path.toLowerCase().includes(q)) {
+					matches.push(path);
+					if (matches.length >= limit) break;
+				}
+			}
+			return jsonResponse({ files: matches });
+		} catch {
+			return jsonResponse({ files: [] });
+		}
+	}
+
+	// ─── OMP config (model roles, settings) ─────────────────────────────────
+	if (p === "/api/v1/chat/config/roles" && req.method === "GET") {
+		const roles = readModelRoles();
+		return jsonResponse({ roles });
+	}
+
+	// ─── Plan mode ──────────────────────────────────────────────────────────
+	const planMatch = /^\/api\/v1\/chat\/sessions\/([^/]+)\/plan$/.exec(p);
+	if (planMatch && req.method === "POST") {
+		const sessionId = planMatch[1]!;
+		const body = (await req.json().catch(() => ({}))) as { action: string; objective?: string };
+
+		if (body.action === "start" && body.objective) {
+			const state = getPlanState(sessionId);
+			const planPrefix = buildPlanPromptPrefix(body.objective);
+			setPlanState(sessionId, {
+				active: true,
+				originalModel: state.originalModel,
+				planModel: state.planModel,
+				objective: body.objective,
+			});
+			ctx.omp.send(sessionId, {
+				id: `bridge-plan-${Date.now()}`,
+				type: "prompt",
+				message: planPrefix,
+			});
+			return jsonResponse({ ok: true, state: getPlanState(sessionId) });
+		}
+
+		if (body.action === "exit") {
+			const state = getPlanState(sessionId);
+			if (state.originalModel) {
+				ctx.omp.send(sessionId, {
+					id: `bridge-plan-restore-${Date.now()}`,
+					type: "set_model",
+					provider: state.originalModel.provider,
+					modelId: state.originalModel.id,
+				});
+			}
+			setPlanState(sessionId, { active: false, originalModel: null, planModel: null, objective: null });
+			return jsonResponse({ ok: true });
+		}
+
+		if (body.action === "status") {
+			return jsonResponse(getPlanState(sessionId));
+		}
+
+		return errorResponse("BAD_REQUEST", "action must be start|exit|status", 400);
+	}
+
+	// ─── Goal mode ──────────────────────────────────────────────────────────
+	const goalMatch = /^\/api\/v1\/chat\/sessions\/([^/]+)\/goal$/.exec(p);
+	if (goalMatch && req.method === "POST") {
+		const sessionId = goalMatch[1]!;
+		const body = (await req.json().catch(() => ({}))) as { action: string; objective?: string; budget?: number };
+
+		if (body.action === "set" && body.objective) {
+			setGoalState(sessionId, {
+				active: true,
+				objective: body.objective,
+				turnCount: 0,
+				paused: false,
+			});
+			ctx.omp.send(sessionId, {
+				id: `bridge-goal-${Date.now()}`,
+				type: "prompt",
+				message: `<goal_context>\n<objective>${body.objective}</objective>\n</goal_context>\n\nYou have been given a persistent goal. Work toward completing it step by step. After each step, evaluate progress and continue until all deliverables are met.`,
+			});
+			return jsonResponse({ ok: true, state: getGoalState(sessionId) });
+		}
+
+		if (body.action === "show") {
+			return jsonResponse({ state: getGoalState(sessionId) });
+		}
+
+		if (body.action === "pause") {
+			const state = getGoalState(sessionId);
+			if (state) { state.paused = true; setGoalState(sessionId, state); }
+			return jsonResponse({ ok: true, state: getGoalState(sessionId) });
+		}
+
+		if (body.action === "resume") {
+			const state = getGoalState(sessionId);
+			if (state) {
+				state.paused = false;
+				setGoalState(sessionId, state);
+				const continuation = buildGoalContinuation(state);
+				ctx.omp.send(sessionId, { id: `bridge-goal-cont-${Date.now()}`, type: "prompt", message: continuation });
+			}
+			return jsonResponse({ ok: true, state: getGoalState(sessionId) });
+		}
+
+		if (body.action === "drop") {
+			setGoalState(sessionId, null);
+			return jsonResponse({ ok: true });
+		}
+
+		return errorResponse("BAD_REQUEST", "action must be set|show|pause|resume|drop", 400);
+	}
+
+	// ─── Prompt history ─────────────────────────────────────────────────────
+	if (p === "/api/v1/chat/history" && req.method === "GET") {
+		const query = url.searchParams.get("q") ?? "";
+		return jsonResponse({ entries: query ? history.search(query) : history.list() });
+	}
+	if (p === "/api/v1/chat/history" && req.method === "POST") {
+		const body = (await req.json().catch(() => ({}))) as { text?: string };
+		if (body.text) history.push(body.text);
+		return jsonResponse({ ok: true });
 	}
 
 	return errorResponse("NOT_FOUND", `No chat route for ${req.method} ${p}`, 404);

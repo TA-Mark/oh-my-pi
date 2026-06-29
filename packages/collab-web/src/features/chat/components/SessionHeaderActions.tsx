@@ -213,29 +213,48 @@ export function SessionHeaderActions({ client, currentName, onRenamed }: Props):
 
 			{branchOpen && (
 				<div className="mc-dialog-overlay" onMouseDown={() => setBranchOpen(false)}>
-					<div className="mc-dialog" onMouseDown={e => e.stopPropagation()}>
-						<div className="mc-dialog-title">Branch points</div>
+					<div className="mc-dialog" onMouseDown={e => e.stopPropagation()} style={{ maxWidth: 600, maxHeight: "70vh" }}>
+						<div className="mc-dialog-title">Session Tree — Branch Points</div>
 						{branches === null && <div className="mc-providers-hint">Loading…</div>}
 						{branches?.length === 0 && (
 							<div className="mc-providers-hint">
-								No branches yet — every user message becomes a branch point.
+								No branch points yet. Each user message becomes a branch point as the conversation grows.
 							</div>
 						)}
 						{branches && branches.length > 0 && (
-							<div className="mc-dialog-options" role="listbox" tabIndex={-1}>
-								{branches.map(b => (
-									<button
-										key={b.entryId}
-										type="button"
-										className="mc-dialog-option"
-										onClick={() => handlePickBranch(b.entryId)}
-										title={b.entryId}
-									>
-										<span className="mc-dialog-option-label">{b.text || "(empty)"}</span>
-									</button>
-								))}
+							<div className="mc-dialog-options" role="listbox" tabIndex={-1} style={{ maxHeight: "50vh", overflow: "auto" }}>
+								{branches.map((b, i) => {
+									const preview = b.text.length > 100 ? `${b.text.slice(0, 97)}…` : b.text;
+									const isLast = i === branches.length - 1;
+									return (
+										<button
+											key={b.entryId}
+											type="button"
+											className="mc-dialog-option"
+											onClick={() => handlePickBranch(b.entryId)}
+											title={`Branch from: ${b.entryId}`}
+											style={{ textAlign: "left", display: "flex", gap: 8, alignItems: "flex-start" }}
+										>
+											<span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--fg-faint)", whiteSpace: "nowrap", minWidth: 20 }}>
+												{isLast ? "●" : "├"}
+											</span>
+											<span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--fg-faint)", whiteSpace: "nowrap" }}>
+												{b.entryId.slice(0, 8)}
+											</span>
+											<span className="mc-dialog-option-label" style={{ flex: 1 }}>
+												{preview || "(empty)"}
+											</span>
+											{isLast && (
+												<span style={{ fontSize: 9, color: "var(--accent)", whiteSpace: "nowrap" }}>← current</span>
+											)}
+										</button>
+									);
+								})}
 							</div>
 						)}
+						<div className="mc-dialog-hint" style={{ fontSize: 10, color: "var(--fg-faint)", padding: "4px 0" }}>
+							Click a message to branch from that point. The original timeline is preserved.
+						</div>
 						<div className="mc-dialog-actions">
 							<button type="button" className="mc-btn" onClick={() => setBranchOpen(false)}>
 								Close

@@ -9,7 +9,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { getLauncherHealth } from "../api/chatApi";
 import type { LauncherHealthStatus } from "../types/chat";
 
-const POLL_MS = 15_000;
+const POLL_MS = 20_000;
+const UNHEALTHY_THRESHOLD = 8;
 
 export interface HealthGate {
 	healthy: boolean;
@@ -26,6 +27,7 @@ export function useLauncherHealthGate(onUnhealthy?: () => void): HealthGate {
 	const [lastChecked, setLastChecked] = useState<string | null>(null);
 	const onUnhealthyRef = useRef(onUnhealthy);
 	onUnhealthyRef.current = onUnhealthy;
+	const failCountRef = useRef(0);
 
 	const check = useCallback(async () => {
 		setChecking(true);
@@ -33,11 +35,16 @@ export function useLauncherHealthGate(onUnhealthy?: () => void): HealthGate {
 			const s = await getLauncherHealth();
 			setStatus(s);
 			setLastChecked(new Date().toISOString());
-			if (!s.healthy && onUnhealthyRef.current) {
-				onUnhealthyRef.current();
+			if (s.healthy) {
+				failCountRef.current = 0;
+			} else {
+				failCountRef.current++;
+				if (failCountRef.current >= UNHEALTHY_THRESHOLD && onUnhealthyRef.current) {
+					onUnhealthyRef.current();
+				}
 			}
 		} catch {
-			// bridge not reachable — treat as unhealthy
+			failCountRef.current++;
 			const s: LauncherHealthStatus = {
 				healthy: false,
 				phase: "error",
@@ -45,7 +52,9 @@ export function useLauncherHealthGate(onUnhealthy?: () => void): HealthGate {
 				checkedAt: new Date().toISOString(),
 			};
 			setStatus(s);
-			if (onUnhealthyRef.current) onUnhealthyRef.current();
+			if (failCountRef.current >= UNHEALTHY_THRESHOLD && onUnhealthyRef.current) {
+				onUnhealthyRef.current();
+			}
 		} finally {
 			setChecking(false);
 		}

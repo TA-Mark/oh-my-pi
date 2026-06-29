@@ -43,7 +43,7 @@ async function post<T>(path: string, body: unknown = {}): Promise<T> {
 // ---------------------------------------------------------------------------
 
 export async function getLauncherHealth(): Promise<LauncherHealthStatus> {
-	return get<LauncherHealthStatus>("/launcher/status");
+	return get<LauncherHealthStatus>("/launcher/status", 10000);
 }
 
 // ---------------------------------------------------------------------------
@@ -137,4 +137,89 @@ export interface ProviderCatalogResponse {
 
 export async function getProviderCatalog(): Promise<ProviderCatalogResponse> {
 	return get<ProviderCatalogResponse>("/chat/providers/catalog");
+}
+
+// ---------------------------------------------------------------------------
+// File search (for @file autocomplete)
+// ---------------------------------------------------------------------------
+
+export async function searchFiles(query: string, cwd?: string): Promise<{ files: string[] }> {
+	const params = new URLSearchParams({ q: query });
+	if (cwd) params.set("cwd", cwd);
+	return get<{ files: string[] }>(`/chat/files/search?${params}`);
+}
+
+// ---------------------------------------------------------------------------
+// Shell execution (bridge-owned)
+// ---------------------------------------------------------------------------
+
+export async function execBridgeBash(
+	sessionId: string,
+	command: string,
+	hidden?: boolean,
+): Promise<{ output: string; exitCode: number | null; cancelled: boolean }> {
+	return post<{ output: string; exitCode: number | null; cancelled: boolean }>(
+		`/chat/sessions/${sessionId}/bash`,
+		{ command, hidden },
+	);
+}
+
+// ---------------------------------------------------------------------------
+// Python execution (persistent kernel)
+// ---------------------------------------------------------------------------
+
+export async function execBridgePython(
+	sessionId: string,
+	code: string,
+	hidden?: boolean,
+): Promise<{ output: string; error: string; exitCode: number | null }> {
+	return post<{ output: string; error: string; exitCode: number | null }>(
+		`/chat/sessions/${sessionId}/python`,
+		{ code, hidden },
+	);
+}
+
+// ---------------------------------------------------------------------------
+// Plan mode (bridge-managed)
+// ---------------------------------------------------------------------------
+
+export async function planModeAction(
+	sessionId: string,
+	action: string,
+	objective?: string,
+): Promise<{ ok?: boolean; state?: unknown }> {
+	return post<{ ok?: boolean; state?: unknown }>(`/chat/sessions/${sessionId}/plan`, { action, objective });
+}
+
+// ---------------------------------------------------------------------------
+// Goal mode (bridge-managed)
+// ---------------------------------------------------------------------------
+
+export async function goalModeAction(
+	sessionId: string,
+	action: string,
+	objective?: string,
+): Promise<{ ok?: boolean; state?: unknown }> {
+	return post<{ ok?: boolean; state?: unknown }>(`/chat/sessions/${sessionId}/goal`, { action, objective });
+}
+
+// ---------------------------------------------------------------------------
+// OMP config
+// ---------------------------------------------------------------------------
+
+export async function getModelRoles(): Promise<{ roles: Record<string, string> }> {
+	return get<{ roles: Record<string, string> }>("/chat/config/roles");
+}
+
+// ---------------------------------------------------------------------------
+// Prompt history
+// ---------------------------------------------------------------------------
+
+export async function getPromptHistory(query?: string): Promise<{ entries: string[] }> {
+	const params = query ? `?q=${encodeURIComponent(query)}` : "";
+	return get<{ entries: string[] }>(`/chat/history${params}`);
+}
+
+export async function savePromptHistory(text: string): Promise<void> {
+	await post("/chat/history", { text });
 }

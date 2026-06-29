@@ -54,6 +54,7 @@ export function ProviderSettings({ client }: Props): ReactNode {
 	const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
 
 	// Inline key-paste state per provider
+	const [search, setSearch] = useState("");
 	const [pasteFor, setPasteFor] = useState<string | null>(null);
 	const [pasteValue, setPasteValue] = useState("");
 	const [pasteEnvVar, setPasteEnvVar] = useState("");
@@ -98,14 +99,21 @@ export function ProviderSettings({ client }: Props): ReactNode {
 		});
 	}, [catalog, oauth]);
 
+	const filtered = useMemo(() => {
+		if (!search.trim()) return merged;
+		const q = search.trim().toLowerCase();
+		return merged.filter(
+			p => p.name.toLowerCase().includes(q) || p.id.toLowerCase().includes(q) || (p.description ?? "").toLowerCase().includes(q),
+		);
+	}, [merged, search]);
+
 	const grouped = useMemo(() => {
 		const map = new Map<ProviderCatalogType, MergedProvider[]>();
 		for (const t of TYPE_ORDER) map.set(t, []);
-		for (const p of merged) {
+		for (const p of filtered) {
 			const arr = map.get(p.type);
 			if (arr) arr.push(p);
 		}
-		// Within each group: common first, then alphabetical
 		for (const arr of map.values()) {
 			arr.sort((a, b) => {
 				if ((a.common ?? false) !== (b.common ?? false)) return a.common ? -1 : 1;
@@ -113,7 +121,7 @@ export function ProviderSettings({ client }: Props): ReactNode {
 			});
 		}
 		return map;
-	}, [merged]);
+	}, [filtered]);
 
 	const handleLogin = useCallback(
 		(providerId: string) => {
@@ -134,14 +142,22 @@ export function ProviderSettings({ client }: Props): ReactNode {
 		setPasteValue("");
 	}, []);
 
+	const [saveSuccess, setSaveSuccess] = useState<string | null>(null);
+
 	const handleSavePaste = useCallback(
 		async (e: React.FormEvent) => {
 			e.preventDefault();
 			if (!pasteEnvVar || !pasteValue) return;
 			try {
-				await saveApiKey(pasteEnvVar, pasteValue);
+				const res = (await saveApiKey(pasteEnvVar, pasteValue)) as { ok: boolean; name: string; sessionsRestarted?: number };
 				setPasteFor(null);
 				setPasteValue("");
+				if (res.sessionsRestarted && res.sessionsRestarted > 0) {
+					setSaveSuccess("Key saved — session restarting to apply changes. Click Reconnect.");
+				} else {
+					setSaveSuccess("Key saved — start a new session to use this provider.");
+				}
+				setTimeout(() => setSaveSuccess(null), 8000);
 				await refresh();
 			} catch (err) {
 				setError(err instanceof Error ? err.message : String(err));
@@ -172,19 +188,36 @@ export function ProviderSettings({ client }: Props): ReactNode {
 	}, []);
 
 	const totalConfigured = merged.filter(p => p.configured || p.authenticated).length;
+	const totalShowing = filtered.length;
 
 	return (
 		<div className="mc-providers">
 			<div className="mc-section-title">
 				Providers{" "}
 				<span className="mc-providers-count">
-					{totalConfigured} / {merged.length} configured
+					{totalConfigured} configured · {totalShowing}/{merged.length} shown
 				</span>
 			</div>
+
+			<input
+				className="mc-dialog-input"
+				type="text"
+				value={search}
+				onChange={e => setSearch(e.target.value)}
+				placeholder="Search providers…"
+				spellCheck={false}
+				style={{ marginBottom: 8 }}
+			/>
 
 			{error && (
 				<div className="mc-providers-error" role="alert">
 					{error}
+				</div>
+			)}
+
+			{saveSuccess && (
+				<div className="mc-providers-hint" style={{ color: "var(--ok)", fontWeight: 500 }}>
+					{saveSuccess}
 				</div>
 			)}
 

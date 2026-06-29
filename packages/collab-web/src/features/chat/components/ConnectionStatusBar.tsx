@@ -1,10 +1,12 @@
 import type { ReactNode } from "react";
-import type { ConnectionPhase } from "../../../lib/client";
+import type { ConnectionPhase, StatusEntry } from "../../../lib/client";
 import type { LauncherHealthStatus } from "../types/chat";
 
 interface Props {
 	phase: ConnectionPhase;
 	health: LauncherHealthStatus | null;
+	statusEntries?: readonly StatusEntry[];
+	isCompacting?: boolean;
 	onReconnect(): void;
 	onGoToLauncher(): void;
 }
@@ -17,8 +19,16 @@ const PHASE_LABELS: Record<ConnectionPhase, string> = {
 	ended: "Session ended",
 };
 
-export function ConnectionStatusBar({ phase, health, onReconnect, onGoToLauncher }: Props): ReactNode {
+export function ConnectionStatusBar({ phase, health, statusEntries, isCompacting, onReconnect, onGoToLauncher }: Props): ReactNode {
 	const isUnhealthy = health !== null && !health.healthy;
+
+	const modeBanners: string[] = [];
+	if (isCompacting) modeBanners.push("COMPACTING");
+	if (statusEntries) {
+		for (const entry of statusEntries) {
+			if (entry.text) modeBanners.push(entry.text);
+		}
+	}
 
 	return (
 		<>
@@ -29,6 +39,13 @@ export function ConnectionStatusBar({ phase, health, onReconnect, onGoToLauncher
 					<button className="mc-launcher-warn-action" onClick={onGoToLauncher}>
 						Go to Launcher →
 					</button>
+				</div>
+			)}
+
+			{/* Mode banners */}
+			{modeBanners.length > 0 && (
+				<div className="mc-conn-bar" style={{ background: "var(--accent)", color: "var(--bg)", fontWeight: 600, fontSize: 11, letterSpacing: "0.05em" }}>
+					{modeBanners.join(" · ")}
 				</div>
 			)}
 

@@ -22,6 +22,7 @@ import { type ReactNode, useCallback, useEffect, useMemo, useState, useSyncExter
 import { Transcript } from "../../../components/transcript/Transcript";
 import type { ChatClient, DialogResponsePayload } from "../../../lib/chat-client";
 import { RpcClient } from "../../../lib/rpc-client";
+import type { InterceptCallbacks } from "../../../lib/slash-intercept";
 import {
 	createSession,
 	deleteSession,
@@ -115,10 +116,10 @@ export function MainChatPage({ onGoToLauncher }: Props): ReactNode {
 
 	// ---- Reconnect (when WS ended) ----
 	const handleReconnect = useCallback(() => {
-		if (client) {
+		if (ui.activeSessionId && ui.activeSessionLink) {
+			activateSession(ui.activeSessionId, ui.activeSessionLink);
+		} else if (client) {
 			client.connect();
-		} else if (ui.activeSessionLink) {
-			activateSession(ui.activeSessionId!, ui.activeSessionLink);
 		}
 	}, [client, ui.activeSessionId, ui.activeSessionLink, activateSession]);
 
@@ -226,6 +227,16 @@ export function MainChatPage({ onGoToLauncher }: Props): ReactNode {
 		[ui.sessions, ui.activeSessionId],
 	);
 
+	// ---- Slash command intercept callbacks ----
+	const interceptCallbacks: InterceptCallbacks = useMemo(
+		() => ({
+			onNewSession: () => void handleNewSession(),
+			onSidebarTab: (tab: string) => actions.setSidebarTab(tab as import("../hooks/useChatStateMachine").SidebarTab),
+			activeSessionId: () => ui.activeSessionId,
+		}),
+		[handleNewSession, actions, ui.activeSessionId],
+	);
+
 	// ---- Connection phase from snapshot ----
 	const connPhase = snapshot?.phase ?? "connecting";
 
@@ -327,6 +338,8 @@ export function MainChatPage({ onGoToLauncher }: Props): ReactNode {
 					<ConnectionStatusBar
 						phase={connPhase}
 						health={healthGate.status}
+						statusEntries={snapshot?.statusEntries}
+						isCompacting={snapshot?.sessionExtras?.isCompacting}
 						onReconnect={handleReconnect}
 						onGoToLauncher={onGoToLauncher}
 					/>
@@ -376,6 +389,7 @@ export function MainChatPage({ onGoToLauncher }: Props): ReactNode {
 								snapshot={snapshot}
 								launcherHealthy={healthGate.healthy}
 								onGoToLauncher={onGoToLauncher}
+								interceptCallbacks={interceptCallbacks}
 							/>
 
 							<StatusWidgetPanel

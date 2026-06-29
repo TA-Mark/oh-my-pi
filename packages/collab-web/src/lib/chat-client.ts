@@ -8,6 +8,7 @@ import type { ImageContent } from "@oh-my-pi/pi-wire";
 import type { GuestSnapshot } from "./client";
 import type {
 	AvailableModel,
+	DialogResponse,
 	FollowUpMode,
 	InterruptMode,
 	LoginProvider,
@@ -53,8 +54,12 @@ export interface ChatClient {
 	sendSetSteeringMode?(mode: SteeringMode): void;
 	sendSetFollowUpMode?(mode: FollowUpMode): void;
 	sendSetInterruptMode?(mode: InterruptMode): void;
+	sendBash?(command: string): Promise<{ output?: string; exitCode?: number }>;
+	sendBashStreaming?(command: string, hidden: boolean, onChunk: (chunk: string) => void): Promise<{ exitCode: number | null; cancelled: boolean }>;
+	sendHandoff?(customInstructions?: string): void;
 	sendGetBranchMessages?(): Promise<Array<{ entryId: string; text: string }>>;
 	sendBranch?(entryId: string): void;
+	showSyntheticDialog?(dialog: import("./client").PendingDialog, onRespond: (payload: DialogResponse) => void): void;
 	connect(): void;
 	close(): void;
 }

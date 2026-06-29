@@ -84,7 +84,7 @@ function ompCandidates(installPath?: string): OmpCandidate[] {
 async function whichOmp(): Promise<string | null> {
 	const cmd = process.platform === "win32" ? "where.exe" : "which";
 	try {
-		const { stdout } = await execFileP(cmd, ["omp"]);
+		const { stdout } = await execFileP(cmd, ["omp"], { timeout: 5000 });
 		const first = stdout
 			.split(/\r?\n/)
 			.find(l => l.trim().length > 0)
@@ -105,43 +105,57 @@ async function ompVersion(path: string): Promise<string | null> {
 }
 
 /**
- * Find omp on this machine. Returns the first candidate that resolves to an
- * existing binary, preferring whatever `which`/`where` reports because that
- * is exactly what the user gets when they type `omp` in their shell.
+ * Synchronous PATH scan — same logic as OmpProcess.whichSync but exposed for
+ * the health checker. Avoids spawning `where.exe` which can fail when the
+ * sidecar's inherited PATH differs from the user's shell.
+ */
+function whichOmpSync(): string | null {
+	const exts = process.platform === "win32" ? [".cmd", ".exe", ".bat", ""] : [""];
+	const dirs = (process.env.PATH ?? "").split(process.platform === "win32" ? ";" : ":");
+	for (const dir of dirs) {
+		if (!dir) continue;
+		for (const ext of exts) {
+			const candidate = join(dir, `omp${ext}`);
+			if (existsSync(candidate)) return candidate;
+		}
+	}
+	return null;
+}
+
+/**
+ * Find omp on this machine. Prefers synchronous file existence checks over
+ * spawning child processes (`where.exe` / `which`) because the compiled
+ * sidecar's inherited PATH may differ from the user's shell and child
+ * process spawns add latency to the 4-second health loop.
  */
 export async function findOmp(installPath?: string): Promise<DetectOmpResult> {
 	const candidates = ompCandidates(installPath);
+	const tried = candidates.map(c => c.label);
+
+	// 1. Synchronous PATH scan first (fast, no child process)
+	const onPath = whichOmpSync();
+	if (onPath) {
+		const version = await ompVersion(onPath);
+		return { found: true, path: onPath, version, source: "path", candidatesTried: tried };
+	}
+
+	// 2. Known file locations
 	for (const candidate of candidates) {
-		if (candidate.kind === "path") {
-			const found = await whichOmp();
-			if (found) {
-				const version = await ompVersion(found);
-				return {
-					found: true,
-					path: found,
-					version,
-					source: "path",
-					candidatesTried: candidates.map(c => c.label),
-				};
-			}
-		} else if (existsSync(candidate.path)) {
+		if (candidate.kind !== "file") continue;
+		if (existsSync(candidate.path)) {
 			const version = await ompVersion(candidate.path);
-			return {
-				found: true,
-				path: candidate.path,
-				version,
-				source: "known-location",
-				candidatesTried: candidates.map(c => c.label),
-			};
+			return { found: true, path: candidate.path, version, source: "known-location", candidatesTried: tried };
 		}
 	}
-	return {
-		found: false,
-		path: null,
-		version: null,
-		source: null,
-		candidatesTried: candidates.map(c => c.label),
-	};
+
+	// 3. Fallback: async `where`/`which` (catches PATH entries the sync scan missed)
+	const asyncFound = await whichOmp();
+	if (asyncFound) {
+		const version = await ompVersion(asyncFound);
+		return { found: true, path: asyncFound, version, source: "path", candidatesTried: tried };
+	}
+
+	return { found: false, path: null, version: null, source: null, candidatesTried: tried };
 }
 
 /**

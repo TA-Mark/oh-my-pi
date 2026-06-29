@@ -18,12 +18,15 @@ import {
 } from "react";
 import type { ChatClient } from "../../../lib/chat-client";
 import type { GuestSnapshot, SlashCommandInfo } from "../../../lib/client";
+import { type InterceptCallbacks, interceptSlashCommand } from "../../../lib/slash-intercept";
+import { getPromptHistory, savePromptHistory, searchFiles } from "../api/chatApi";
 
 interface Props {
 	client: ChatClient;
 	snapshot: GuestSnapshot;
 	launcherHealthy: boolean;
 	onGoToLauncher(): void;
+	interceptCallbacks?: InterceptCallbacks;
 }
 
 const LINE_PX = 20;
@@ -31,12 +34,19 @@ const PAD_Y = 16;
 const MAX_ROWS = 8;
 const MAX_PALETTE_ITEMS = 12;
 
-export function ChatComposer({ client, snapshot, launcherHealthy, onGoToLauncher }: Props): ReactNode {
+export function ChatComposer({ client, snapshot, launcherHealthy, onGoToLauncher, interceptCallbacks }: Props): ReactNode {
 	const [text, setText] = useState("");
 	const [attachments, setAttachments] = useState<ImageContent[]>([]);
 	const taRef = useRef<HTMLTextAreaElement | null>(null);
 	const fileRef = useRef<HTMLInputElement | null>(null);
 	const [paletteIndex, setPaletteIndex] = useState(0);
+	const [fileMatches, setFileMatches] = useState<string[]>([]);
+	const [fileIndex, setFileIndex] = useState(0);
+	const fileSearchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+	const [historyEntries, setHistoryEntries] = useState<string[]>([]);
+	const [historyIndex, setHistoryIndex] = useState(-1);
+	const [dragOver, setDragOver] = useState(false);
+	const [queuedMessages, setQueuedMessages] = useState<string[]>([]);
 
 	const live = snapshot.phase === "live";
 	const readOnly = snapshot.readOnly;
@@ -53,6 +63,10 @@ export function ChatComposer({ client, snapshot, launcherHealthy, onGoToLauncher
 	}, [text, snapshot.commands]);
 
 	const showPalette = paletteMatches.length > 0;
+
+	useEffect(() => {
+		void getPromptHistory().then(r => setHistoryEntries(r.entries)).catch(() => {});
+	}, []);
 
 	// Register the editor-text setter so RpcClient can drive set_editor_text from
 	// extension UI requests. Cleared on unmount or when the client instance changes.
@@ -75,10 +89,34 @@ export function ChatComposer({ client, snapshot, launcherHealthy, onGoToLauncher
 	const send = useCallback((): void => {
 		const trimmed = text.trim();
 		if ((!trimmed && attachments.length === 0) || !live || readOnly || !launcherHealthy) return;
+		if (trimmed.startsWith("/") && interceptCallbacks) {
+			void interceptSlashCommand(trimmed, client, interceptCallbacks).then(result => {
+				if (!result.intercepted) {
+					client.sendPrompt(trimmed, attachments.length > 0 ? attachments : undefined);
+				}
+			});
+			setText("");
+			setAttachments([]);
+			return;
+		}
+		if (trimmed.startsWith("!") && interceptCallbacks) {
+			void interceptSlashCommand(trimmed, client, interceptCallbacks).then(result => {
+				if (!result.intercepted) {
+					client.sendPrompt(trimmed, attachments.length > 0 ? attachments : undefined);
+				}
+			});
+			setText("");
+			setAttachments([]);
+			return;
+		}
 		client.sendPrompt(trimmed, attachments.length > 0 ? attachments : undefined);
+		if (trimmed) {
+			void savePromptHistory(trimmed).catch(() => {});
+			setHistoryEntries(prev => [...prev.filter(e => e !== trimmed), trimmed]);
+		}
 		setText("");
 		setAttachments([]);
-	}, [client, live, readOnly, launcherHealthy, text, attachments]);
+	}, [client, live, readOnly, launcherHealthy, text, attachments, interceptCallbacks]);
 
 	const handleFilesPicked = useCallback(async (files: FileList | null) => {
 		if (!files || files.length === 0) return;
@@ -107,6 +145,7 @@ export function ChatComposer({ client, snapshot, launcherHealthy, onGoToLauncher
 		const trimmed = text.trim();
 		if (!trimmed || !live || readOnly || !launcherHealthy || !client.sendSteer) return;
 		client.sendSteer(trimmed);
+		setQueuedMessages(prev => [...prev, trimmed]);
 		setText("");
 	}, [client, live, readOnly, launcherHealthy, text]);
 
@@ -114,8 +153,18 @@ export function ChatComposer({ client, snapshot, launcherHealthy, onGoToLauncher
 		const trimmed = text.trim();
 		if (!trimmed || !live || readOnly || !launcherHealthy || !client.sendFollowUp) return;
 		client.sendFollowUp(trimmed);
+		setQueuedMessages(prev => [...prev, trimmed]);
 		setText("");
 	}, [client, live, readOnly, launcherHealthy, text]);
+
+	const dequeueMessage = useCallback((): void => {
+		setQueuedMessages(prev => {
+			if (prev.length === 0) return prev;
+			const last = prev[prev.length - 1]!;
+			setText(last);
+			return prev.slice(0, -1);
+		});
+	}, []);
 
 	const acceptPaletteItem = useCallback((cmd: SlashCommandInfo): void => {
 		setText(`/${cmd.name} `);
@@ -146,16 +195,151 @@ export function ChatComposer({ client, snapshot, launcherHealthy, onGoToLauncher
 				setText("");
 				return;
 			}
-		} else if (e.key === "Enter" && !e.shiftKey) {
-			e.preventDefault();
-			send();
 		}
+
+		if (fileMatches.length > 0) {
+			if (e.key === "ArrowDown") {
+				e.preventDefault();
+				setFileIndex(i => Math.min(i + 1, fileMatches.length - 1));
+				return;
+			}
+			if (e.key === "ArrowUp") {
+				e.preventDefault();
+				setFileIndex(i => Math.max(i - 1, 0));
+				return;
+			}
+			if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey)) {
+				e.preventDefault();
+				const match = fileMatches[fileIndex];
+				if (match) acceptFileMatch(match);
+				return;
+			}
+			if (e.key === "Escape") {
+				e.preventDefault();
+				setFileMatches([]);
+				return;
+			}
+		}
+
+		if (e.key === "ArrowUp" && e.altKey && queuedMessages.length > 0) {
+			e.preventDefault();
+			dequeueMessage();
+			return;
+		}
+
+		if (e.key === "ArrowUp" && !text && historyEntries.length > 0 && !showPalette) {
+			e.preventDefault();
+			const nextIdx = historyIndex < 0 ? historyEntries.length - 1 : Math.max(0, historyIndex - 1);
+			setHistoryIndex(nextIdx);
+			setText(historyEntries[nextIdx] ?? "");
+			return;
+		}
+		if (e.key === "ArrowDown" && historyIndex >= 0 && !showPalette) {
+			e.preventDefault();
+			const nextIdx = historyIndex + 1;
+			if (nextIdx >= historyEntries.length) {
+				setHistoryIndex(-1);
+				setText("");
+			} else {
+				setHistoryIndex(nextIdx);
+				setText(historyEntries[nextIdx] ?? "");
+			}
+			return;
+		}
+
+		if (e.key === "Escape" && busy) {
+			e.preventDefault();
+			client.sendAbort();
+			return;
+		}
+
+		if (e.key === "Enter" && !e.shiftKey) {
+			e.preventDefault();
+			if (busy && text.trim() && canPrompt) {
+				if (e.ctrlKey || e.metaKey) {
+					followUp();
+				} else {
+					steer();
+				}
+			} else if (!busy) {
+				send();
+			}
+			return;
+		}
+		// Shift+Enter = newline (native textarea behavior, no preventDefault)
 	};
 
 	const onTextChange = (value: string): void => {
 		setText(value);
 		setPaletteIndex(0);
+		setHistoryIndex(-1);
+
+		if (fileSearchTimer.current) clearTimeout(fileSearchTimer.current);
+		const atMatch = value.match(/@([^\s@]*)$/);
+		if (atMatch && atMatch[1] !== undefined) {
+			const query = atMatch[1];
+			fileSearchTimer.current = setTimeout(() => {
+				void searchFiles(query).then(r => {
+					setFileMatches(r.files.slice(0, 12));
+					setFileIndex(0);
+				}).catch(() => setFileMatches([]));
+			}, 200);
+		} else {
+			setFileMatches([]);
+		}
 	};
+
+	const acceptFileMatch = useCallback((path: string) => {
+		const atIdx = text.lastIndexOf("@");
+		if (atIdx >= 0) {
+			setText(`${text.slice(0, atIdx)}@${path} `);
+		}
+		setFileMatches([]);
+		taRef.current?.focus();
+	}, [text]);
+
+	const handlePaste = useCallback(async (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+		const items = e.clipboardData?.items;
+		if (!items) return;
+		for (const item of Array.from(items)) {
+			if (item.type.startsWith("image/")) {
+				e.preventDefault();
+				const file = item.getAsFile();
+				if (!file) continue;
+				try {
+					const buf = await file.arrayBuffer();
+					const data = btoa(String.fromCharCode(...new Uint8Array(buf)));
+					setAttachments(prev => [...prev, { type: "image", data, mimeType: file.type }]);
+				} catch { /* skip */ }
+				return;
+			}
+		}
+	}, []);
+
+	const handleDragOver = useCallback((e: React.DragEvent) => {
+		e.preventDefault();
+		setDragOver(true);
+	}, []);
+
+	const handleDragLeave = useCallback(() => setDragOver(false), []);
+
+	const handleDrop = useCallback(async (e: React.DragEvent) => {
+		e.preventDefault();
+		setDragOver(false);
+		const files = e.dataTransfer?.files;
+		if (!files || files.length === 0) return;
+		for (const file of Array.from(files)) {
+			if (file.type.startsWith("image/")) {
+				try {
+					const buf = await file.arrayBuffer();
+					const data = btoa(String.fromCharCode(...new Uint8Array(buf)));
+					setAttachments(prev => [...prev, { type: "image", data, mimeType: file.type }]);
+				} catch { /* skip */ }
+			} else {
+				setText(prev => `${prev}@${file.name} `.trim());
+			}
+		}
+	}, []);
 
 	const regenerate = useCallback((): void => {
 		if (!live || readOnly || !launcherHealthy) return;
@@ -171,8 +355,10 @@ export function ChatComposer({ client, snapshot, launcherHealthy, onGoToLauncher
 				? "prompt the host agent…"
 				: "waiting for session…";
 
+	const showFilePalette = fileMatches.length > 0;
+
 	return (
-		<div className="sh-composer">
+		<div className="sh-composer" onDragOver={handleDragOver} onDragLeave={handleDragLeave} onDrop={e => void handleDrop(e)} data-dragover={dragOver ? "true" : undefined}>
 			{/* Launcher unhealthy warning inline */}
 			{!launcherHealthy && (
 				<div
@@ -227,6 +413,26 @@ export function ChatComposer({ client, snapshot, launcherHealthy, onGoToLauncher
 			)}
 
 			<div className="sh-composer-inner" style={{ position: "relative" }}>
+				{/* @file autocomplete dropdown */}
+				{showFilePalette && (
+					<div className="sh-cmd-palette" role="listbox">
+						{fileMatches.map((path, i) => (
+							<button
+								type="button"
+								key={path}
+								className="sh-cmd-palette-item"
+								data-active={i === fileIndex ? "true" : undefined}
+								role="option"
+								aria-selected={i === fileIndex}
+								onMouseDown={e => { e.preventDefault(); acceptFileMatch(path); }}
+								onMouseEnter={() => setFileIndex(i)}
+							>
+								<span className="sh-cmd-palette-name">@{path}</span>
+							</button>
+						))}
+					</div>
+				)}
+
 				{/* Slash command palette dropdown */}
 				{showPalette && (
 					<div className="sh-cmd-palette" role="listbox">
@@ -257,13 +463,14 @@ export function ChatComposer({ client, snapshot, launcherHealthy, onGoToLauncher
 					value={text}
 					onChange={e => onTextChange(e.target.value)}
 					onKeyDown={onKeyDown}
+					onPaste={e => void handlePaste(e)}
 					placeholder={placeholder}
 					disabled={!canPrompt}
 					rows={1}
 					spellCheck={false}
 					aria-label="Chat input"
-					aria-expanded={showPalette}
-					aria-haspopup={showPalette ? "listbox" : undefined}
+					aria-expanded={showPalette || showFilePalette}
+					aria-haspopup={showPalette || showFilePalette ? "listbox" : undefined}
 				/>
 				<div className="sh-composer-actions">
 					{/* Image attach */}
