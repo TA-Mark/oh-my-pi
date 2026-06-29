@@ -22,11 +22,20 @@ import { type ReactNode, useCallback, useEffect, useMemo, useState, useSyncExter
 import { Transcript } from "../../../components/transcript/Transcript";
 import type { ChatClient, DialogResponsePayload } from "../../../lib/chat-client";
 import { RpcClient } from "../../../lib/rpc-client";
-import { createSession, deleteSession, listDataSources, listSessions, refreshDataSource } from "../api/chatApi";
+import {
+	createSession,
+	deleteSession,
+	listDataSources,
+	listSessions,
+	refreshDataSource,
+	renameSession as renameSessionApi,
+} from "../api/chatApi";
 import { ChatComposer } from "../components/ChatComposer";
 import { ConnectionStatusBar } from "../components/ConnectionStatusBar";
 import { ExtensionDialog } from "../components/ExtensionDialog";
 import { LeftSidebar } from "../components/LeftSidebar";
+import { LogsDrawer } from "../components/LogsDrawer";
+import { SessionHeaderActions } from "../components/SessionHeaderActions";
 import { StatusWidgetPanel } from "../components/StatusWidgetPanel";
 import { useChatStateMachine } from "../hooks/useChatStateMachine";
 import { useLauncherHealthGate } from "../hooks/useLauncherHealthGate";
@@ -51,6 +60,7 @@ async function startOmpForSession(id: string): Promise<boolean> {
 
 export function MainChatPage({ onGoToLauncher }: Props): ReactNode {
 	const [ui, actions] = useChatStateMachine();
+	const [logsOpen, setLogsOpen] = useState(false);
 
 	// ---- Launcher health gate ----
 	// Bounce back to Launcher if omp goes missing under us (uninstall, PATH
@@ -153,6 +163,17 @@ export function MainChatPage({ onGoToLauncher }: Props): ReactNode {
 		[actions],
 	);
 
+	// ---- Rename session ----
+	const handleSessionRenamed = useCallback(
+		(name: string) => {
+			if (!ui.activeSessionId) return;
+			actions.sessionRenamed(ui.activeSessionId, name);
+			// Persist to the bridge's session list (omp also updates its own sessionName).
+			void renameSessionApi(ui.activeSessionId, name).catch(() => {});
+		},
+		[actions, ui.activeSessionId],
+	);
+
 	// Runtime config (model + thinking) is now driven directly by RpcClient
 	// inside UserControlsPanel — the REST runtime-config stub is no longer the
 	// source of truth.
@@ -233,8 +254,13 @@ export function MainChatPage({ onGoToLauncher }: Props): ReactNode {
 						{ui.sidebarOpen ? "◂ Hide" : "▸ Show"}
 					</button>
 
-					{/* Session title (may be overridden by extension setTitle) */}
-					<span className="mc-session-title">{displayTitle}</span>
+					{/* Session title (may be overridden by extension setTitle) +
+					    inline actions (rename / compact / export / stats) */}
+					{ui.activeSessionLink && client ? (
+						<SessionHeaderActions client={client} currentName={displayTitle} onRenamed={handleSessionRenamed} />
+					) : (
+						<span className="mc-session-title">{displayTitle}</span>
+					)}
 				</div>
 
 				<div className="mc-header-right">
@@ -250,6 +276,14 @@ export function MainChatPage({ onGoToLauncher }: Props): ReactNode {
 							{healthGate.healthy ? "● Runtime OK" : "● Runtime ⚠"}
 						</span>
 					)}
+					<button
+						type="button"
+						className="mc-header-iconbtn"
+						onClick={() => setLogsOpen(v => !v)}
+						title="Toggle log drawer"
+					>
+						{logsOpen ? "▾ Logs" : "▴ Logs"}
+					</button>
 				</div>
 			</header>
 
@@ -351,6 +385,9 @@ export function MainChatPage({ onGoToLauncher }: Props): ReactNode {
 							/>
 						</>
 					)}
+
+					{/* Logs drawer (slides up from bottom of chat area) */}
+					{snapshot && <LogsDrawer logs={snapshot.logs} open={logsOpen} onClose={() => setLogsOpen(false)} />}
 
 					{/* Extension UI dialog modal — overlay outside chat-area */}
 					{snapshot?.pendingDialog && (

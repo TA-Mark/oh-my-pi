@@ -6,6 +6,7 @@ import type { ChatSession, DataSource } from "../types/chat";
 import { DataSourcesPanel } from "./DataSourcesPanel";
 import { ProviderSettings } from "./ProviderSettings";
 import { SessionList } from "./SessionList";
+import { TodosPanel } from "./TodosPanel";
 import { UserControlsPanel } from "./UserControlsPanel";
 
 interface Props {
@@ -31,6 +32,7 @@ interface Props {
 const TABS: { id: SidebarTab; label: string }[] = [
 	{ id: "controls", label: "Controls" },
 	{ id: "providers", label: "Providers" },
+	{ id: "todos", label: "Todos" },
 	{ id: "sessions", label: "Sessions" },
 	{ id: "sources", label: "Sources" },
 ];
@@ -75,6 +77,7 @@ export function LeftSidebar(props: Props): ReactNode {
 			<div className="mc-sidebar-content" role="tabpanel">
 				{tab === "controls" && <UserControlsPanel client={client} snapshot={snapshot} />}
 				{tab === "providers" && <ProviderSettings client={client} />}
+				{tab === "todos" && <TodosPanel phases={snapshot?.todoPhases ?? []} />}
 				{tab === "sessions" && (
 					<SessionList
 						sessions={sessions}

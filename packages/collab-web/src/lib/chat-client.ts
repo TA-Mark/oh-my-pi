@@ -4,8 +4,16 @@
  * depend on this surface only, so the underlying transport is interchangeable.
  */
 
+import type { ImageContent } from "@oh-my-pi/pi-wire";
 import type { GuestSnapshot } from "./client";
-import type { AvailableModel, LoginProvider } from "./rpc-client";
+import type {
+	AvailableModel,
+	FollowUpMode,
+	InterruptMode,
+	LoginProvider,
+	SessionStats,
+	SteeringMode,
+} from "./rpc-client";
 
 export type DialogResponsePayload =
 	| { value: string }
@@ -15,7 +23,7 @@ export type DialogResponsePayload =
 export interface ChatClient {
 	subscribe(listener: () => void): () => void;
 	getSnapshot(): GuestSnapshot;
-	sendPrompt(text: string): void;
+	sendPrompt(text: string, images?: ImageContent[]): void;
 	sendAbort(): void;
 	sendRegenerate?(): void;
 	/** Optional — only RpcClient forwards runtime controls to the agent. */
@@ -32,6 +40,21 @@ export interface ChatClient {
 	sendGetAvailableModels?(): Promise<AvailableModel[]>;
 	sendCycleModel?(): void;
 	sendCycleThinkingLevel?(): void;
+	/** Session control — RpcClient-only. */
+	sendSteer?(text: string): void;
+	sendFollowUp?(text: string): void;
+	sendGetSessionStats?(): Promise<SessionStats>;
+	sendCompact?(customInstructions?: string): void;
+	sendSetAutoCompaction?(enabled: boolean): void;
+	sendSetAutoRetry?(enabled: boolean): void;
+	sendAbortRetry?(): void;
+	sendSetSessionName?(name: string): void;
+	sendExportHtml?(outputPath?: string): Promise<{ path: string }>;
+	sendSetSteeringMode?(mode: SteeringMode): void;
+	sendSetFollowUpMode?(mode: FollowUpMode): void;
+	sendSetInterruptMode?(mode: InterruptMode): void;
+	sendGetBranchMessages?(): Promise<Array<{ entryId: string; text: string }>>;
+	sendBranch?(entryId: string): void;
 	connect(): void;
 	close(): void;
 }

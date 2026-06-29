@@ -4,6 +4,8 @@
  * Talks to any transport that satisfies {@link ChatClient}
  * (GuestClient over collab, or RpcClient over the desktop bridge).
  */
+
+import type { ImageContent } from "@oh-my-pi/pi-wire";
 import {
 	type KeyboardEvent,
 	type ReactNode,
@@ -31,7 +33,9 @@ const MAX_PALETTE_ITEMS = 12;
 
 export function ChatComposer({ client, snapshot, launcherHealthy, onGoToLauncher }: Props): ReactNode {
 	const [text, setText] = useState("");
+	const [attachments, setAttachments] = useState<ImageContent[]>([]);
 	const taRef = useRef<HTMLTextAreaElement | null>(null);
+	const fileRef = useRef<HTMLInputElement | null>(null);
 	const [paletteIndex, setPaletteIndex] = useState(0);
 
 	const live = snapshot.phase === "live";
@@ -39,7 +43,7 @@ export function ChatComposer({ client, snapshot, launcherHealthy, onGoToLauncher
 	const canPrompt = live && !readOnly && launcherHealthy;
 	const busy = snapshot.working || (snapshot.state?.isStreaming ?? false);
 	const queued = snapshot.state?.queuedMessageCount ?? 0;
-	const canSend = canPrompt && text.trim().length > 0;
+	const canSend = canPrompt && (text.trim().length > 0 || attachments.length > 0);
 
 	// ---- Slash command palette ----
 	const paletteMatches = useMemo((): readonly SlashCommandInfo[] => {
@@ -70,8 +74,46 @@ export function ChatComposer({ client, snapshot, launcherHealthy, onGoToLauncher
 
 	const send = useCallback((): void => {
 		const trimmed = text.trim();
-		if (!trimmed || !live || readOnly || !launcherHealthy) return;
-		client.sendPrompt(trimmed);
+		if ((!trimmed && attachments.length === 0) || !live || readOnly || !launcherHealthy) return;
+		client.sendPrompt(trimmed, attachments.length > 0 ? attachments : undefined);
+		setText("");
+		setAttachments([]);
+	}, [client, live, readOnly, launcherHealthy, text, attachments]);
+
+	const handleFilesPicked = useCallback(async (files: FileList | null) => {
+		if (!files || files.length === 0) return;
+		const newAttachments: ImageContent[] = [];
+		for (const file of Array.from(files)) {
+			if (!file.type.startsWith("image/")) continue;
+			try {
+				const buf = await file.arrayBuffer();
+				const data = btoa(String.fromCharCode(...new Uint8Array(buf)));
+				newAttachments.push({ type: "image", data, mimeType: file.type });
+			} catch {
+				/* skip unreadable files */
+			}
+		}
+		if (newAttachments.length > 0) {
+			setAttachments(prev => [...prev, ...newAttachments]);
+		}
+		if (fileRef.current) fileRef.current.value = "";
+	}, []);
+
+	const removeAttachment = useCallback((index: number) => {
+		setAttachments(prev => prev.filter((_, i) => i !== index));
+	}, []);
+
+	const steer = useCallback((): void => {
+		const trimmed = text.trim();
+		if (!trimmed || !live || readOnly || !launcherHealthy || !client.sendSteer) return;
+		client.sendSteer(trimmed);
+		setText("");
+	}, [client, live, readOnly, launcherHealthy, text]);
+
+	const followUp = useCallback((): void => {
+		const trimmed = text.trim();
+		if (!trimmed || !live || readOnly || !launcherHealthy || !client.sendFollowUp) return;
+		client.sendFollowUp(trimmed);
 		setText("");
 	}, [client, live, readOnly, launcherHealthy, text]);
 
@@ -160,6 +202,30 @@ export function ChatComposer({ client, snapshot, launcherHealthy, onGoToLauncher
 				</div>
 			)}
 
+			{/* Image attachment previews */}
+			{attachments.length > 0 && (
+				<div className="sh-attachments">
+					{attachments.map((img, i) => (
+						<div key={`${img.mimeType}-${i}-${img.data.slice(0, 8)}`} className="sh-attachment">
+							<img
+								src={`data:${img.mimeType};base64,${img.data}`}
+								alt={`attachment ${i + 1}`}
+								className="sh-attachment-thumb"
+							/>
+							<button
+								type="button"
+								className="sh-attachment-del"
+								onClick={() => removeAttachment(i)}
+								title="Remove attachment"
+								aria-label="Remove attachment"
+							>
+								✕
+							</button>
+						</div>
+					))}
+				</div>
+			)}
+
 			<div className="sh-composer-inner" style={{ position: "relative" }}>
 				{/* Slash command palette dropdown */}
 				{showPalette && (
@@ -200,6 +266,30 @@ export function ChatComposer({ client, snapshot, launcherHealthy, onGoToLauncher
 					aria-haspopup={showPalette ? "listbox" : undefined}
 				/>
 				<div className="sh-composer-actions">
+					{/* Image attach */}
+					{!readOnly && (
+						<>
+							<input
+								ref={fileRef}
+								type="file"
+								accept="image/*"
+								multiple
+								style={{ display: "none" }}
+								onChange={e => void handleFilesPicked(e.target.files)}
+							/>
+							<button
+								type="button"
+								className="sh-btn"
+								onClick={() => fileRef.current?.click()}
+								disabled={!canPrompt}
+								title="Attach image(s)"
+								aria-label="Attach image"
+							>
+								📎 <span className="sh-btn-label">Image</span>
+							</button>
+						</>
+					)}
+
 					{/* Queued count */}
 					{busy && queued > 0 && (
 						<span className="sh-queued">
@@ -207,21 +297,47 @@ export function ChatComposer({ client, snapshot, launcherHealthy, onGoToLauncher
 						</span>
 					)}
 
-					{/* Stop */}
+					{/* While busy: Steer/Follow-up if user typed something + Stop */}
 					{busy && !readOnly && (
-						<button
-							type="button"
-							className="sh-btn sh-btn-stop"
-							onClick={() => client.sendAbort()}
-							disabled={!live}
-							title="Stop current turn"
-							aria-label="Stop"
-						>
-							▪ <span className="sh-btn-label">Stop</span>
-						</button>
+						<>
+							{client.sendSteer && (
+								<button
+									type="button"
+									className="sh-btn"
+									onClick={steer}
+									disabled={!canSend}
+									title="Interrupt the current turn with this message"
+									aria-label="Steer"
+								>
+									⇆ <span className="sh-btn-label">Steer</span>
+								</button>
+							)}
+							{client.sendFollowUp && (
+								<button
+									type="button"
+									className="sh-btn"
+									onClick={followUp}
+									disabled={!canSend}
+									title="Queue this message for after the current turn"
+									aria-label="Follow up"
+								>
+									⇩ <span className="sh-btn-label">Queue</span>
+								</button>
+							)}
+							<button
+								type="button"
+								className="sh-btn sh-btn-stop"
+								onClick={() => client.sendAbort()}
+								disabled={!live}
+								title="Stop current turn"
+								aria-label="Stop"
+							>
+								▪ <span className="sh-btn-label">Stop</span>
+							</button>
+						</>
 					)}
 
-					{/* Regenerate — only when idle and has history */}
+					{/* Idle: Regenerate + Send */}
 					{!busy && live && !readOnly && launcherHealthy && (
 						<button
 							type="button"
@@ -234,17 +350,18 @@ export function ChatComposer({ client, snapshot, launcherHealthy, onGoToLauncher
 						</button>
 					)}
 
-					{/* Send */}
-					<button
-						type="button"
-						className="sh-btn sh-btn-primary"
-						onClick={send}
-						disabled={!canSend}
-						title="Send (Enter)"
-						aria-label="Send"
-					>
-						→ <span className="sh-btn-label">Send</span>
-					</button>
+					{!busy && (
+						<button
+							type="button"
+							className="sh-btn sh-btn-primary"
+							onClick={send}
+							disabled={!canSend}
+							title="Send (Enter)"
+							aria-label="Send"
+						>
+							→ <span className="sh-btn-label">Send</span>
+						</button>
+					)}
 				</div>
 			</div>
 		</div>

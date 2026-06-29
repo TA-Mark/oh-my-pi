@@ -22,6 +22,7 @@ import type {
 	AgentEvent,
 	AgentSnapshot,
 	AssistantMessage,
+	ImageContent,
 	SessionEntry,
 	SessionState,
 	SubagentLifecyclePayload,
@@ -32,11 +33,16 @@ import type {
 	ActiveTool,
 	ConnectionPhase,
 	GuestSnapshot,
+	LogLine,
 	Notice,
 	PendingDialog,
+	SessionExtras,
 	SlashCommandInfo,
+	TodoPhase,
 	WidgetState,
 } from "./client";
+
+const MAX_LOGS = 500;
 
 // Mirror of RpcExtensionUIRequest from packages/coding-agent/src/modes/rpc/rpc-types.ts:329.
 // Kept local because that module is not exported through pi-wire and would pull
@@ -107,6 +113,24 @@ export interface AvailableModel {
 	maxTokens?: number;
 	cost?: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number };
 }
+
+/** Aggregate stats omp tracks per session. */
+export interface SessionStats {
+	totalCost?: number;
+	totalTokens?: number;
+	inputTokens?: number;
+	outputTokens?: number;
+	cacheReadTokens?: number;
+	cacheWriteTokens?: number;
+	turnCount?: number;
+	messageCount?: number;
+	toolCallCount?: number;
+	[key: string]: unknown;
+}
+
+export type SteeringMode = "all" | "one-at-a-time";
+export type FollowUpMode = "all" | "one-at-a-time";
+export type InterruptMode = "immediate" | "wait";
 
 const MAX_NOTICES = 50;
 
@@ -182,6 +206,10 @@ export class RpcClient {
 	#statusEntries = new Map<string, string>();
 	#widgets = new Map<string, WidgetState>();
 	#titleOverride: string | null = null;
+	#todoPhases: TodoPhase[] = [];
+	#sessionExtras: SessionExtras = {};
+	#logs: LogLine[] = [];
+	#logSeq = 0;
 	#editorTextSetter: ((text: string) => void) | null = null;
 	#snapshot: GuestSnapshot;
 
@@ -207,13 +235,15 @@ export class RpcClient {
 		return this.#snapshot;
 	}
 
-	sendPrompt(text: string): void {
+	sendPrompt(text: string, images?: ImageContent[]): void {
 		const trimmed = text.trim();
-		if (!trimmed) return;
+		if (!trimmed && (!images || images.length === 0)) return;
 		const reqId = this.#nextReqId();
-		const entryId = this.#appendUserEntry(trimmed);
+		const entryId = this.#appendUserEntry(trimmed, images);
 		this.#pendingPrompts.set(reqId, entryId);
-		this.#send({ id: reqId, type: "prompt", message: trimmed });
+		const body: Record<string, unknown> = { id: reqId, type: "prompt", message: trimmed };
+		if (images && images.length > 0) body.images = images;
+		this.#send(body);
 	}
 
 	sendAbort(): void {
@@ -280,6 +310,87 @@ export class RpcClient {
 		this.#send({ id: this.#nextReqId(), type: "cycle_thinking_level" });
 	}
 
+	// ─── Session control ────────────────────────────────────────────────────
+
+	/** Interrupt the current turn with a new instruction (mid-stream). */
+	sendSteer(text: string): void {
+		const trimmed = text.trim();
+		if (!trimmed) return;
+		this.#send({ id: this.#nextReqId(), type: "steer", message: trimmed });
+	}
+
+	/** Queue a message to run after the current turn finishes. */
+	sendFollowUp(text: string): void {
+		const trimmed = text.trim();
+		if (!trimmed) return;
+		this.#send({ id: this.#nextReqId(), type: "follow_up", message: trimmed });
+	}
+
+	/** Pull aggregate stats (token/cost/turn counts). */
+	async sendGetSessionStats(): Promise<SessionStats> {
+		return (await this.#request("get_session_stats", { type: "get_session_stats" })) as SessionStats;
+	}
+
+	/** Trigger manual compaction; pass instructions to bias the summary. */
+	sendCompact(customInstructions?: string): void {
+		const body: Record<string, unknown> = { type: "compact" };
+		if (customInstructions) body.customInstructions = customInstructions;
+		this.#send({ id: this.#nextReqId(), ...body });
+	}
+
+	/** Toggle auto-compaction on the active session. */
+	sendSetAutoCompaction(enabled: boolean): void {
+		this.#send({ id: this.#nextReqId(), type: "set_auto_compaction", enabled });
+	}
+
+	/** Toggle auto-retry on provider errors. */
+	sendSetAutoRetry(enabled: boolean): void {
+		this.#send({ id: this.#nextReqId(), type: "set_auto_retry", enabled });
+	}
+
+	/** Abort the active retry loop. */
+	sendAbortRetry(): void {
+		this.#send({ id: this.#nextReqId(), type: "abort_retry" });
+	}
+
+	/** Rename the active session in omp's records. */
+	sendSetSessionName(name: string): void {
+		this.#send({ id: this.#nextReqId(), type: "set_session_name", name });
+	}
+
+	/** Export the current transcript as HTML; resolves to the written file path. */
+	async sendExportHtml(outputPath?: string): Promise<{ path: string }> {
+		const body: Record<string, unknown> = { type: "export_html" };
+		if (outputPath) body.outputPath = outputPath;
+		const data = (await this.#request("export_html", body, 30000)) as { path?: string };
+		return { path: data.path ?? "" };
+	}
+
+	sendSetSteeringMode(mode: SteeringMode): void {
+		this.#send({ id: this.#nextReqId(), type: "set_steering_mode", mode });
+	}
+
+	sendSetFollowUpMode(mode: FollowUpMode): void {
+		this.#send({ id: this.#nextReqId(), type: "set_follow_up_mode", mode });
+	}
+
+	sendSetInterruptMode(mode: InterruptMode): void {
+		this.#send({ id: this.#nextReqId(), type: "set_interrupt_mode", mode });
+	}
+
+	/** Get branch siblings — alternative messages at branch points. */
+	async sendGetBranchMessages(): Promise<Array<{ entryId: string; text: string }>> {
+		const data = (await this.#request("get_branch_messages", { type: "get_branch_messages" })) as {
+			messages?: Array<{ entryId: string; text: string }>;
+		};
+		return Array.isArray(data.messages) ? data.messages : [];
+	}
+
+	/** Switch to a different branch. omp opens an extension_ui dialog with the text options. */
+	sendBranch(entryId: string): void {
+		this.#send({ id: this.#nextReqId(), type: "branch", entryId });
+	}
+
 	/** Respond to the currently pending extension dialog and dismiss it. */
 	respondToDialog(payload: DialogResponse): void {
 		const dialog = this.#pendingDialog;
@@ -332,6 +443,9 @@ export class RpcClient {
 		this.#statusEntries.clear();
 		this.#widgets.clear();
 		this.#titleOverride = null;
+		this.#todoPhases = [];
+		this.#sessionExtras = {};
+		this.#logs = [];
 		const url = `${this.#wsBase}/chat/sessions/${this.#sessionId}/rpc`;
 		try {
 			this.#ws = new WebSocket(url);
@@ -422,8 +536,10 @@ export class RpcClient {
 			return;
 		}
 		if (env.type === "log") {
-			if (env.stream === "stderr" && env.line) {
-				this.#pushNotice({ level: "warning", message: env.line.slice(0, 240) });
+			if (env.line) this.#pushLog(env.stream ?? "stdout", env.line);
+			// stderr also surfaces as a warning toast so users notice runtime issues
+			if (env.stream === "stderr") {
+				this.#pushNotice({ level: "warning", message: env.line!.slice(0, 240) });
 			}
 			return;
 		}
@@ -594,7 +710,23 @@ export class RpcClient {
 				// Side-effects on specific responses (state hydration, transcript seed).
 				if (frame.command === "get_state" && frame.success && frame.data) {
 					this.#state = this.#buildState(frame.data);
-					const r = frame.data as { messageCount?: number };
+					const r = frame.data as {
+						messageCount?: number;
+						todoPhases?: TodoPhase[];
+						steeringMode?: SessionExtras["steeringMode"];
+						followUpMode?: SessionExtras["followUpMode"];
+						interruptMode?: SessionExtras["interruptMode"];
+						autoCompactionEnabled?: boolean;
+						isCompacting?: boolean;
+					};
+					if (Array.isArray(r.todoPhases)) this.#todoPhases = r.todoPhases;
+					this.#sessionExtras = {
+						steeringMode: r.steeringMode,
+						followUpMode: r.followUpMode,
+						interruptMode: r.interruptMode,
+						autoCompactionEnabled: r.autoCompactionEnabled,
+						isCompacting: r.isCompacting,
+					};
 					if (typeof r.messageCount === "number" && r.messageCount > 0 && this.#entries.length === 0) {
 						this.#send({ id: this.#nextReqId(), type: "get_messages" });
 					}
@@ -760,7 +892,14 @@ export class RpcClient {
 
 	// ─── Mutators ────────────────────────────────────────────────────────────
 
-	#appendUserEntry(text: string): string {
+	#appendUserEntry(text: string, images?: ImageContent[]): string {
+		const content: string | Array<{ type: "text"; text: string } | ImageContent> =
+			images && images.length > 0
+				? [
+						...(text ? [{ type: "text" as const, text }] : []),
+						...images.map(img => ({ type: "image" as const, data: img.data, mimeType: img.mimeType })),
+					]
+				: text;
 		const entry: SessionEntry = {
 			id: this.#nextEntryId(),
 			parentId: this.#entries.length > 0 ? this.#entries[this.#entries.length - 1]!.id : null,
@@ -768,7 +907,7 @@ export class RpcClient {
 			type: "message",
 			message: {
 				role: "user",
-				content: text,
+				content,
 				timestamp: Date.now(),
 			},
 		};
@@ -816,6 +955,15 @@ export class RpcClient {
 			message,
 		};
 		this.#entries = [...this.#entries, entry];
+	}
+
+	#pushLog(stream: "stdout" | "stderr", line: string): void {
+		this.#logSeq++;
+		const entry: LogLine = { id: this.#logSeq, at: Date.now(), stream, line };
+		const next = [...this.#logs, entry];
+		if (next.length > MAX_LOGS) next.splice(0, next.length - MAX_LOGS);
+		this.#logs = next;
+		this.#publish();
 	}
 
 	#pushNotice(part: { level: "info" | "warning" | "error"; message: string }): void {
@@ -875,6 +1023,9 @@ export class RpcClient {
 			statusEntries: Array.from(this.#statusEntries.entries()).map(([key, text]) => ({ key, text })),
 			widgets: Array.from(this.#widgets.values()),
 			titleOverride: this.#titleOverride,
+			todoPhases: this.#todoPhases,
+			sessionExtras: this.#sessionExtras,
+			logs: this.#logs,
 		};
 	}
 

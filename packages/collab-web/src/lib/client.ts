@@ -40,10 +40,38 @@ export interface Notice {
 	at: number;
 }
 
+export interface LogLine {
+	id: number;
+	at: number;
+	stream: "stdout" | "stderr";
+	line: string;
+}
+
 export interface SlashCommandInfo {
 	name: string;
 	description?: string;
 	source?: string;
+}
+
+/** Fields from omp's RpcSessionState that pi-wire's SessionState doesn't carry. */
+export interface SessionExtras {
+	steeringMode?: "all" | "one-at-a-time";
+	followUpMode?: "all" | "one-at-a-time";
+	interruptMode?: "immediate" | "wait";
+	autoCompactionEnabled?: boolean;
+	isCompacting?: boolean;
+}
+
+export type TodoStatus = "pending" | "in_progress" | "completed" | "abandoned";
+
+export interface TodoItem {
+	content: string;
+	status: TodoStatus;
+}
+
+export interface TodoPhase {
+	name: string;
+	tasks: TodoItem[];
 }
 
 // ─── Extension UI request payloads (from omp RPC extension_ui_request frames) ──
@@ -96,6 +124,12 @@ export interface GuestSnapshot {
 	widgets: readonly WidgetState[];
 	/** Session title override from extension_ui_request setTitle. */
 	titleOverride: string | null;
+	/** Todo phases from omp's set_todos / get_state. */
+	todoPhases: readonly TodoPhase[];
+	/** RPC-only extras not in pi-wire's SessionState. */
+	sessionExtras: SessionExtras;
+	/** Raw stdout/stderr from omp (capped). */
+	logs: readonly LogLine[];
 }
 
 const MAX_NOTICES = 50;
@@ -489,6 +523,9 @@ export class GuestClient {
 			statusEntries: [],
 			widgets: [],
 			titleOverride: null,
+			todoPhases: [],
+			sessionExtras: {},
+			logs: [],
 		};
 	}
 

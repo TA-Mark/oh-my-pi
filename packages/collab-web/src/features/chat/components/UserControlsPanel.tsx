@@ -88,6 +88,28 @@ export function UserControlsPanel({ client, snapshot }: Props): ReactNode {
 		[client],
 	);
 
+	const extras = snapshot?.sessionExtras ?? {};
+	const handleSteeringMode = useCallback(
+		(mode: "all" | "one-at-a-time") => client?.sendSetSteeringMode?.(mode),
+		[client],
+	);
+	const handleFollowUpMode = useCallback(
+		(mode: "all" | "one-at-a-time") => client?.sendSetFollowUpMode?.(mode),
+		[client],
+	);
+	const handleInterruptMode = useCallback(
+		(mode: "immediate" | "wait") => client?.sendSetInterruptMode?.(mode),
+		[client],
+	);
+	const handleAutoCompaction = useCallback(
+		(e: React.ChangeEvent<HTMLInputElement>) => client?.sendSetAutoCompaction?.(e.target.checked),
+		[client],
+	);
+	const handleAutoRetry = useCallback(
+		(e: React.ChangeEvent<HTMLInputElement>) => client?.sendSetAutoRetry?.(e.target.checked),
+		[client],
+	);
+
 	if (!client) {
 		return <div style={{ color: "var(--fg-faint)", fontSize: 12 }}>Start a session to configure runtime.</div>;
 	}
@@ -162,6 +184,79 @@ export function UserControlsPanel({ client, snapshot }: Props): ReactNode {
 			<div style={{ fontSize: 11, color: "var(--fg-faint)", marginTop: 6 }}>
 				Current: <span style={{ fontFamily: "var(--font-mono)" }}>{currentModelLabel}</span> ·{" "}
 				<span style={{ fontFamily: "var(--font-mono)" }}>{currentThinking}</span>
+			</div>
+
+			<div className="mc-section-title" style={{ marginTop: 16 }}>
+				Queue behaviour
+			</div>
+
+			<div className="mc-control-row">
+				<span className="mc-control-label">Steering mode</span>
+				<div className="mc-segmented">
+					{(["all", "one-at-a-time"] as const).map(m => (
+						<button
+							key={m}
+							type="button"
+							className="mc-segmented-btn"
+							data-active={extras.steeringMode === m ? "true" : undefined}
+							onClick={() => handleSteeringMode(m)}
+						>
+							{m}
+						</button>
+					))}
+				</div>
+			</div>
+
+			<div className="mc-control-row">
+				<span className="mc-control-label">Follow-up mode</span>
+				<div className="mc-segmented">
+					{(["all", "one-at-a-time"] as const).map(m => (
+						<button
+							key={m}
+							type="button"
+							className="mc-segmented-btn"
+							data-active={extras.followUpMode === m ? "true" : undefined}
+							onClick={() => handleFollowUpMode(m)}
+						>
+							{m}
+						</button>
+					))}
+				</div>
+			</div>
+
+			<div className="mc-control-row">
+				<span className="mc-control-label">Interrupt mode</span>
+				<div className="mc-segmented">
+					{(["immediate", "wait"] as const).map(m => (
+						<button
+							key={m}
+							type="button"
+							className="mc-segmented-btn"
+							data-active={extras.interruptMode === m ? "true" : undefined}
+							onClick={() => handleInterruptMode(m)}
+						>
+							{m}
+						</button>
+					))}
+				</div>
+			</div>
+
+			<div className="mc-toggle-row">
+				<span className="mc-toggle-label">Auto-compaction</span>
+				<label className="mc-toggle">
+					<input type="checkbox" checked={extras.autoCompactionEnabled ?? false} onChange={handleAutoCompaction} />
+					<span className="mc-toggle-track" />
+					<span className="mc-toggle-thumb" />
+				</label>
+			</div>
+
+			<div className="mc-toggle-row">
+				<span className="mc-toggle-label">Auto-retry on errors</span>
+				<label className="mc-toggle">
+					<input type="checkbox" onChange={handleAutoRetry} />
+					<span className="mc-toggle-track" />
+					<span className="mc-toggle-thumb" />
+				</label>
 			</div>
 
 			<button type="button" className="mc-btn" onClick={() => void refresh()} style={{ marginTop: 10 }}>

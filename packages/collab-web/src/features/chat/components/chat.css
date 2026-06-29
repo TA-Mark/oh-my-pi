@@ -355,6 +355,7 @@
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  position: relative; /* anchor for LogsDrawer */
 }
 
 /* ---- connection status bar ---- */
@@ -690,6 +691,322 @@
 
 .mc-widget-line {
   white-space: pre-wrap;
+}
+
+/* ---- logs drawer ---- */
+.mc-logs-drawer {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 40vh;
+  min-height: 200px;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  border-top: 1px solid var(--border-strong);
+  box-shadow: 0 -8px 24px oklch(0 0 0 / 25%);
+  z-index: 30;
+}
+
+.mc-logs-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border);
+  flex: none;
+}
+
+.mc-logs-count {
+  margin-left: auto;
+  font: 10px/1.4 var(--font-mono);
+  color: var(--fg-faint);
+}
+
+.mc-logs-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 6px 12px;
+  font: 11px/1.5 var(--font-mono);
+}
+
+.mc-log-line {
+  display: grid;
+  grid-template-columns: 70px 60px 1fr;
+  gap: 8px;
+  padding: 1px 0;
+  align-items: baseline;
+}
+
+.mc-log-line[data-stream="stderr"] .mc-log-text {
+  color: var(--warn);
+}
+
+.mc-log-ts {
+  color: var(--fg-faint);
+}
+
+.mc-log-stream {
+  color: var(--fg-muted);
+  font-weight: 600;
+}
+
+.mc-log-text {
+  color: var(--fg);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* ---- attachments preview strip ---- */
+.sh-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 6px 12px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-inset);
+}
+
+.sh-attachment {
+  position: relative;
+  width: 56px;
+  height: 56px;
+  border-radius: var(--radius);
+  overflow: hidden;
+  border: 1px solid var(--border);
+}
+
+.sh-attachment-thumb {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.sh-attachment-del {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 16px;
+  height: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: oklch(0 0 0 / 60%);
+  color: #fff;
+  border: none;
+  border-radius: 50%;
+  font-size: 10px;
+  cursor: pointer;
+  line-height: 1;
+}
+
+.sh-attachment-del:hover {
+  background: var(--err);
+}
+
+/* ---- todos panel ---- */
+.mc-todos {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.mc-todos-empty {
+  font-size: 11px;
+  color: var(--fg-faint);
+  line-height: 1.45;
+}
+
+.mc-todos-empty code {
+  font: 11px/1.4 var(--font-mono);
+  background: var(--bg-inset);
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+
+.mc-todo-phase {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px;
+  background: var(--bg-inset);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.mc-todo-phase-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.mc-todo-phase-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fg);
+}
+
+.mc-todo-phase-progress {
+  font: 10px/1.4 var(--font-mono);
+  color: var(--fg-faint);
+}
+
+.mc-todo-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.mc-todo-item {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.mc-todo-icon {
+  flex: none;
+  width: 14px;
+  text-align: center;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.mc-todo-icon[data-state="ok"] { color: var(--ok); }
+.mc-todo-icon[data-state="active"] { color: var(--accent); }
+.mc-todo-icon[data-state="muted"] { color: var(--fg-faint); }
+.mc-todo-icon[data-state="pending"] { color: var(--fg-muted); }
+
+.mc-todo-text {
+  flex: 1;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--fg);
+  word-break: break-word;
+}
+
+.mc-todo-text[data-state="ok"] {
+  color: var(--fg-muted);
+  text-decoration: line-through;
+}
+
+.mc-todo-text[data-state="muted"] {
+  color: var(--fg-faint);
+  text-decoration: line-through;
+}
+
+/* ---- session header actions ---- */
+.mc-header-session {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+}
+
+.mc-session-title-btn {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fg);
+  background: none;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  padding: 3px 8px;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 320px;
+  flex: none;
+  transition: background 100ms;
+}
+
+.mc-session-title-btn:hover {
+  background: var(--bg-raised);
+  border-color: var(--border);
+}
+
+.mc-header-rename {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fg);
+  background: var(--bg-inset);
+  border: 1px solid var(--ring);
+  border-radius: var(--radius);
+  padding: 3px 8px;
+  min-width: 180px;
+  max-width: 320px;
+  outline: none;
+}
+
+.mc-header-stats {
+  display: flex;
+  gap: 6px;
+  flex: none;
+}
+
+.mc-stat-chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  padding: 2px 8px;
+  font: 11px / 1.4 var(--font-mono);
+  color: var(--fg-muted);
+  background: var(--bg-inset);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+}
+
+.mc-stat-key {
+  color: var(--fg-faint);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.mc-header-actions {
+  display: flex;
+  gap: 4px;
+  flex: none;
+}
+
+.mc-header-iconbtn {
+  padding: 3px 8px;
+  font-size: 11px;
+  color: var(--fg-muted);
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  cursor: pointer;
+  transition: background 100ms, color 100ms;
+  white-space: nowrap;
+}
+
+.mc-header-iconbtn:hover:not(:disabled) {
+  background: var(--bg-overlay);
+  color: var(--fg);
+}
+
+.mc-header-iconbtn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.mc-header-toast {
+  padding: 2px 6px;
+  font: 10px/1.4 var(--font-mono);
+  color: var(--fg-muted);
+  background: var(--bg-inset);
+  border-radius: 3px;
+  white-space: nowrap;
+}
+
+.mc-header-toast--err {
+  color: var(--err);
 }
 
 /* ---- segmented button group (thinking level, etc.) ---- */
