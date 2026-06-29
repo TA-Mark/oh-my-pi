@@ -110,3 +110,31 @@ export async function saveApiKey(name: string, value: string): Promise<{ ok: boo
 export async function deleteApiKey(name: string): Promise<void> {
 	await fetch(`${BASE}/chat/keys/${encodeURIComponent(name)}`, { method: "DELETE" });
 }
+
+// ---------------------------------------------------------------------------
+// Provider catalog (full list of every LLM provider omp supports)
+// ---------------------------------------------------------------------------
+
+export type ProviderCatalogType = "oauth" | "api-key" | "coding-plan" | "local" | "discovery";
+
+export interface ProviderCatalogEntry {
+	id: string;
+	name: string;
+	type: ProviderCatalogType;
+	envVars?: string[];
+	defaultUrl?: string;
+	description?: string;
+	common?: boolean;
+	configured: boolean;
+	configuredVia: "stored-key" | "process-env" | null;
+}
+
+export interface ProviderCatalogResponse {
+	providers: ProviderCatalogEntry[];
+	total: number;
+	byType: Record<ProviderCatalogType, number>;
+}
+
+export async function getProviderCatalog(): Promise<ProviderCatalogResponse> {
+	return get<ProviderCatalogResponse>("/chat/providers/catalog");
+}

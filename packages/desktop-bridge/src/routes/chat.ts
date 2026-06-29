@@ -12,6 +12,7 @@
 import { randomBytes } from "node:crypto";
 import type { BridgeContext } from "../lib/context";
 import { errorResponse, jsonResponse } from "../lib/http";
+import { PROVIDER_CATALOG, type ProviderType } from "../lib/provider-catalog";
 import { makeStore } from "../lib/store";
 import type { ChatSession, DataSource, RuntimeConfig, RuntimeConfigResponse } from "../types";
 
@@ -129,6 +130,48 @@ export async function handleChat(ctx: BridgeContext, req: Request, url: URL): Pr
 		const name = decodeURIComponent(keyDeleteMatch[1]!);
 		const ok = ctx.apiKeys.delete(name);
 		return jsonResponse({ ok, name });
+	}
+
+	// ─── Provider catalog ───────────────────────────────────────────────────
+	// Returns the FULL 70+ provider list (OAuth + API-key + local + coding
+	// plans). omp's RPC `get_login_providers` only returns OAuth providers
+	// (~53), which leaves the UI blind to the rest. This endpoint complements
+	// it with metadata + per-provider status so the Providers tab can render
+	// every authentication path the user has.
+	if (p === "/api/v1/chat/providers/catalog" && req.method === "GET") {
+		const storedKeys = ctx.apiKeys.all();
+		const enriched = PROVIDER_CATALOG.map(entry => {
+			let configured = false;
+			let configuredVia: "stored-key" | "process-env" | null = null;
+			if (entry.envVars && entry.envVars.length > 0) {
+				for (const name of entry.envVars) {
+					if (storedKeys[name]) {
+						configured = true;
+						configuredVia = "stored-key";
+						break;
+					}
+					if (process.env[name]) {
+						configured = true;
+						configuredVia = "process-env";
+						break;
+					}
+				}
+			}
+			return {
+				...entry,
+				configured,
+				configuredVia,
+			};
+		});
+		const byType: Record<ProviderType, number> = {
+			oauth: 0,
+			"api-key": 0,
+			"coding-plan": 0,
+			local: 0,
+			discovery: 0,
+		};
+		for (const p of enriched) byType[p.type]++;
+		return jsonResponse({ providers: enriched, total: enriched.length, byType });
 	}
 
 	const stopMatch = /^\/api\/v1\/chat\/sessions\/([^/]+)\/stop$/.exec(p);

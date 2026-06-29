@@ -1,57 +1,73 @@
 /**
- * ProviderSettings — show omp's provider list, surface login + key-paste UI.
+ * ProviderSettings — full provider catalog UI.
  *
- * Provider list comes from omp via `get_login_providers` (live; no cache in
- * bridge). API keys are persisted by the bridge to `<installDir>/api-keys.json`
- * and merged into omp's env on next session spawn. OAuth providers light up
- * the browser via the existing `extension_ui_request open_url` path that the
- * RpcClient already handles.
+ * Three data sources, merged:
+ *   1. Bridge `/chat/providers/catalog` — the full curated list of every
+ *      provider omp supports (~70+), with each entry's type, env vars,
+ *      default local URL, and whether it's already configured locally.
+ *   2. RPC `get_login_providers` — live OAuth authentication state
+ *      (`authenticated: true/false`) from omp's AuthStorage.
+ *   3. Bridge `/chat/keys` — the user's pasted API keys (masked).
+ *
+ * Providers are grouped: OAuth · API Key · Coding Plans · Local · Discovery.
  */
 
-import { type ReactNode, useCallback, useEffect, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
 import type { ChatClient } from "../../../lib/chat-client";
 import type { LoginProvider } from "../../../lib/rpc-client";
-import { deleteApiKey, listApiKeys, type StoredApiKey, saveApiKey } from "../api/chatApi";
+import {
+	deleteApiKey,
+	getProviderCatalog,
+	listApiKeys,
+	type ProviderCatalogEntry,
+	type ProviderCatalogType,
+	saveApiKey,
+	type StoredApiKey,
+} from "../api/chatApi";
 
 interface Props {
-	/** RPC client for the active session; null while no session is selected. */
 	client: ChatClient | null;
 }
 
-/** Common env-var names users will recognise from the README. */
-const KNOWN_KEY_NAMES = [
-	"ANTHROPIC_API_KEY",
-	"OPENAI_API_KEY",
-	"GEMINI_API_KEY",
-	"XAI_API_KEY",
-	"GROQ_API_KEY",
-	"MISTRAL_API_KEY",
-	"DEEPSEEK_API_KEY",
-	"PERPLEXITY_API_KEY",
-	"OPENROUTER_API_KEY",
-	"FIREWORKS_API_KEY",
-	"TOGETHER_API_KEY",
-];
+interface MergedProvider extends ProviderCatalogEntry {
+	authenticated?: boolean;
+	available?: boolean;
+}
+
+const TYPE_LABELS: Record<ProviderCatalogType, string> = {
+	oauth: "OAuth Sign-in",
+	"api-key": "API Key",
+	"coding-plan": "Coding Plans",
+	local: "Local / Self-hosted",
+	discovery: "Discovery",
+};
+
+const TYPE_ORDER: ProviderCatalogType[] = ["oauth", "api-key", "coding-plan", "local", "discovery"];
 
 export function ProviderSettings({ client }: Props): ReactNode {
-	const [providers, setProviders] = useState<LoginProvider[] | null>(null);
+	const [catalog, setCatalog] = useState<ProviderCatalogEntry[] | null>(null);
+	const [oauth, setOauth] = useState<LoginProvider[]>([]);
 	const [keys, setKeys] = useState<StoredApiKey[]>([]);
 	const [loading, setLoading] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 	const [busyProvider, setBusyProvider] = useState<string | null>(null);
+	const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
 
-	// Key-paste form state
-	const [keyName, setKeyName] = useState<string>(KNOWN_KEY_NAMES[0]!);
-	const [keyValue, setKeyValue] = useState("");
-	const [keyCustom, setKeyCustom] = useState(false);
+	// Inline key-paste state per provider
+	const [pasteFor, setPasteFor] = useState<string | null>(null);
+	const [pasteValue, setPasteValue] = useState("");
+	const [pasteEnvVar, setPasteEnvVar] = useState("");
 
 	const refresh = useCallback(async () => {
 		setLoading(true);
 		setError(null);
 		try {
-			const tasks: Promise<unknown>[] = [listApiKeys().then(r => setKeys(r.keys))];
+			const tasks: Promise<unknown>[] = [
+				getProviderCatalog().then(r => setCatalog(r.providers)),
+				listApiKeys().then(r => setKeys(r.keys)),
+			];
 			if (client?.sendGetLoginProviders) {
-				tasks.push(client.sendGetLoginProviders().then(setProviders));
+				tasks.push(client.sendGetLoginProviders().then(setOauth));
 			}
 			await Promise.all(tasks);
 		} catch (err) {
@@ -65,13 +81,42 @@ export function ProviderSettings({ client }: Props): ReactNode {
 		void refresh();
 	}, [refresh]);
 
+	// Merge catalog + oauth state + stored keys
+	const merged: MergedProvider[] = useMemo(() => {
+		if (!catalog) return [];
+		const oauthById = new Map(oauth.map(o => [o.id, o]));
+		return catalog.map(c => {
+			const o = oauthById.get(c.id);
+			return {
+				...c,
+				authenticated: o?.authenticated,
+				available: o?.available,
+			};
+		});
+	}, [catalog, oauth]);
+
+	const grouped = useMemo(() => {
+		const map = new Map<ProviderCatalogType, MergedProvider[]>();
+		for (const t of TYPE_ORDER) map.set(t, []);
+		for (const p of merged) {
+			const arr = map.get(p.type);
+			if (arr) arr.push(p);
+		}
+		// Within each group: common first, then alphabetical
+		for (const arr of map.values()) {
+			arr.sort((a, b) => {
+				if ((a.common ?? false) !== (b.common ?? false)) return a.common ? -1 : 1;
+				return a.name.localeCompare(b.name);
+			});
+		}
+		return map;
+	}, [merged]);
+
 	const handleLogin = useCallback(
 		(providerId: string) => {
 			if (!client?.sendLogin) return;
 			setBusyProvider(providerId);
 			client.sendLogin(providerId);
-			// Browser will open via extension_ui_request open_url. Re-poll a few
-			// seconds later in case the OAuth callback already completed.
 			setTimeout(() => {
 				setBusyProvider(null);
 				void refresh();
@@ -80,19 +125,26 @@ export function ProviderSettings({ client }: Props): ReactNode {
 		[client, refresh],
 	);
 
-	const handleSaveKey = useCallback(
+	const openPasteFor = useCallback((p: MergedProvider) => {
+		setPasteFor(p.id);
+		setPasteEnvVar(p.envVars?.[0] ?? "");
+		setPasteValue("");
+	}, []);
+
+	const handleSavePaste = useCallback(
 		async (e: React.FormEvent) => {
 			e.preventDefault();
-			if (!keyName || !keyValue) return;
+			if (!pasteEnvVar || !pasteValue) return;
 			try {
-				await saveApiKey(keyName, keyValue);
-				setKeyValue("");
+				await saveApiKey(pasteEnvVar, pasteValue);
+				setPasteFor(null);
+				setPasteValue("");
 				await refresh();
 			} catch (err) {
 				setError(err instanceof Error ? err.message : String(err));
 			}
 		},
-		[keyName, keyValue, refresh],
+		[pasteEnvVar, pasteValue, refresh],
 	);
 
 	const handleDeleteKey = useCallback(
@@ -107,9 +159,22 @@ export function ProviderSettings({ client }: Props): ReactNode {
 		[refresh],
 	);
 
+	const toggleExpand = useCallback((id: string) => {
+		setExpanded(prev => {
+			const next = new Set(prev);
+			if (next.has(id)) next.delete(id);
+			else next.add(id);
+			return next;
+		});
+	}, []);
+
+	const totalConfigured = merged.filter(p => p.configured || p.authenticated).length;
+
 	return (
 		<div className="mc-providers">
-			<div className="mc-section-title">Providers</div>
+			<div className="mc-section-title">
+				Providers <span className="mc-providers-count">{totalConfigured} / {merged.length} configured</span>
+			</div>
 
 			{error && (
 				<div className="mc-providers-error" role="alert">
@@ -117,113 +182,163 @@ export function ProviderSettings({ client }: Props): ReactNode {
 				</div>
 			)}
 
-			{/* OAuth / sign-in providers */}
-			<div className="mc-providers-list">
-				{!client && <div className="mc-providers-hint">Start a chat session to load provider list.</div>}
-				{client && providers === null && !loading && <div className="mc-providers-hint">Connecting to agent…</div>}
-				{providers?.length === 0 && <div className="mc-providers-hint">No OAuth providers available.</div>}
-				{providers?.map(p => (
-					<div key={p.id} className="mc-provider-item" data-state={p.authenticated ? "ok" : "available"}>
-						<span className="mc-provider-badge" data-state={p.authenticated ? "ok" : "available"}>
-							{p.authenticated ? "✓" : p.available ? "○" : "⊘"}
-						</span>
-						<span className="mc-provider-name">{p.name}</span>
-						<button
-							type="button"
-							className="mc-btn"
-							onClick={() => handleLogin(p.id)}
-							disabled={!p.available || busyProvider === p.id}
-						>
-							{busyProvider === p.id ? "Opening…" : p.authenticated ? "Re-login" : "Login"}
-						</button>
-					</div>
-				))}
-			</div>
+			{loading && catalog === null && <div className="mc-providers-hint">Loading provider catalog…</div>}
 
-			{/* API keys */}
-			<div className="mc-section-title" style={{ marginTop: 16 }}>
-				API Keys
-			</div>
-			<div className="mc-providers-hint">
-				Pasted keys are written to <code>api-keys.json</code> on this machine and forwarded to omp as environment
-				variables on every new session.
-			</div>
-
-			<form className="mc-key-form" onSubmit={handleSaveKey}>
-				<div className="mc-control-row">
-					<label className="mc-control-label" htmlFor="mc-key-name">
-						Env var name
-					</label>
-					{keyCustom ? (
-						<input
-							id="mc-key-name"
-							className="mc-dialog-input"
-							value={keyName}
-							onChange={e => setKeyName(e.target.value.toUpperCase())}
-							placeholder="MY_PROVIDER_API_KEY"
-							spellCheck={false}
-						/>
-					) : (
-						<select
-							id="mc-key-name"
-							className="mc-select"
-							value={keyName}
-							onChange={e => {
-								if (e.target.value === "__custom__") {
-									setKeyCustom(true);
-									setKeyName("");
-								} else {
-									setKeyName(e.target.value);
-								}
-							}}
-						>
-							{KNOWN_KEY_NAMES.map(n => (
-								<option key={n} value={n}>
-									{n}
-								</option>
-							))}
-							<option value="__custom__">Custom…</option>
-						</select>
-					)}
-				</div>
-				<div className="mc-control-row">
-					<label className="mc-control-label" htmlFor="mc-key-value">
-						Value
-					</label>
-					<input
-						id="mc-key-value"
-						className="mc-dialog-input"
-						type="password"
-						value={keyValue}
-						onChange={e => setKeyValue(e.target.value)}
-						placeholder="sk-…"
-						spellCheck={false}
-						autoComplete="off"
-					/>
-				</div>
-				<button type="submit" className="mc-btn mc-btn-primary" disabled={!keyName || !keyValue}>
-					Save key
-				</button>
-			</form>
-
-			{keys.length > 0 && (
-				<div className="mc-keys-list">
-					{keys.map(k => (
-						<div key={k.name} className="mc-key-item">
-							<span className="mc-key-name">{k.name}</span>
-							<span className="mc-key-mask">{k.masked}</span>
-							<button
-								type="button"
-								className="mc-btn mc-btn-stop"
-								onClick={() => handleDeleteKey(k.name)}
-								title={`Delete ${k.name}`}
-							>
-								✕
-							</button>
+			{TYPE_ORDER.map(type => {
+				const items = grouped.get(type) ?? [];
+				if (items.length === 0) return null;
+				return (
+					<section key={type} className="mc-provider-group">
+						<div className="mc-provider-group-head">
+							<span className="mc-provider-group-label">{TYPE_LABELS[type]}</span>
+							<span className="mc-provider-group-count">{items.length}</span>
 						</div>
-					))}
-				</div>
-			)}
+						<div className="mc-providers-list">
+							{items.map(p => {
+								const isExpanded = expanded.has(p.id);
+								const isAuth = p.authenticated ?? false;
+								const isConf = p.configured;
+								const state = isAuth || isConf ? "ok" : "available";
+								const badgeChar = isAuth ? "✓" : isConf ? "●" : p.type === "local" ? "⌂" : "○";
+								return (
+									<div key={p.id} className="mc-provider-item" data-state={state}>
+										<button
+											type="button"
+											className="mc-provider-row"
+											onClick={() => toggleExpand(p.id)}
+											title={p.description ?? p.id}
+										>
+											<span className="mc-provider-badge" data-state={state}>
+												{badgeChar}
+											</span>
+											<span className="mc-provider-name">
+												{p.name}
+												{p.common && <span className="mc-provider-common">★</span>}
+											</span>
+											<span className="mc-provider-status">
+												{isAuth ? "logged in" : isConf ? `via ${p.configuredVia === "stored-key" ? "key" : "env"}` : ""}
+											</span>
+											<span className="mc-provider-chev">{isExpanded ? "▾" : "▸"}</span>
+										</button>
+
+										{isExpanded && (
+											<div className="mc-provider-detail">
+												{p.description && <div className="mc-providers-hint">{p.description}</div>}
+
+												{/* OAuth login button */}
+												{(p.type === "oauth" || p.type === "coding-plan") && client?.sendLogin && (
+													<button
+														type="button"
+														className="mc-btn mc-btn-primary"
+														onClick={() => handleLogin(p.id)}
+														disabled={busyProvider === p.id || (p.available === false)}
+													>
+														{busyProvider === p.id ? "Opening browser…" : isAuth ? "Re-login" : "Sign in"}
+													</button>
+												)}
+
+												{/* API key paste */}
+												{p.envVars && p.envVars.length > 0 && (
+													<>
+														{pasteFor === p.id ? (
+															<form className="mc-key-form" onSubmit={handleSavePaste}>
+																{p.envVars.length > 1 && (
+																	<div className="mc-control-row">
+																		<label className="mc-control-label">Env var</label>
+																		<select
+																			className="mc-select"
+																			value={pasteEnvVar}
+																			onChange={e => setPasteEnvVar(e.target.value)}
+																		>
+																			{p.envVars.map(name => (
+																				<option key={name} value={name}>
+																					{name}
+																				</option>
+																			))}
+																		</select>
+																	</div>
+																)}
+																<input
+																	className="mc-dialog-input"
+																	type="password"
+																	value={pasteValue}
+																	onChange={e => setPasteValue(e.target.value)}
+																	placeholder={`${pasteEnvVar} value`}
+																	autoComplete="off"
+																	spellCheck={false}
+																/>
+																<div className="mc-dialog-actions">
+																	<button type="button" className="mc-btn" onClick={() => setPasteFor(null)}>
+																		Cancel
+																	</button>
+																	<button
+																		type="submit"
+																		className="mc-btn mc-btn-primary"
+																		disabled={!pasteValue}
+																	>
+																		Save
+																	</button>
+																</div>
+															</form>
+														) : (
+															<div className="mc-provider-keys">
+																<div className="mc-provider-keys-label">
+																	Env: {p.envVars.join(" / ")}
+																</div>
+																{(() => {
+																	const stored = keys.find(k => p.envVars?.includes(k.name));
+																	if (stored) {
+																		return (
+																			<div className="mc-key-item">
+																				<span className="mc-key-name">{stored.name}</span>
+																				<span className="mc-key-mask">{stored.masked}</span>
+																				<button
+																					type="button"
+																					className="mc-btn mc-btn-stop"
+																					onClick={() => handleDeleteKey(stored.name)}
+																				>
+																					✕
+																				</button>
+																			</div>
+																		);
+																	}
+																	return (
+																		<button
+																			type="button"
+																			className="mc-btn"
+																			onClick={() => openPasteFor(p)}
+																		>
+																			Paste API key
+																		</button>
+																	);
+																})()}
+															</div>
+														)}
+													</>
+												)}
+
+												{/* Local provider URL */}
+												{p.type === "local" && p.defaultUrl && (
+													<div className="mc-providers-hint">
+														Default URL: <code>{p.defaultUrl}</code>
+														<br />
+														omp auto-detects. Override via env or <code>~/.omp/agent/models.yml</code>.
+													</div>
+												)}
+
+												{/* Provider id (for debugging / models.yml) */}
+												<div className="mc-providers-hint">
+													ID: <code>{p.id}</code>
+												</div>
+											</div>
+										)}
+									</div>
+								);
+							})}
+						</div>
+					</section>
+				);
+			})}
 
 			<button type="button" className="mc-btn" onClick={() => void refresh()} style={{ marginTop: 12 }}>
 				⟳ Refresh
