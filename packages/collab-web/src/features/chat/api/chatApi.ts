@@ -89,3 +89,24 @@ export async function getRuntimeConfig(): Promise<RuntimeConfigResponse> {
 export async function updateRuntimeConfig(patch: Partial<RuntimeConfig>): Promise<RuntimeConfigResponse> {
 	return post<RuntimeConfigResponse>("/chat/runtime-config", patch);
 }
+
+// ---------------------------------------------------------------------------
+// API keys (env vars piped to omp on session start)
+// ---------------------------------------------------------------------------
+
+export interface StoredApiKey {
+	name: string;
+	masked: string;
+}
+
+export async function listApiKeys(): Promise<{ keys: StoredApiKey[] }> {
+	return get<{ keys: StoredApiKey[] }>("/chat/keys");
+}
+
+export async function saveApiKey(name: string, value: string): Promise<{ ok: boolean; name: string }> {
+	return post<{ ok: boolean; name: string }>("/chat/keys", { name, value });
+}
+
+export async function deleteApiKey(name: string): Promise<void> {
+	await fetch(`${BASE}/chat/keys/${encodeURIComponent(name)}`, { method: "DELETE" });
+}

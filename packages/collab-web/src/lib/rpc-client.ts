@@ -90,6 +90,24 @@ type ExtensionUiRequest =
 /** Response shape sent back over the WS (subset of RpcExtensionUIResponse). */
 export type DialogResponse = { value: string } | { confirmed: boolean } | { cancelled: true; timedOut?: boolean };
 
+/** Shape returned by `get_login_providers`. */
+export interface LoginProvider {
+	id: string;
+	name: string;
+	available: boolean;
+	authenticated: boolean;
+}
+
+/** Subset of omp's Model the UI cares about. */
+export interface AvailableModel {
+	id: string;
+	provider: string;
+	displayName?: string;
+	contextWindow?: number;
+	maxTokens?: number;
+	cost?: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number };
+}
+
 const MAX_NOTICES = 50;
 
 // ─── Bridge envelope shape (matches packages/desktop-bridge/src/lib/omp-manager.ts) ──
@@ -154,6 +172,11 @@ export class RpcClient {
 	#commands: SlashCommandInfo[] = [];
 	/** Tracks optimistic user entries waiting for prompt response. Map<reqId, entryId>. */
 	#pendingPrompts = new Map<string, string>();
+	/** Generic request/response correlator for typed RPC reads. */
+	#pendingResponses = new Map<
+		string,
+		{ resolve: (data: unknown) => void; reject: (err: Error) => void; timer: ReturnType<typeof setTimeout> }
+	>();
 	#pendingDialog: PendingDialog | null = null;
 	#dialogTimer: ReturnType<typeof setTimeout> | null = null;
 	#statusEntries = new Map<string, string>();
@@ -226,6 +249,37 @@ export class RpcClient {
 		this.#send({ id: this.#nextReqId(), type: "set_thinking_level", level });
 	}
 
+	/** Fetch the list of OAuth/login providers from omp. */
+	async sendGetLoginProviders(): Promise<LoginProvider[]> {
+		const data = (await this.#request("get_login_providers", { type: "get_login_providers" })) as {
+			providers?: LoginProvider[];
+		};
+		return Array.isArray(data.providers) ? data.providers : [];
+	}
+
+	/** Start an OAuth/API-key flow for `providerId`. Browser opens via extension_ui_request. */
+	sendLogin(providerId: string): void {
+		this.#send({ id: this.#nextReqId(), type: "login", providerId });
+	}
+
+	/** Fetch every model omp knows about right now. */
+	async sendGetAvailableModels(): Promise<AvailableModel[]> {
+		const data = (await this.#request("get_available_models", { type: "get_available_models" })) as {
+			models?: AvailableModel[];
+		};
+		return Array.isArray(data.models) ? data.models : [];
+	}
+
+	/** Cycle model role (next in configured order). */
+	sendCycleModel(): void {
+		this.#send({ id: this.#nextReqId(), type: "cycle_model" });
+	}
+
+	/** Cycle thinking level (next in configured order). */
+	sendCycleThinkingLevel(): void {
+		this.#send({ id: this.#nextReqId(), type: "cycle_thinking_level" });
+	}
+
 	/** Respond to the currently pending extension dialog and dismiss it. */
 	respondToDialog(payload: DialogResponse): void {
 		const dialog = this.#pendingDialog;
@@ -266,6 +320,12 @@ export class RpcClient {
 		// response — drop their tracking so the optimistic entries stay visible
 		// (a refreshed get_state/get_messages will reconcile if omp persisted them).
 		this.#pendingPrompts.clear();
+		// Reject any in-flight typed requests — their response will never arrive.
+		for (const pending of this.#pendingResponses.values()) {
+			clearTimeout(pending.timer);
+			pending.reject(new Error("WS reconnected before response arrived"));
+		}
+		this.#pendingResponses.clear();
 		// Extension UI state belongs to the previous omp process; drop it so
 		// stale modals/widgets don't linger after reconnect.
 		this.#clearDialog();
@@ -335,6 +395,23 @@ export class RpcClient {
 	#nextReqId(): string {
 		this.#reqSeq++;
 		return `r${this.#reqSeq}`;
+	}
+
+	/**
+	 * Send a request frame and resolve when the matching `response` arrives.
+	 * The response is routed by reqId in the central frame handler — so this
+	 * works for any command that returns a `data` payload (get_*, set_* with data).
+	 */
+	#request(command: string, body: object, timeoutMs = 10000): Promise<unknown> {
+		const id = this.#nextReqId();
+		return new Promise((resolve, reject) => {
+			const timer = setTimeout(() => {
+				this.#pendingResponses.delete(id);
+				reject(new Error(`RPC ${command} timed out after ${timeoutMs}ms`));
+			}, timeoutMs);
+			this.#pendingResponses.set(id, { resolve, reject, timer });
+			this.#send({ id, ...body });
+		});
 	}
 
 	// ─── Envelope reducer ────────────────────────────────────────────────────
@@ -489,7 +566,9 @@ export class RpcClient {
 				this.#handleExtensionUiRequest(frame);
 				return;
 			}
-			case "response":
+			case "response": {
+				// Prompt rollback path (special-cased because the entry id mapping
+				// lives in #pendingPrompts, not #pendingResponses).
 				if (frame.command === "prompt" && frame.id) {
 					const entryId = this.#pendingPrompts.get(frame.id);
 					this.#pendingPrompts.delete(frame.id);
@@ -502,10 +581,19 @@ export class RpcClient {
 					}
 					return;
 				}
+				// Generic correlator path: resolve / reject the pending request.
+				if (frame.id) {
+					const pending = this.#pendingResponses.get(frame.id);
+					if (pending) {
+						clearTimeout(pending.timer);
+						this.#pendingResponses.delete(frame.id);
+						if (frame.success) pending.resolve(frame.data ?? {});
+						else pending.reject(new Error(frame.error || `RPC ${frame.command} failed`));
+					}
+				}
+				// Side-effects on specific responses (state hydration, transcript seed).
 				if (frame.command === "get_state" && frame.success && frame.data) {
 					this.#state = this.#buildState(frame.data);
-					// If omp resumed from a saved sessionFile, pull the existing
-					// transcript so the UI seeds with prior turns instead of empty.
 					const r = frame.data as { messageCount?: number };
 					if (typeof r.messageCount === "number" && r.messageCount > 0 && this.#entries.length === 0) {
 						this.#send({ id: this.#nextReqId(), type: "get_messages" });
@@ -516,6 +604,7 @@ export class RpcClient {
 					if (Array.isArray(d.messages)) this.#seedEntriesFromMessages(d.messages);
 				}
 				return;
+			}
 		}
 	}
 

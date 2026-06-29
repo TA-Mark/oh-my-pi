@@ -93,10 +93,12 @@ export async function handleChat(ctx: BridgeContext, req: Request, url: URL): Pr
 		if (!found) return errorResponse("SESSION_NOT_FOUND", "no such session", 404);
 		const binding = ctx.omp.bindings.get(id);
 		const extraArgs = binding ? ["--resume", binding.sessionFile] : undefined;
+		const envFromKeys = ctx.apiKeys.all();
 		try {
 			const snap = await ctx.omp.start(id, {
 				cwd: ctx.config.installDir,
 				...(extraArgs ? { extraArgs } : {}),
+				...(Object.keys(envFromKeys).length > 0 ? { env: envFromKeys } : {}),
 			});
 			return jsonResponse({
 				ok: true,
@@ -106,6 +108,27 @@ export async function handleChat(ctx: BridgeContext, req: Request, url: URL): Pr
 		} catch (err) {
 			return errorResponse("OMP_SPAWN_FAILED", err instanceof Error ? err.message : String(err), 502);
 		}
+	}
+
+	// ─── API keys ────────────────────────────────────────────────────────────
+	if (p === "/api/v1/chat/keys" && req.method === "GET") {
+		return jsonResponse({ keys: ctx.apiKeys.list() });
+	}
+	if (p === "/api/v1/chat/keys" && req.method === "POST") {
+		const body = (await req.json().catch(() => ({}))) as { name?: string; value?: string };
+		const name = body.name?.trim();
+		const value = body.value;
+		if (!name || typeof value !== "string" || value.length === 0) {
+			return errorResponse("BAD_REQUEST", "name and value are required", 400);
+		}
+		ctx.apiKeys.set(name, value);
+		return jsonResponse({ ok: true, name });
+	}
+	const keyDeleteMatch = /^\/api\/v1\/chat\/keys\/([^/]+)$/.exec(p);
+	if (keyDeleteMatch && req.method === "DELETE") {
+		const name = decodeURIComponent(keyDeleteMatch[1]!);
+		const ok = ctx.apiKeys.delete(name);
+		return jsonResponse({ ok, name });
 	}
 
 	const stopMatch = /^\/api\/v1\/chat\/sessions\/([^/]+)\/stop$/.exec(p);

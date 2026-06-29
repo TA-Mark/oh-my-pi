@@ -22,15 +22,7 @@ import { type ReactNode, useCallback, useEffect, useMemo, useState, useSyncExter
 import { Transcript } from "../../../components/transcript/Transcript";
 import type { ChatClient, DialogResponsePayload } from "../../../lib/chat-client";
 import { RpcClient } from "../../../lib/rpc-client";
-import {
-	createSession,
-	deleteSession,
-	getRuntimeConfig,
-	listDataSources,
-	listSessions,
-	refreshDataSource,
-	updateRuntimeConfig,
-} from "../api/chatApi";
+import { createSession, deleteSession, listDataSources, listSessions, refreshDataSource } from "../api/chatApi";
 import { ChatComposer } from "../components/ChatComposer";
 import { ConnectionStatusBar } from "../components/ConnectionStatusBar";
 import { ExtensionDialog } from "../components/ExtensionDialog";
@@ -161,33 +153,9 @@ export function MainChatPage({ onGoToLauncher }: Props): ReactNode {
 		[actions],
 	);
 
-	// ---- Config update ----
-	const handleConfigUpdate = useCallback(
-		async (patch: Parameters<typeof updateRuntimeConfig>[0]) => {
-			actions.configLoading(true);
-			try {
-				const res = await updateRuntimeConfig(patch);
-				actions.configUpdated(res);
-				// Forward live changes to the active omp child so the next prompt picks them up.
-				if (client) {
-					if (patch.model && client.sendSetModel) {
-						const slash = patch.model.indexOf("/");
-						if (slash > 0) {
-							client.sendSetModel(patch.model.slice(0, slash), patch.model.slice(slash + 1));
-						}
-					}
-					if (patch.thinkingEnabled !== undefined && client.sendSetThinkingLevel) {
-						client.sendSetThinkingLevel(patch.thinkingEnabled ? "high" : "off");
-					}
-				}
-			} catch {
-				// silently ignore
-			} finally {
-				actions.configLoading(false);
-			}
-		},
-		[actions, client],
-	);
+	// Runtime config (model + thinking) is now driven directly by RpcClient
+	// inside UserControlsPanel — the REST runtime-config stub is no longer the
+	// source of truth.
 
 	// ---- Data source refresh ----
 	const handleSourceRefresh = useCallback(
@@ -213,11 +181,6 @@ export function MainChatPage({ onGoToLauncher }: Props): ReactNode {
 		// Data sources
 		listDataSources()
 			.then(res => actions.dataSourcesLoaded(res.sources))
-			.catch(() => {});
-
-		// Runtime config
-		getRuntimeConfig()
-			.then(res => actions.configLoaded(res, res.availableModels))
 			.catch(() => {});
 	}, [actions]);
 
@@ -300,15 +263,13 @@ export function MainChatPage({ onGoToLauncher }: Props): ReactNode {
 					activeSessionId={ui.activeSessionId}
 					sessionLoading={ui.sessionLoading}
 					dataSources={ui.dataSources}
-					runtimeConfig={ui.runtimeConfig}
-					availableModels={ui.availableModels}
-					configLoading={ui.configLoading}
+					client={client}
+					snapshot={snapshot}
 					onTabChange={actions.setSidebarTab}
 					onSessionActivate={activateSession}
 					onSessionDelete={handleDeleteSession}
 					onSessionNew={handleNewSession}
 					onSourceRefresh={handleSourceRefresh}
-					onConfigUpdate={handleConfigUpdate}
 				/>
 
 				{/* Chat area */}

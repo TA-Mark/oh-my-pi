@@ -5,6 +5,7 @@
  */
 
 import type { GuestSnapshot } from "./client";
+import type { AvailableModel, LoginProvider } from "./rpc-client";
 
 export type DialogResponsePayload =
 	| { value: string }
@@ -25,6 +26,12 @@ export interface ChatClient {
 	respondToDialog?(payload: DialogResponsePayload): void;
 	/** Optional — only RpcClient supports set_editor_text. */
 	registerEditorTextSetter?(fn: ((text: string) => void) | null): void;
+	/** Optional — RpcClient-only: fetch provider/model lists for settings UIs. */
+	sendGetLoginProviders?(): Promise<LoginProvider[]>;
+	sendLogin?(providerId: string): void;
+	sendGetAvailableModels?(): Promise<AvailableModel[]>;
+	sendCycleModel?(): void;
+	sendCycleThinkingLevel?(): void;
 	connect(): void;
 	close(): void;
 }

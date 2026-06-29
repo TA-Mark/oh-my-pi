@@ -1,34 +1,36 @@
 import type { ReactNode } from "react";
+import type { ChatClient } from "../../../lib/chat-client";
+import type { GuestSnapshot } from "../../../lib/client";
 import type { SidebarTab } from "../hooks/useChatStateMachine";
-import type { ChatSession, DataSource, RuntimeConfig } from "../types/chat";
+import type { ChatSession, DataSource } from "../types/chat";
 import { DataSourcesPanel } from "./DataSourcesPanel";
+import { ProviderSettings } from "./ProviderSettings";
 import { SessionList } from "./SessionList";
 import { UserControlsPanel } from "./UserControlsPanel";
 
 interface Props {
 	open: boolean;
 	tab: SidebarTab;
+	// Active session bridge (null when no session is selected)
+	client: ChatClient | null;
+	snapshot: GuestSnapshot | null;
 	// sessions
 	sessions: ChatSession[];
 	activeSessionId: string | null;
 	sessionLoading: boolean;
 	// data sources
 	dataSources: DataSource[];
-	// config
-	runtimeConfig: RuntimeConfig | null;
-	availableModels: string[];
-	configLoading: boolean;
 	// callbacks
 	onTabChange(tab: SidebarTab): void;
 	onSessionActivate(id: string, link: string): void;
 	onSessionDelete(id: string): void;
 	onSessionNew(): void;
 	onSourceRefresh(id: string): void;
-	onConfigUpdate(patch: Partial<RuntimeConfig>): void;
 }
 
 const TABS: { id: SidebarTab; label: string }[] = [
 	{ id: "controls", label: "Controls" },
+	{ id: "providers", label: "Providers" },
 	{ id: "sessions", label: "Sessions" },
 	{ id: "sources", label: "Sources" },
 ];
@@ -37,19 +39,17 @@ export function LeftSidebar(props: Props): ReactNode {
 	const {
 		open,
 		tab,
+		client,
+		snapshot,
 		sessions,
 		activeSessionId,
 		sessionLoading,
 		dataSources,
-		runtimeConfig,
-		availableModels,
-		configLoading,
 		onTabChange,
 		onSessionActivate,
 		onSessionDelete,
 		onSessionNew,
 		onSourceRefresh,
-		onConfigUpdate,
 	} = props;
 
 	return (
@@ -73,15 +73,8 @@ export function LeftSidebar(props: Props): ReactNode {
 
 			{/* Content */}
 			<div className="mc-sidebar-content" role="tabpanel">
-				{tab === "controls" && (
-					<UserControlsPanel
-						config={runtimeConfig}
-						availableModels={availableModels}
-						loading={configLoading}
-						onUpdate={onConfigUpdate}
-					/>
-				)}
-
+				{tab === "controls" && <UserControlsPanel client={client} snapshot={snapshot} />}
+				{tab === "providers" && <ProviderSettings client={client} />}
 				{tab === "sessions" && (
 					<SessionList
 						sessions={sessions}
@@ -92,7 +85,6 @@ export function LeftSidebar(props: Props): ReactNode {
 						onNew={onSessionNew}
 					/>
 				)}
-
 				{tab === "sources" && <DataSourcesPanel sources={dataSources} onRefresh={onSourceRefresh} />}
 			</div>
 		</aside>

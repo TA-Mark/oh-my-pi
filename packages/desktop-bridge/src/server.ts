@@ -11,6 +11,7 @@
  */
 
 import { dirname } from "node:path";
+import { ApiKeyStore } from "./lib/api-keys";
 import { loadConfig } from "./lib/config";
 import type { BridgeContext } from "./lib/context";
 import { corsPreflight, errorResponse } from "./lib/http";
@@ -53,7 +54,8 @@ export function start(opts: { port?: number } = {}): { url: string; stop(): Prom
 	const jobs = new JobManager({ logDir: `${config.installDir}/logs` });
 	const launcher = new LauncherSupervisor(config);
 	const omp = new OmpSessionManager(config);
-	const ctx: BridgeContext = { config, jobs, launcher, omp };
+	const apiKeys = new ApiKeyStore(config.stateDir);
+	const ctx: BridgeContext = { config, jobs, launcher, omp, apiKeys };
 
 	const subscribers = new WeakMap<Bun.ServerWebSocket<SocketData>, () => void>();
 

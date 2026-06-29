@@ -4,6 +4,7 @@
  */
 
 import type { LauncherSupervisor } from "../routes/launcher";
+import type { ApiKeyStore } from "./api-keys";
 import type { BridgeConfig } from "./config";
 import type { JobManager } from "./jobs";
 import type { OmpSessionManager } from "./omp-manager";
@@ -13,4 +14,5 @@ export interface BridgeContext {
 	jobs: JobManager;
 	launcher: LauncherSupervisor;
 	omp: OmpSessionManager;
+	apiKeys: ApiKeyStore;
 }

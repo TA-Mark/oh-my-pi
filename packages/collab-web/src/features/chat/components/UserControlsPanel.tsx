@@ -1,27 +1,110 @@
-import type { ReactNode } from "react";
-import type { RuntimeConfig } from "../types/chat";
+/**
+ * UserControlsPanel — model picker + thinking level + interrupt mode.
+ *
+ * Model + thinking now flow through RpcClient (set_model / set_thinking_level)
+ * rather than the legacy `runtime-config` REST stub. The model list is fetched
+ * live from omp via `get_available_models` so it always reflects whatever the
+ * user has authenticated for.
+ */
+
+import { type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
+import type { ChatClient } from "../../../lib/chat-client";
+import type { GuestSnapshot } from "../../../lib/client";
+import type { AvailableModel } from "../../../lib/rpc-client";
 
 interface Props {
-	config: RuntimeConfig | null;
-	availableModels: string[];
-	loading: boolean;
-	onUpdate(patch: Partial<RuntimeConfig>): void;
+	client: ChatClient | null;
+	snapshot: GuestSnapshot | null;
 }
 
-export function UserControlsPanel({ config, availableModels, loading, onUpdate }: Props): ReactNode {
-	if (!config) {
-		return (
-			<div style={{ color: "var(--fg-faint)", fontSize: 12 }}>
-				{loading ? "Loading config…" : "No config available."}
-			</div>
-		);
+const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"] as const;
+type ThinkingLevel = (typeof THINKING_LEVELS)[number];
+
+function fmtCost(model: AvailableModel): string | null {
+	const inCost = model.cost?.input;
+	const outCost = model.cost?.output;
+	if (typeof inCost !== "number" || typeof outCost !== "number") return null;
+	return `$${inCost.toFixed(2)} / $${outCost.toFixed(2)} per 1M`;
+}
+
+function fmtContext(model: AvailableModel): string | null {
+	const ctx = model.contextWindow;
+	if (typeof ctx !== "number") return null;
+	if (ctx >= 1_000_000) return `${(ctx / 1_000_000).toFixed(1)}M ctx`;
+	if (ctx >= 1_000) return `${Math.round(ctx / 1_000)}k ctx`;
+	return `${ctx} ctx`;
+}
+
+export function UserControlsPanel({ client, snapshot }: Props): ReactNode {
+	const [models, setModels] = useState<AvailableModel[] | null>(null);
+	const [loading, setLoading] = useState(false);
+	const [error, setError] = useState<string | null>(null);
+
+	const state = snapshot?.state;
+	const currentModel = state?.model;
+	const currentThinking = (state?.thinkingLevel ?? "off") as ThinkingLevel;
+
+	const refresh = useCallback(async () => {
+		if (!client?.sendGetAvailableModels) return;
+		setLoading(true);
+		setError(null);
+		try {
+			const list = await client.sendGetAvailableModels();
+			setModels(list);
+		} catch (err) {
+			setError(err instanceof Error ? err.message : String(err));
+		} finally {
+			setLoading(false);
+		}
+	}, [client]);
+
+	useEffect(() => {
+		void refresh();
+	}, [refresh]);
+
+	const groupedModels = useMemo(() => {
+		if (!models) return [] as Array<{ provider: string; items: AvailableModel[] }>;
+		const map = new Map<string, AvailableModel[]>();
+		for (const m of models) {
+			if (!map.has(m.provider)) map.set(m.provider, []);
+			map.get(m.provider)!.push(m);
+		}
+		return Array.from(map.entries())
+			.sort(([a], [b]) => a.localeCompare(b))
+			.map(([provider, items]) => ({ provider, items }));
+	}, [models]);
+
+	const handleSelectModel = useCallback(
+		(provider: string, modelId: string) => {
+			client?.sendSetModel?.(provider, modelId);
+		},
+		[client],
+	);
+
+	const handleThinking = useCallback(
+		(level: ThinkingLevel) => {
+			client?.sendSetThinkingLevel?.(level);
+		},
+		[client],
+	);
+
+	if (!client) {
+		return <div style={{ color: "var(--fg-faint)", fontSize: 12 }}>Start a session to configure runtime.</div>;
 	}
+
+	const currentModelLabel = currentModel ? `${currentModel.provider}/${currentModel.id}` : "(none selected)";
 
 	return (
 		<div>
 			<div className="mc-section-title">Runtime Controls</div>
 
-			{/* Model selector */}
+			{error && (
+				<div className="mc-providers-error" role="alert">
+					{error}
+				</div>
+			)}
+
+			{/* Model picker — grouped select */}
 			<div className="mc-control-row">
 				<label className="mc-control-label" htmlFor="mc-model-select">
 					Model
@@ -29,54 +112,61 @@ export function UserControlsPanel({ config, availableModels, loading, onUpdate }
 				<select
 					id="mc-model-select"
 					className="mc-select"
-					value={config.model}
-					disabled={loading}
-					onChange={e => onUpdate({ model: e.target.value })}
+					value={currentModel ? `${currentModel.provider}::${currentModel.id}` : ""}
+					disabled={loading || groupedModels.length === 0}
+					onChange={e => {
+						const [provider, modelId] = e.target.value.split("::");
+						if (provider && modelId) handleSelectModel(provider, modelId);
+					}}
 				>
-					{availableModels.length === 0 ? (
-						<option value={config.model}>{config.model}</option>
+					{groupedModels.length === 0 ? (
+						<option value="">{loading ? "Loading…" : currentModelLabel}</option>
 					) : (
-						availableModels.map(m => (
-							<option key={m} value={m}>
-								{m}
-							</option>
+						groupedModels.map(({ provider, items }) => (
+							<optgroup key={provider} label={provider}>
+								{items.map(m => {
+									const ctx = fmtContext(m);
+									const cost = fmtCost(m);
+									const meta = [ctx, cost].filter(Boolean).join(" · ");
+									return (
+										<option key={`${provider}/${m.id}`} value={`${provider}::${m.id}`}>
+											{m.displayName ?? m.id}
+											{meta ? ` — ${meta}` : ""}
+										</option>
+									);
+								})}
+							</optgroup>
 						))
 					)}
 				</select>
 			</div>
 
-			{/* Mode selector */}
+			{/* Thinking level — segmented button group */}
 			<div className="mc-control-row">
-				<label className="mc-control-label" htmlFor="mc-mode-select">
-					Mode
-				</label>
-				<select
-					id="mc-mode-select"
-					className="mc-select"
-					value={config.mode}
-					disabled={loading}
-					onChange={e => onUpdate({ mode: e.target.value as RuntimeConfig["mode"] })}
-				>
-					<option value="normal">Normal</option>
-					<option value="safe">Safe</option>
-					<option value="debug">Debug</option>
-				</select>
+				<span className="mc-control-label">Thinking level</span>
+				<div className="mc-segmented">
+					{THINKING_LEVELS.map(level => (
+						<button
+							key={level}
+							type="button"
+							className="mc-segmented-btn"
+							data-active={currentThinking === level ? "true" : undefined}
+							onClick={() => handleThinking(level)}
+						>
+							{level}
+						</button>
+					))}
+				</div>
 			</div>
 
-			{/* Thinking toggle */}
-			<div className="mc-toggle-row">
-				<span className="mc-toggle-label">Extended Thinking</span>
-				<label className="mc-toggle">
-					<input
-						type="checkbox"
-						checked={config.thinkingEnabled}
-						disabled={loading}
-						onChange={e => onUpdate({ thinkingEnabled: e.target.checked })}
-					/>
-					<span className="mc-toggle-track" />
-					<span className="mc-toggle-thumb" />
-				</label>
+			<div style={{ fontSize: 11, color: "var(--fg-faint)", marginTop: 6 }}>
+				Current: <span style={{ fontFamily: "var(--font-mono)" }}>{currentModelLabel}</span> ·{" "}
+				<span style={{ fontFamily: "var(--font-mono)" }}>{currentThinking}</span>
 			</div>
+
+			<button type="button" className="mc-btn" onClick={() => void refresh()} style={{ marginTop: 10 }}>
+				⟳ Refresh models
+			</button>
 		</div>
 	);
 }
