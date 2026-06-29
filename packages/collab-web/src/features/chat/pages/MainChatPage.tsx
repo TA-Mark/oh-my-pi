@@ -20,7 +20,7 @@
 
 import { type ReactNode, useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { Transcript } from "../../../components/transcript/Transcript";
-import type { ChatClient } from "../../../lib/chat-client";
+import type { ChatClient, DialogResponsePayload } from "../../../lib/chat-client";
 import { RpcClient } from "../../../lib/rpc-client";
 import {
 	createSession,
@@ -33,7 +33,9 @@ import {
 } from "../api/chatApi";
 import { ChatComposer } from "../components/ChatComposer";
 import { ConnectionStatusBar } from "../components/ConnectionStatusBar";
+import { ExtensionDialog } from "../components/ExtensionDialog";
 import { LeftSidebar } from "../components/LeftSidebar";
+import { StatusWidgetPanel } from "../components/StatusWidgetPanel";
 import { useChatStateMachine } from "../hooks/useChatStateMachine";
 import { useLauncherHealthGate } from "../hooks/useLauncherHealthGate";
 import "../components/chat.css";
@@ -226,6 +228,14 @@ export function MainChatPage({ onGoToLauncher }: Props): ReactNode {
 		};
 	}, [client]);
 
+	// ---- Sync messageCount into session list when entries change ----
+	const entryCount = snapshot?.entries.length ?? 0;
+	useEffect(() => {
+		if (ui.activeSessionId && entryCount > 0) {
+			actions.sessionMessageCount(ui.activeSessionId, entryCount);
+		}
+	}, [ui.activeSessionId, entryCount, actions]);
+
 	// ---- Active session name for header ----
 	const activeSession = useMemo(
 		() => ui.sessions.find(s => s.id === ui.activeSessionId) ?? null,
@@ -234,6 +244,16 @@ export function MainChatPage({ onGoToLauncher }: Props): ReactNode {
 
 	// ---- Connection phase from snapshot ----
 	const connPhase = snapshot?.phase ?? "connecting";
+
+	// ---- Dialog responder + title display ----
+	const handleDialogRespond = useCallback(
+		(payload: DialogResponsePayload) => {
+			client?.respondToDialog?.(payload);
+		},
+		[client],
+	);
+
+	const displayTitle = snapshot?.titleOverride ?? activeSession?.name ?? "oh-my-pi Desktop";
 
 	return (
 		<div className="mc-app">
@@ -250,8 +270,8 @@ export function MainChatPage({ onGoToLauncher }: Props): ReactNode {
 						{ui.sidebarOpen ? "◂ Hide" : "▸ Show"}
 					</button>
 
-					{/* Session title */}
-					<span className="mc-session-title">{activeSession ? activeSession.name : "oh-my-pi Desktop"}</span>
+					{/* Session title (may be overridden by extension setTitle) */}
+					<span className="mc-session-title">{displayTitle}</span>
 				</div>
 
 				<div className="mc-header-right">
@@ -350,13 +370,30 @@ export function MainChatPage({ onGoToLauncher }: Props): ReactNode {
 								working={snapshot.working}
 							/>
 
+							<StatusWidgetPanel
+								statusEntries={snapshot.statusEntries}
+								widgets={snapshot.widgets}
+								placement="aboveEditor"
+							/>
+
 							<ChatComposer
 								client={client}
 								snapshot={snapshot}
 								launcherHealthy={healthGate.healthy}
 								onGoToLauncher={onGoToLauncher}
 							/>
+
+							<StatusWidgetPanel
+								statusEntries={snapshot.statusEntries}
+								widgets={snapshot.widgets}
+								placement="belowEditor"
+							/>
 						</>
+					)}
+
+					{/* Extension UI dialog modal — overlay outside chat-area */}
+					{snapshot?.pendingDialog && (
+						<ExtensionDialog dialog={snapshot.pendingDialog} onRespond={handleDialogRespond} />
 					)}
 
 					{/* Session selected but client not yet built */}

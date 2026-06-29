@@ -40,6 +40,31 @@ export interface Notice {
 	at: number;
 }
 
+export interface SlashCommandInfo {
+	name: string;
+	description?: string;
+	source?: string;
+}
+
+// ─── Extension UI request payloads (from omp RPC extension_ui_request frames) ──
+
+export type PendingDialog =
+	| { id: string; method: "select"; title: string; options: string[]; timeout?: number }
+	| { id: string; method: "confirm"; title: string; message: string; timeout?: number }
+	| { id: string; method: "input"; title: string; placeholder?: string; timeout?: number }
+	| { id: string; method: "editor"; title: string; prefill?: string; promptStyle?: boolean };
+
+export interface StatusEntry {
+	key: string;
+	text: string;
+}
+
+export interface WidgetState {
+	key: string;
+	lines: string[];
+	placement: "aboveEditor" | "belowEditor";
+}
+
 export interface GuestSnapshot {
 	phase: ConnectionPhase;
 	endedReason: string | null;
@@ -61,6 +86,16 @@ export interface GuestSnapshot {
 	readOnly: boolean;
 	/** Capped at 50, newest last. */
 	notices: readonly Notice[];
+	/** Available slash commands (populated by RpcClient from available_commands_update). */
+	commands: readonly SlashCommandInfo[];
+	/** Active modal dialog from extension_ui_request; null when none pending. */
+	pendingDialog: PendingDialog | null;
+	/** Status bar entries keyed by statusKey. */
+	statusEntries: readonly StatusEntry[];
+	/** Widget panels keyed by widgetKey. */
+	widgets: readonly WidgetState[];
+	/** Session title override from extension_ui_request setTitle. */
+	titleOverride: string | null;
 }
 
 const MAX_NOTICES = 50;
@@ -449,6 +484,11 @@ export class GuestClient {
 			working: this.#working,
 			readOnly: this.#readOnly,
 			notices: this.#notices,
+			commands: [],
+			pendingDialog: null,
+			statusEntries: [],
+			widgets: [],
+			titleOverride: null,
 		};
 	}
 

@@ -60,6 +60,7 @@ type Action =
 	| { type: "CONFIG_LOADED"; config: RuntimeConfig; availableModels: string[] }
 	| { type: "CONFIG_UPDATED"; config: RuntimeConfig }
 	| { type: "CONFIG_LOADING"; loading: boolean }
+	| { type: "SESSION_MESSAGE_COUNT"; id: string; count: number }
 	| { type: "SET_ERROR"; error: ChatError }
 	| { type: "CLEAR_ERROR" };
 
@@ -124,6 +125,14 @@ function reducer(state: ChatUiState, action: Action): ChatUiState {
 		case "CONFIG_LOADING":
 			return { ...state, configLoading: action.loading };
 
+		case "SESSION_MESSAGE_COUNT":
+			return {
+				...state,
+				sessions: state.sessions.map(s =>
+					s.id === action.id ? { ...s, messageCount: action.count, lastActiveAt: new Date().toISOString() } : s,
+				),
+			};
+
 		case "SET_ERROR":
 			return { ...state, error: action.error };
 
@@ -153,6 +162,7 @@ export interface ChatUiActions {
 	configLoaded(config: RuntimeConfig, availableModels: string[]): void;
 	configUpdated(config: RuntimeConfig): void;
 	configLoading(loading: boolean): void;
+	sessionMessageCount(id: string, count: number): void;
 	setError(error: ChatError): void;
 	clearError(): void;
 }
@@ -177,6 +187,10 @@ export function useChatStateMachine(): [ChatUiState, ChatUiActions] {
 		),
 		configUpdated: useCallback(config => dispatch({ type: "CONFIG_UPDATED", config }), []),
 		configLoading: useCallback(loading => dispatch({ type: "CONFIG_LOADING", loading }), []),
+		sessionMessageCount: useCallback(
+			(id: string, count: number) => dispatch({ type: "SESSION_MESSAGE_COUNT", id, count }),
+			[],
+		),
 		setError: useCallback(error => dispatch({ type: "SET_ERROR", error }), []),
 		clearError: useCallback(() => dispatch({ type: "CLEAR_ERROR" }), []),
 	};

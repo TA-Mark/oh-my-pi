@@ -19,6 +19,7 @@
  */
 
 import type {
+	AgentEvent,
 	AgentSnapshot,
 	AssistantMessage,
 	SessionEntry,
@@ -27,7 +28,67 @@ import type {
 	SubagentProgressPayload,
 	WireMessage,
 } from "@oh-my-pi/pi-wire";
-import type { ActiveTool, ConnectionPhase, GuestSnapshot, Notice } from "./client";
+import type {
+	ActiveTool,
+	ConnectionPhase,
+	GuestSnapshot,
+	Notice,
+	PendingDialog,
+	SlashCommandInfo,
+	WidgetState,
+} from "./client";
+
+// Mirror of RpcExtensionUIRequest from packages/coding-agent/src/modes/rpc/rpc-types.ts:329.
+// Kept local because that module is not exported through pi-wire and would pull
+// the whole coding-agent surface area in.
+type ExtensionUiRequest =
+	| { type: "extension_ui_request"; id: string; method: "select"; title: string; options: string[]; timeout?: number }
+	| { type: "extension_ui_request"; id: string; method: "confirm"; title: string; message: string; timeout?: number }
+	| {
+			type: "extension_ui_request";
+			id: string;
+			method: "input";
+			title: string;
+			placeholder?: string;
+			timeout?: number;
+	  }
+	| {
+			type: "extension_ui_request";
+			id: string;
+			method: "editor";
+			title: string;
+			prefill?: string;
+			promptStyle?: boolean;
+	  }
+	| { type: "extension_ui_request"; id: string; method: "cancel"; targetId: string }
+	| {
+			type: "extension_ui_request";
+			id: string;
+			method: "notify";
+			message: string;
+			notifyType?: "info" | "warning" | "error";
+	  }
+	| {
+			type: "extension_ui_request";
+			id: string;
+			method: "setStatus";
+			statusKey: string;
+			statusText: string | undefined;
+	  }
+	| {
+			type: "extension_ui_request";
+			id: string;
+			method: "setWidget";
+			widgetKey: string;
+			widgetLines: string[] | undefined;
+			widgetPlacement?: "aboveEditor" | "belowEditor";
+	  }
+	| { type: "extension_ui_request"; id: string; method: "setTitle"; title: string }
+	| { type: "extension_ui_request"; id: string; method: "set_editor_text"; text: string }
+	| { type: "extension_ui_request"; id: string; method: "open_url"; url: string; instructions?: string };
+
+/** Response shape sent back over the WS (subset of RpcExtensionUIResponse). */
+export type DialogResponse = { value: string } | { confirmed: boolean } | { cancelled: true; timedOut?: boolean };
 
 const MAX_NOTICES = 50;
 
@@ -42,33 +103,19 @@ interface BridgeEnvelope {
 	ts: string;
 }
 
-// Subset of AgentEvent we care about — kept narrow so type errors stay local.
-type AgentLikeFrame =
-	| { type: "agent_start" }
-	| { type: "agent_end" }
-	| { type: "message_start"; message: WireMessage }
-	| { type: "message_update"; message: WireMessage }
-	| { type: "message_end"; message: WireMessage }
-	| { type: "tool_execution_start"; toolCallId: string; toolName: string; args: unknown; intent?: string }
-	| {
-			type: "tool_execution_update";
-			toolCallId: string;
-			toolName: string;
-			args: unknown;
-			partialResult: unknown;
-	  }
-	| {
-			type: "tool_execution_end";
-			toolCallId: string;
-			toolName: string;
-			result: unknown;
-			isError?: boolean;
-	  }
-	| { type: "notice"; level: "info" | "warning" | "error"; message: string; source?: string }
+// ─── RPC frame types ─────────────────────────────────────────────────────────
+// AgentEvent from pi-wire covers agent/message/tool/notice events.
+// RpcSpecificFrame covers frames unique to the omp RPC protocol.
+
+type RpcSpecificFrame =
 	| { type: "subagent_lifecycle"; payload: SubagentLifecyclePayload }
 	| { type: "subagent_progress"; payload: SubagentProgressPayload }
 	| { type: "subagent_event"; payload: { agentId: string; [key: string]: unknown } }
-	| { type: "response"; command: string; success: boolean; data?: unknown; error?: string };
+	| { type: "available_commands_update"; commands: SlashCommandInfo[] }
+	| ExtensionUiRequest
+	| { type: "response"; id?: string; command: string; success: boolean; data?: unknown; error?: string };
+
+type RpcFrame = AgentEvent | RpcSpecificFrame;
 
 export interface RpcClientOpts {
 	/** UUID of the chat session — used in the WS path. */
@@ -104,6 +151,15 @@ export class RpcClient {
 	#agents = new Map<string, AgentSnapshot>();
 	#progress = new Map<string, SubagentProgressPayload>();
 	#lifecycle = new Map<string, SubagentLifecyclePayload>();
+	#commands: SlashCommandInfo[] = [];
+	/** Tracks optimistic user entries waiting for prompt response. Map<reqId, entryId>. */
+	#pendingPrompts = new Map<string, string>();
+	#pendingDialog: PendingDialog | null = null;
+	#dialogTimer: ReturnType<typeof setTimeout> | null = null;
+	#statusEntries = new Map<string, string>();
+	#widgets = new Map<string, WidgetState>();
+	#titleOverride: string | null = null;
+	#editorTextSetter: ((text: string) => void) | null = null;
 	#snapshot: GuestSnapshot;
 
 	constructor(opts: RpcClientOpts) {
@@ -131,19 +187,35 @@ export class RpcClient {
 	sendPrompt(text: string): void {
 		const trimmed = text.trim();
 		if (!trimmed) return;
-		// Optimistic: append user entry immediately so the message renders
-		// without waiting for omp's echo (matches GuestClient behaviour).
-		this.#appendUserEntry(trimmed);
-		this.#send({ id: this.#nextReqId(), type: "prompt", message: trimmed });
+		const reqId = this.#nextReqId();
+		const entryId = this.#appendUserEntry(trimmed);
+		this.#pendingPrompts.set(reqId, entryId);
+		this.#send({ id: reqId, type: "prompt", message: trimmed });
 	}
 
 	sendAbort(): void {
 		this.#send({ id: this.#nextReqId(), type: "abort" });
 	}
 
-	/** RPC has no native regenerate — abort and let the user resend. */
 	sendRegenerate(): void {
-		this.sendAbort();
+		const lastUser = this.#entries.findLast(
+			(e): e is SessionEntry & { type: "message"; message: WireMessage } =>
+				e.type === "message" && "message" in e && (e.message as WireMessage).role === "user",
+		);
+		if (!lastUser) {
+			this.sendAbort();
+			return;
+		}
+		const content = lastUser.message.content;
+		const text =
+			typeof content === "string"
+				? content
+				: ((content as Array<{ type: string; text?: string }>).find(p => p.type === "text")?.text ?? "");
+		if (!text) {
+			this.sendAbort();
+			return;
+		}
+		this.#send({ id: this.#nextReqId(), type: "abort_and_prompt", message: text });
 	}
 
 	sendSetModel(provider: string, modelId: string): void {
@@ -152,6 +224,23 @@ export class RpcClient {
 
 	sendSetThinkingLevel(level: string): void {
 		this.#send({ id: this.#nextReqId(), type: "set_thinking_level", level });
+	}
+
+	/** Respond to the currently pending extension dialog and dismiss it. */
+	respondToDialog(payload: DialogResponse): void {
+		const dialog = this.#pendingDialog;
+		if (!dialog) return;
+		this.#send({ type: "extension_ui_response", id: dialog.id, ...payload });
+		this.#clearDialog();
+		this.#publish();
+	}
+
+	/**
+	 * Register a callback used by `set_editor_text` extension UI requests.
+	 * ChatComposer wires its setter on mount, unregisters on unmount.
+	 */
+	registerEditorTextSetter(fn: ((text: string) => void) | null): void {
+		this.#editorTextSetter = fn;
 	}
 
 	close(): void {
@@ -173,6 +262,16 @@ export class RpcClient {
 
 	#openSocket(): void {
 		if (this.#closing) return;
+		// Pending requests opened on the previous socket will never receive a
+		// response — drop their tracking so the optimistic entries stay visible
+		// (a refreshed get_state/get_messages will reconcile if omp persisted them).
+		this.#pendingPrompts.clear();
+		// Extension UI state belongs to the previous omp process; drop it so
+		// stale modals/widgets don't linger after reconnect.
+		this.#clearDialog();
+		this.#statusEntries.clear();
+		this.#widgets.clear();
+		this.#titleOverride = null;
 		const url = `${this.#wsBase}/chat/sessions/${this.#sessionId}/rpc`;
 		try {
 			this.#ws = new WebSocket(url);
@@ -252,10 +351,10 @@ export class RpcClient {
 			return;
 		}
 		if (env.type !== "frame" || !env.frame) return;
-		this.#applyFrame(env.frame as AgentLikeFrame);
+		this.#applyFrame(env.frame as RpcFrame);
 	}
 
-	#applyFrame(frame: AgentLikeFrame): void {
+	#applyFrame(frame: RpcFrame): void {
 		switch (frame.type) {
 			case "agent_start":
 				this.#working = true;
@@ -280,6 +379,15 @@ export class RpcClient {
 				this.#publish();
 				return;
 			case "message_end":
+				// User messages may already be appended optimistically by sendPrompt
+				// (matched by content); skip the echo to avoid duplicates. omp's echo
+				// arrives without a synthetic flag, so an exact text match against the
+				// last user entry is the cheapest discriminator that doesn't require
+				// threading reqId through the AgentEvent stream.
+				if (frame.message.role === "user" && this.#hasMatchingOptimisticEntry(frame.message)) {
+					this.#publish();
+					return;
+				}
 				this.#appendMessageEntry(frame.message);
 				if (frame.message.role === "assistant") {
 					this.#stream = null;
@@ -366,11 +474,34 @@ export class RpcClient {
 				return;
 			}
 			case "subagent_event": {
-				// We don't reconstruct subagent transcripts in this client; the bridge
-				// has the data and the AgentDrawer can fetch it later if needed.
+				return;
+			}
+			case "available_commands_update": {
+				this.#commands = (frame.commands ?? []).map(c => ({
+					name: c.name,
+					description: c.description,
+					source: c.source,
+				}));
+				this.#publish();
+				return;
+			}
+			case "extension_ui_request": {
+				this.#handleExtensionUiRequest(frame);
 				return;
 			}
 			case "response":
+				if (frame.command === "prompt" && frame.id) {
+					const entryId = this.#pendingPrompts.get(frame.id);
+					this.#pendingPrompts.delete(frame.id);
+					if (entryId && !frame.success) {
+						this.#removeEntry(entryId);
+						this.#pushNotice({
+							level: "error",
+							message: frame.error || "Prompt was rejected by the agent.",
+						});
+					}
+					return;
+				}
 				if (frame.command === "get_state" && frame.success && frame.data) {
 					this.#state = this.#buildState(frame.data);
 					// If omp resumed from a saved sessionFile, pull the existing
@@ -386,6 +517,136 @@ export class RpcClient {
 				}
 				return;
 		}
+	}
+
+	// ─── Extension UI request handling ──────────────────────────────────────
+
+	#handleExtensionUiRequest(frame: ExtensionUiRequest): void {
+		switch (frame.method) {
+			case "select":
+			case "confirm":
+			case "input":
+			case "editor": {
+				// New dialog supersedes any previous one — host expects single modal.
+				if (this.#pendingDialog && this.#dialogTimer) {
+					clearTimeout(this.#dialogTimer);
+					this.#dialogTimer = null;
+				}
+				this.#pendingDialog =
+					frame.method === "select"
+						? {
+								id: frame.id,
+								method: "select",
+								title: frame.title,
+								options: frame.options,
+								timeout: frame.timeout,
+							}
+						: frame.method === "confirm"
+							? {
+									id: frame.id,
+									method: "confirm",
+									title: frame.title,
+									message: frame.message,
+									timeout: frame.timeout,
+								}
+							: frame.method === "input"
+								? {
+										id: frame.id,
+										method: "input",
+										title: frame.title,
+										placeholder: frame.placeholder,
+										timeout: frame.timeout,
+									}
+								: {
+										id: frame.id,
+										method: "editor",
+										title: frame.title,
+										prefill: frame.prefill,
+										promptStyle: frame.promptStyle,
+									};
+				const timeout =
+					frame.method === "select" || frame.method === "confirm" || frame.method === "input"
+						? frame.timeout
+						: undefined;
+				if (timeout !== undefined && timeout > 0) {
+					const dialogId = frame.id;
+					this.#dialogTimer = setTimeout(() => {
+						if (this.#pendingDialog?.id === dialogId) {
+							this.respondToDialog({ cancelled: true, timedOut: true });
+						}
+					}, timeout);
+				}
+				this.#publish();
+				return;
+			}
+			case "cancel": {
+				if (this.#pendingDialog?.id === frame.targetId) {
+					this.#clearDialog();
+					this.#publish();
+				}
+				return;
+			}
+			case "notify": {
+				this.#pushNotice({
+					level: frame.notifyType === "warning" ? "warning" : frame.notifyType === "error" ? "error" : "info",
+					message: frame.message,
+				});
+				return;
+			}
+			case "setStatus": {
+				if (frame.statusText === undefined || frame.statusText === "") {
+					this.#statusEntries.delete(frame.statusKey);
+				} else {
+					this.#statusEntries.set(frame.statusKey, frame.statusText);
+				}
+				this.#publish();
+				return;
+			}
+			case "setWidget": {
+				if (frame.widgetLines === undefined || frame.widgetLines.length === 0) {
+					this.#widgets.delete(frame.widgetKey);
+				} else {
+					this.#widgets.set(frame.widgetKey, {
+						key: frame.widgetKey,
+						lines: frame.widgetLines,
+						placement: frame.widgetPlacement ?? "aboveEditor",
+					});
+				}
+				this.#publish();
+				return;
+			}
+			case "setTitle": {
+				this.#titleOverride = frame.title || null;
+				this.#publish();
+				return;
+			}
+			case "set_editor_text": {
+				this.#editorTextSetter?.(frame.text);
+				return;
+			}
+			case "open_url": {
+				try {
+					if (typeof window !== "undefined") {
+						window.open(frame.url, "_blank", "noopener,noreferrer");
+					}
+				} catch {
+					/* popup blocked — surface as notice */
+				}
+				this.#pushNotice({
+					level: "info",
+					message: frame.instructions ? `${frame.instructions} → ${frame.url}` : `Opened ${frame.url}`,
+				});
+				return;
+			}
+		}
+	}
+
+	#clearDialog(): void {
+		if (this.#dialogTimer) {
+			clearTimeout(this.#dialogTimer);
+			this.#dialogTimer = null;
+		}
+		this.#pendingDialog = null;
 	}
 
 	/** Replace entries with a freshly-rebuilt list from omp's get_messages dump. */
@@ -410,7 +671,7 @@ export class RpcClient {
 
 	// ─── Mutators ────────────────────────────────────────────────────────────
 
-	#appendUserEntry(text: string): void {
+	#appendUserEntry(text: string): string {
 		const entry: SessionEntry = {
 			id: this.#nextEntryId(),
 			parentId: this.#entries.length > 0 ? this.#entries[this.#entries.length - 1]!.id : null,
@@ -424,6 +685,37 @@ export class RpcClient {
 		};
 		this.#entries = [...this.#entries, entry];
 		this.#publish();
+		return entry.id;
+	}
+
+	#removeEntry(entryId: string): void {
+		const next = this.#entries.filter(e => e.id !== entryId);
+		if (next.length === this.#entries.length) return;
+		this.#entries = next;
+		this.#publish();
+	}
+
+	/** True when one of the last few entries already holds this user message text. */
+	#hasMatchingOptimisticEntry(message: WireMessage): boolean {
+		if (message.role !== "user") return false;
+		const incomingText =
+			typeof message.content === "string"
+				? message.content
+				: (message.content.find(p => p.type === "text") as { text?: string } | undefined)?.text;
+		if (!incomingText) return false;
+		// Only inspect a short tail — older identical user texts are unrelated.
+		const tail = this.#entries.slice(-4);
+		for (const entry of tail) {
+			if (entry.type !== "message" || !("message" in entry)) continue;
+			const m = entry.message as WireMessage;
+			if (m.role !== "user") continue;
+			const existing =
+				typeof m.content === "string"
+					? m.content
+					: (m.content.find(p => p.type === "text") as { text?: string } | undefined)?.text;
+			if (existing === incomingText) return true;
+		}
+		return false;
 	}
 
 	#appendMessageEntry(message: WireMessage): void {
@@ -489,6 +781,11 @@ export class RpcClient {
 			working: this.#working,
 			readOnly: false,
 			notices: this.#notices,
+			commands: this.#commands,
+			pendingDialog: this.#pendingDialog,
+			statusEntries: Array.from(this.#statusEntries.entries()).map(([key, text]) => ({ key, text })),
+			widgets: Array.from(this.#widgets.values()),
+			titleOverride: this.#titleOverride,
 		};
 	}
 
