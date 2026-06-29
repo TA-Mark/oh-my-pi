@@ -9,12 +9,13 @@
  * feature handled elsewhere; the launcher no longer spawns it.
  */
 
-import { existsSync } from "node:fs";
+import { existsSync, rmSync } from "node:fs";
+import { join } from "node:path";
 import type { BridgeConfig } from "../lib/config";
 import type { BridgeContext } from "../lib/context";
 import { errorResponse, jsonResponse } from "../lib/http";
 import { type DetectOmpResult, findOmp } from "../lib/omp-detect";
-import { probeTcp } from "../lib/process";
+import { probeTcp, spawnTracked } from "../lib/process";
 
 import type {
 	DiagnosticsResponse,
@@ -137,6 +138,88 @@ export class LauncherSupervisor {
 	}
 }
 
+// ─── Update helpers ─────────────────────────────────────────────────────────
+
+const NPM_LATEST_URL = "https://registry.npmjs.org/@oh-my-pi/pi-coding-agent/latest";
+const NPM_CHANNEL_URL: Record<string, string> = {
+	stable: NPM_LATEST_URL,
+	// npm dist-tags `beta` / `nightly` aren't published yet; fall back to latest
+	// so the UI never breaks when the user toggles channel before they exist.
+	beta: NPM_LATEST_URL,
+	nightly: NPM_LATEST_URL,
+};
+
+/** Strip any leading `v` / `omp ` / `omp/` prefix so we compare bare semver strings. */
+function normalizeVersion(raw: string | null | undefined): string | null {
+	if (!raw) return null;
+	const cleaned = raw
+		.replace(/^\s*omp[\s/]/i, "")
+		.replace(/^v/i, "")
+		.trim();
+	return cleaned || null;
+}
+
+async function fetchNpmLatest(channel: string): Promise<string | null> {
+	const url = NPM_CHANNEL_URL[channel] ?? NPM_LATEST_URL;
+	try {
+		const res = await fetch(url, { headers: { accept: "application/json" } });
+		if (!res.ok) return null;
+		const data = (await res.json()) as { version?: unknown };
+		return typeof data.version === "string" ? data.version : null;
+	} catch {
+		return null;
+	}
+}
+
+function buildUpdateSpawn(): { command: string; args: string[] } {
+	const cmd = "bun install -g --force @oh-my-pi/pi-coding-agent@latest";
+	if (process.platform === "win32") {
+		return { command: "powershell.exe", args: ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", cmd] };
+	}
+	return { command: "sh", args: ["-c", cmd] };
+}
+
+/**
+ * Run `bun install -g --force` and stream its output through the JobManager.
+ * Returns the new job id immediately; callers can poll
+ * `/installer/jobs/:id/{status,logs}` for progress and the WS stream for logs.
+ */
+function runUpdateJob(ctx: BridgeContext, reason: "update" | "repair"): string {
+	const job = ctx.jobs.create([{ id: "install", label: reason === "update" ? "Update omp CLI" : "Repair install" }]);
+	const spec = buildUpdateSpawn();
+	ctx.jobs.emitLog(job.id, "info", `> ${spec.args[spec.args.length - 1]}`);
+	ctx.jobs.setPhase(job.id, "installing", 10, "install");
+
+	const child = spawnTracked(spec.command, spec.args, {
+		onStdout(line) {
+			ctx.jobs.emitLog(job.id, "info", line, line);
+		},
+		onStderr(line) {
+			ctx.jobs.emitLog(job.id, "warn", line, line);
+		},
+	});
+	const jobRef = ctx.jobs.get(job.id);
+	if (jobRef) jobRef.cancel = () => void child.kill();
+
+	void child.waitExit().then(({ code }) => {
+		if (code === null) {
+			ctx.jobs.emitLog(job.id, "warn", `${reason} cancelled`);
+			return;
+		}
+		if (code !== 0) {
+			ctx.jobs.fail(job.id, {
+				code: "EXIT_NON_ZERO",
+				message: `${reason} command exited with code ${code}. See log panel.`,
+			});
+			return;
+		}
+		ctx.jobs.completeStep(job.id, "install", "pass");
+		ctx.jobs.setPhase(job.id, "success", 100);
+		ctx.jobs.emitLog(job.id, "info", `${reason} complete`);
+	});
+	return job.id;
+}
+
 // ─── HTTP handler ───────────────────────────────────────────────────────────
 
 export async function handleLauncher(ctx: BridgeContext, req: Request, url: URL): Promise<Response> {
@@ -163,24 +246,51 @@ export async function handleLauncher(ctx: BridgeContext, req: Request, url: URL)
 		return jsonResponse({ ok: true, message: "started in safe mode" });
 	}
 	if (p === "/api/v1/launcher/update/check" && req.method === "GET") {
+		const channelParam = url.searchParams.get("channel") ?? "stable";
+		const channel = (["stable", "beta", "nightly"].includes(channelParam) ? channelParam : "stable") as
+			| "stable"
+			| "beta"
+			| "nightly";
+		const [latestRaw, detect] = await Promise.all([fetchNpmLatest(channel), findOmp()]);
+		const latest = normalizeVersion(latestRaw);
+		const current = normalizeVersion(detect.version);
 		const info: UpdateInfo = {
-			available: false,
-			currentVersion: VERSION,
-			latestVersion: null,
-			channel: "stable",
+			available: latest !== null && current !== null && latest !== current,
+			currentVersion: current ?? "unknown",
+			latestVersion: latest,
+			channel,
 			releaseNotes: null,
 			checkedAt: new Date().toISOString(),
 		};
 		return jsonResponse(info);
 	}
 	if (p === "/api/v1/launcher/update/apply" && req.method === "POST") {
-		return jsonResponse({ ok: true, message: "update not implemented in v0.1" });
+		const jobId = runUpdateJob(ctx, "update");
+		return jsonResponse({ ok: true, jobId, message: "update started" });
 	}
 	if (p === "/api/v1/launcher/repair" && req.method === "POST") {
-		return jsonResponse({ ok: true, message: "repair queued (no-op in v0.1)" });
+		const jobId = runUpdateJob(ctx, "repair");
+		return jsonResponse({ ok: true, jobId, message: "repair started" });
 	}
 	if (p === "/api/v1/launcher/reset-cache" && req.method === "POST") {
-		return jsonResponse({ ok: true, message: "cache reset (no-op in v0.1)" });
+		const removed: string[] = [];
+		const tryRemove = (path: string): void => {
+			try {
+				if (existsSync(path)) {
+					rmSync(path, { recursive: true, force: true });
+					removed.push(path);
+				}
+			} catch {
+				/* best-effort */
+			}
+		};
+		tryRemove(join(ctx.config.installDir, "logs"));
+		tryRemove(join(ctx.config.installDir, "session-bindings.json"));
+		return jsonResponse({
+			ok: true,
+			message: removed.length > 0 ? `cleared ${removed.length} cache entries` : "no cache to clear",
+			removed,
+		});
 	}
 	if (p === "/api/v1/launcher/workspaces" && req.method === "GET") {
 		const list: WorkspaceProfile[] = [
