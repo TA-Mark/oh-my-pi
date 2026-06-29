@@ -21,8 +21,8 @@ import {
 	listApiKeys,
 	type ProviderCatalogEntry,
 	type ProviderCatalogType,
-	saveApiKey,
 	type StoredApiKey,
+	saveApiKey,
 } from "../api/chatApi";
 
 interface Props {
@@ -68,6 +68,9 @@ export function ProviderSettings({ client }: Props): ReactNode {
 			];
 			if (client?.sendGetLoginProviders) {
 				tasks.push(client.sendGetLoginProviders().then(setOauth));
+			} else {
+				// No RPC client or sendGetLoginProviders unavailable → OAuth state unknown
+				setOauth([]);
 			}
 			await Promise.all(tasks);
 		} catch (err) {
@@ -173,7 +176,10 @@ export function ProviderSettings({ client }: Props): ReactNode {
 	return (
 		<div className="mc-providers">
 			<div className="mc-section-title">
-				Providers <span className="mc-providers-count">{totalConfigured} / {merged.length} configured</span>
+				Providers{" "}
+				<span className="mc-providers-count">
+					{totalConfigured} / {merged.length} configured
+				</span>
 			</div>
 
 			{error && (
@@ -216,7 +222,11 @@ export function ProviderSettings({ client }: Props): ReactNode {
 												{p.common && <span className="mc-provider-common">★</span>}
 											</span>
 											<span className="mc-provider-status">
-												{isAuth ? "logged in" : isConf ? `via ${p.configuredVia === "stored-key" ? "key" : "env"}` : ""}
+												{isAuth
+													? "logged in"
+													: isConf
+														? `via ${p.configuredVia === "stored-key" ? "key" : "env"}`
+														: ""}
 											</span>
 											<span className="mc-provider-chev">{isExpanded ? "▾" : "▸"}</span>
 										</button>
@@ -231,91 +241,91 @@ export function ProviderSettings({ client }: Props): ReactNode {
 														type="button"
 														className="mc-btn mc-btn-primary"
 														onClick={() => handleLogin(p.id)}
-														disabled={busyProvider === p.id || (p.available === false)}
+														disabled={busyProvider === p.id || p.available === false}
 													>
 														{busyProvider === p.id ? "Opening browser…" : isAuth ? "Re-login" : "Sign in"}
 													</button>
 												)}
 
 												{/* API key paste */}
-												{p.envVars && p.envVars.length > 0 && (
-													<>
-														{pasteFor === p.id ? (
-															<form className="mc-key-form" onSubmit={handleSavePaste}>
-																{p.envVars.length > 1 && (
-																	<div className="mc-control-row">
-																		<label className="mc-control-label">Env var</label>
-																		<select
-																			className="mc-select"
-																			value={pasteEnvVar}
-																			onChange={e => setPasteEnvVar(e.target.value)}
-																		>
-																			{p.envVars.map(name => (
-																				<option key={name} value={name}>
-																					{name}
-																				</option>
-																			))}
-																		</select>
-																	</div>
-																)}
-																<input
-																	className="mc-dialog-input"
-																	type="password"
-																	value={pasteValue}
-																	onChange={e => setPasteValue(e.target.value)}
-																	placeholder={`${pasteEnvVar} value`}
-																	autoComplete="off"
-																	spellCheck={false}
-																/>
-																<div className="mc-dialog-actions">
-																	<button type="button" className="mc-btn" onClick={() => setPasteFor(null)}>
-																		Cancel
-																	</button>
-																	<button
-																		type="submit"
-																		className="mc-btn mc-btn-primary"
-																		disabled={!pasteValue}
+												{p.envVars &&
+													p.envVars.length > 0 &&
+													(pasteFor === p.id ? (
+														<form className="mc-key-form" onSubmit={handleSavePaste}>
+															{p.envVars.length > 1 && (
+																<div className="mc-control-row">
+																	<label className="mc-control-label">Env var</label>
+																	<select
+																		className="mc-select"
+																		value={pasteEnvVar}
+																		onChange={e => setPasteEnvVar(e.target.value)}
 																	>
-																		Save
-																	</button>
+																		{p.envVars.map(name => (
+																			<option key={name} value={name}>
+																				{name}
+																			</option>
+																		))}
+																	</select>
 																</div>
-															</form>
-														) : (
-															<div className="mc-provider-keys">
-																<div className="mc-provider-keys-label">
-																	Env: {p.envVars.join(" / ")}
-																</div>
-																{(() => {
-																	const stored = keys.find(k => p.envVars?.includes(k.name));
-																	if (stored) {
-																		return (
-																			<div className="mc-key-item">
-																				<span className="mc-key-name">{stored.name}</span>
-																				<span className="mc-key-mask">{stored.masked}</span>
-																				<button
-																					type="button"
-																					className="mc-btn mc-btn-stop"
-																					onClick={() => handleDeleteKey(stored.name)}
-																				>
-																					✕
-																				</button>
-																			</div>
-																		);
-																	}
-																	return (
-																		<button
-																			type="button"
-																			className="mc-btn"
-																			onClick={() => openPasteFor(p)}
-																		>
-																			Paste API key
-																		</button>
-																	);
-																})()}
+															)}
+															<input
+																className="mc-dialog-input"
+																type="password"
+																value={pasteValue}
+																onChange={e => setPasteValue(e.target.value)}
+																placeholder={`${pasteEnvVar} value`}
+																autoComplete="off"
+																spellCheck={false}
+															/>
+															<div className="mc-dialog-actions">
+																<button
+																	type="button"
+																	className="mc-btn"
+																	onClick={() => setPasteFor(null)}
+																>
+																	Cancel
+																</button>
+																<button
+																	type="submit"
+																	className="mc-btn mc-btn-primary"
+																	disabled={!pasteValue}
+																>
+																	Save
+																</button>
 															</div>
-														)}
-													</>
-												)}
+														</form>
+													) : (
+														<div className="mc-provider-keys">
+															<div className="mc-provider-keys-label">Env: {p.envVars.join(" / ")}</div>
+															{(() => {
+																const stored = keys.find(k => p.envVars?.includes(k.name));
+																if (stored) {
+																	return (
+																		<div className="mc-key-item">
+																			<span className="mc-key-name">{stored.name}</span>
+																			<span className="mc-key-mask">{stored.masked}</span>
+																			<button
+																				type="button"
+																				className="mc-btn mc-btn-stop"
+																				onClick={() => handleDeleteKey(stored.name)}
+																			>
+																				✕
+																			</button>
+																		</div>
+																	);
+																}
+																return (
+																	<button
+																		type="button"
+																		className="mc-btn"
+																		onClick={() => openPasteFor(p)}
+																	>
+																		Paste API key
+																	</button>
+																);
+															})()}
+														</div>
+													))}
 
 												{/* Local provider URL */}
 												{p.type === "local" && p.defaultUrl && (
