@@ -3,8 +3,8 @@
  * Each check returns a PreflightCheck with status + remediation hint.
  */
 
-import { accessSync, constants, mkdirSync, statSync } from "node:fs";
 import { spawn } from "node:child_process";
+import { accessSync, constants, mkdirSync, statSync } from "node:fs";
 import { dirname } from "node:path";
 import type { PreflightCheck } from "../types";
 import { isPortFree } from "./process";
@@ -12,14 +12,14 @@ import { isPortFree } from "./process";
 const MIN_DISK_BYTES = 2 * 1024 * 1024 * 1024; // 2 GB
 
 async function execCapture(cmd: string, args: string[]): Promise<{ ok: boolean; out: string }> {
-	return new Promise((resolve) => {
+	return new Promise(resolve => {
 		const c = spawn(cmd, args, { windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
 		let out = "";
 		c.stdout?.on("data", (b: Buffer) => {
 			out += b.toString("utf8");
 		});
 		c.on("error", () => resolve({ ok: false, out: "" }));
-		c.on("exit", (code) => resolve({ ok: code === 0, out: out.trim() }));
+		c.on("exit", code => resolve({ ok: code === 0, out: out.trim() }));
 	});
 }
 
@@ -162,6 +162,68 @@ export function checkWritePerm(installPath: string): PreflightCheck {
 			fixHint: "Try a path under your user profile, or run as administrator.",
 		};
 	}
+}
+
+// ─── Method-specific dependency checks ─────────────────────────────────────
+// These mirror the `requires:` field on each InstallMethod. They run only
+// when the user picks that method, so we don't fail preflight for a tool
+// the user does not need.
+
+/**
+ * `bun --version`. If the Tauri shell bundles a Bun sidecar
+ * (`OMP_BUNDLED_BUN`), try it explicitly first so the check passes even when
+ * the user has no Bun on PATH — the bundled binary is already on the bridge's
+ * PATH (prepended at startup in server.ts), but invoking it directly lets us
+ * surface the bundled location in the success detail so the UI is honest
+ * about where Bun came from.
+ */
+export async function checkBun(): Promise<PreflightCheck> {
+	const bundled = process.env.OMP_BUNDLED_BUN;
+	if (bundled) {
+		const { ok, out } = await execCapture(bundled, ["--version"]);
+		if (ok) {
+			return { id: "bun", label: "Bun available", status: "pass", detail: `${out} (bundled)` };
+		}
+	}
+	const { ok, out } = await execCapture("bun", ["--version"]);
+	if (!ok) {
+		return {
+			id: "bun",
+			label: "Bun available",
+			status: "fail",
+			detail: "bun was not found on PATH",
+			fixHint: "Install Bun from https://bun.sh (≥ 1.3.14 required).",
+		};
+	}
+	return { id: "bun", label: "Bun available", status: "pass", detail: out };
+}
+
+export async function checkBrew(): Promise<PreflightCheck> {
+	const { ok, out } = await execCapture("brew", ["--version"]);
+	if (!ok) {
+		return {
+			id: "brew",
+			label: "Homebrew available",
+			status: "fail",
+			detail: "brew was not found on PATH",
+			fixHint: "Install Homebrew from https://brew.sh.",
+		};
+	}
+	return { id: "brew", label: "Homebrew available", status: "pass", detail: out.split("\n")[0] };
+}
+
+export async function checkMise(): Promise<PreflightCheck> {
+	const { ok, out } = await execCapture("mise", ["--version"]);
+	if (!ok) {
+		return {
+			id: "mise",
+			label: "mise available",
+			status: "fail",
+			detail: "mise was not found on PATH",
+			fixHint: "Install mise from https://mise.jdx.dev.",
+		};
+	}
+	return { id: "mise", label: "mise available", status: "pass", detail: out };
 }
 
 void dirname; // reserved for future deeper disk-space probe

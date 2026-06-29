@@ -46,7 +46,7 @@ export function spawnTracked(command: string, args: string[], opts: SpawnOptions
 	child.stdout?.on("data", (c: Buffer) => drain("out", c));
 	child.stderr?.on("data", (c: Buffer) => drain("err", c));
 
-	const exitPromise = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((res) => {
+	const exitPromise = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(res => {
 		child.on("exit", (code, signal) => {
 			if (buffer.out) opts.onStdout?.(buffer.out);
 			if (buffer.err) opts.onStderr?.(buffer.err);
@@ -67,7 +67,7 @@ export function spawnTracked(command: string, args: string[], opts: SpawnOptions
 
 export async function killTree(pid: number): Promise<void> {
 	if (process.platform === "win32") {
-		await new Promise<void>((res) => {
+		await new Promise<void>(res => {
 			const k = spawn("taskkill", ["/PID", String(pid), "/T", "/F"], { windowsHide: true });
 			k.on("exit", () => res());
 			k.on("error", () => res());
@@ -76,7 +76,7 @@ export async function killTree(pid: number): Promise<void> {
 	}
 	try {
 		process.kill(pid, "SIGTERM");
-		await new Promise((r) => setTimeout(r, 800));
+		await new Promise(r => setTimeout(r, 800));
 		process.kill(pid, "SIGKILL");
 	} catch {
 		// already gone
@@ -94,7 +94,7 @@ export async function probeHttp(url: string, timeoutMs = 3000): Promise<boolean>
 
 export async function probeTcp(host: string, port: number, timeoutMs = 1500): Promise<boolean> {
 	const { Socket } = await import("node:net");
-	return new Promise((resolve) => {
+	return new Promise(resolve => {
 		const sock = new Socket();
 		const done = (ok: boolean): void => {
 			sock.destroy();

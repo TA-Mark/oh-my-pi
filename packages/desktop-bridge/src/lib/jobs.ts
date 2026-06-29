@@ -10,7 +10,7 @@
 
 import { appendFileSync, existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
-import type { CheckStatus, InstallStep, InstallerPhase, LogLevel, LogLine } from "../types";
+import type { CheckStatus, InstallerPhase, InstallStep, LogLevel, LogLine } from "../types";
 
 const MAX_LOG_LINES = 2000;
 
@@ -31,6 +31,12 @@ export interface Job {
 	startedAt: string;
 	error?: { code: string; message: string; detail?: string };
 	cancel?: () => void;
+	/**
+	 * Original install request — captured at create() so /repair can re-run
+	 * with the exact same method + installPath without forcing the UI to
+	 * re-collect them after a failure.
+	 */
+	params?: { method: string; installPath?: string; force?: boolean };
 }
 
 export interface JobManagerOpts {
@@ -127,7 +133,7 @@ export class JobManager {
 	completeStep(jobId: string, stepId: string, status: CheckStatus = "pass"): void {
 		const job = this.jobs.get(jobId);
 		if (!job) return;
-		const step = job.steps.find((s) => s.id === stepId);
+		const step = job.steps.find(s => s.id === stepId);
 		if (!step) return;
 		step.status = status;
 		step.completedAt = new Date().toISOString();

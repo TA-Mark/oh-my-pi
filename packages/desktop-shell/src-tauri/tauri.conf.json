@@ -36,7 +36,7 @@
 		"active": true,
 		"targets": ["nsis", "msi", "deb", "appimage", "dmg"],
 		"externalBin": ["binaries/omp-bridge", "binaries/bun"],
-		"resources": ["resources/mingit/**/*", "resources/native/*"],
+		"resources": ["resources/native/*"],
 		"icon": [
 			"icons/32x32.png",
 			"icons/128x128.png",
@@ -86,7 +86,7 @@
 			"open": true
 		},
 		"updater": {
-			"active": true,
+			"active": false,
 			"endpoints": [
 				"https://omp.sh/desktop/updates/{{target}}/{{arch}}/{{current_version}}"
 			],

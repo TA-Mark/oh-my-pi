@@ -1,23 +1,25 @@
 /**
- * Launcher routes + service supervisor.
+ * Launcher routes + readiness supervisor.
  *
- * The bridge supervises the omp runtime as a child process. The "runtime"
- * here is the collab local-relay (packages/collab-web/scripts/local-relay.ts)
- * — the piece the desktop UI actually needs. Health = TCP probe on relayPort.
+ * The launcher dashboard reports whether `omp` itself is installed and
+ * reachable on this machine — the WebUI's whole job is to wrap the CLI, so
+ * "the runtime is healthy" means `omp --version` resolves. There is no
+ * long-running daemon to supervise here: each chat session spawns its own
+ * omp child via OmpSessionManager. The collab relay is a separate opt-in
+ * feature handled elsewhere; the launcher no longer spawns it.
  */
 
 import { existsSync } from "node:fs";
-import { join } from "node:path";
 import type { BridgeConfig } from "../lib/config";
 import type { BridgeContext } from "../lib/context";
 import { errorResponse, jsonResponse } from "../lib/http";
-import { isPortFree, killTree, probeTcp, spawnTracked, type TrackedProcess } from "../lib/process";
-import { makeStore } from "../lib/store";
+import { type DetectOmpResult, findOmp } from "../lib/omp-detect";
+import { probeTcp } from "../lib/process";
+
 import type {
 	DiagnosticsResponse,
 	LauncherPhase,
 	LauncherStreamEvent,
-	ResourceMetrics,
 	RuntimeStatusResponse,
 	ServiceStatus,
 	UpdateInfo,
@@ -27,39 +29,27 @@ import type {
 const VERSION = "0.1.0";
 const POLL_HEALTH_MS = 4000;
 
-interface ServiceState {
-	pid: number | null;
-	port: number | null;
-	startedAt: string | null;
-}
-
 type Listener = (event: LauncherStreamEvent) => void;
 
+/**
+ * Tracks whether `omp` is installed and reachable. Health = `findOmp().found`
+ * — we do not own an omp process; chat sessions spawn their own children.
+ * The Start/Stop/Restart actions just re-run detection so the UI can refresh
+ * after the user finishes an installer or upgrade run.
+ */
 export class LauncherSupervisor {
 	private status: ServiceStatus = "stopped";
 	private phase: LauncherPhase = "stopped";
-	private stopRequested = false;
-	private endpoint: string | null = null;
 	private healthy = false;
 	private lastStartedAt: string | null = null;
 	private lastError: string | null = null;
-	private metrics: ResourceMetrics | null = null;
-	private child: TrackedProcess | null = null;
+	private ompPath: string | null = null;
+	private ompVersion: string | null = null;
 	private healthTimer: ReturnType<typeof setInterval> | null = null;
 	private readonly listeners = new Set<Listener>();
-	private readonly state: ReturnType<typeof makeStore<ServiceState>>;
 
-	constructor(private readonly config: BridgeConfig) {
-		this.state = makeStore<ServiceState>(config.stateDir, "service", {
-			pid: null,
-			port: null,
-			startedAt: null,
-		});
-		const last = this.state.get();
-		if (last.pid && last.port) {
-			this.endpoint = `http://127.0.0.1:${last.port}`;
-			this.lastStartedAt = last.startedAt;
-		}
+	constructor(_config: BridgeConfig) {
+		void _config;
 		this.beginHealthLoop();
 	}
 
@@ -74,95 +64,38 @@ export class LauncherSupervisor {
 		return {
 			status: this.status,
 			phase: this.phase,
-			endpoint: this.endpoint,
+			endpoint: this.ompPath,
 			healthy: this.healthy,
 			lastStartedAt: this.lastStartedAt,
-			metrics: this.metrics,
-			version: VERSION,
+			metrics: null,
+			version: this.ompVersion ?? VERSION,
 			error: this.lastError,
 		};
 	}
 
 	async start(): Promise<void> {
-		if (this.status === "running" || this.status === "starting") return;
 		this.transition("starting", "starting");
 		this.lastError = null;
-
-		if (!(await isPortFree(this.config.relayPort))) {
-			this.endpoint = `http://127.0.0.1:${this.config.relayPort}`;
-			this.lastStartedAt = new Date().toISOString();
-			this.healthy = true;
-			this.transition("running", "running_healthy");
-			this.broadcast({ type: "health", healthy: true });
-			return;
-		}
-
-		const launchInfo = this.locateLaunchScript();
-		if (!launchInfo) {
-			this.lastError = "launch script not found (packages/collab-web/scripts/local-relay.ts)";
-			this.transition("error", "error");
-			return;
-		}
-
-		this.child = spawnTracked(launchInfo.command, launchInfo.args, {
-			cwd: launchInfo.cwd,
-			env: {
-				OMP_DESKTOP_DIR: this.config.installDir,
-				OMP_RELAY_PORT: String(this.config.relayPort),
-			},
-			onStdout: (line) => this.emitLog("info", line),
-			onStderr: (line) => this.emitLog("warn", line),
-			onExit: (code, signal) => {
-				this.child = null;
-				this.state.set({ pid: null, port: null, startedAt: null });
-				if (!this.stopRequested) {
-					this.lastError = `runtime exited (code=${code} signal=${signal ?? "none"})`;
-					this.transition(code === 0 ? "stopped" : "error", code === 0 ? "stopped" : "error");
-				} else {
-					this.transition("stopped", "stopped");
-					this.stopRequested = false;
-				}
-			},
-		});
-		this.endpoint = `http://127.0.0.1:${this.config.relayPort}`;
 		this.lastStartedAt = new Date().toISOString();
-		this.state.set({
-			pid: this.child.pid ?? null,
-			port: this.config.relayPort,
-			startedAt: this.lastStartedAt,
-		});
+		await this.probeHealth();
 	}
 
 	async stop(): Promise<void> {
-		if (this.status === "stopped") return;
-		this.stopRequested = true;
-		this.transition("running", "stopping");
-		if (this.child?.pid) {
-			await this.child.kill();
-			this.child = null;
-		} else {
-			const last = this.state.get();
-			if (last.pid) {
-				try {
-					await killTree(last.pid);
-				} catch {
-					/* ignore */
-				}
-			}
-		}
-		this.state.set({ pid: null, port: null, startedAt: null });
+		// No daemon to stop; we simply mark observed state as such until the
+		// next health tick. Used by UI as a "reset card" gesture.
 		this.transition("stopped", "stopped");
+		this.healthy = false;
+		this.broadcast({ type: "health", healthy: false });
 	}
 
 	async restart(): Promise<void> {
 		await this.stop();
-		await new Promise((r) => setTimeout(r, 600));
+		await new Promise(r => setTimeout(r, 200));
 		await this.start();
 	}
 
 	shutdown(): void {
 		if (this.healthTimer) clearInterval(this.healthTimer);
-		void this.child?.kill();
 	}
 
 	private beginHealthLoop(): void {
@@ -171,20 +104,19 @@ export class LauncherSupervisor {
 	}
 
 	private async probeHealth(): Promise<void> {
-		const port = this.config.relayPort;
-		const reachable = await probeTcp("127.0.0.1", port);
+		const detect = await findOmp();
 		const wasHealthy = this.healthy;
-		this.healthy = reachable;
-		if (reachable && this.status === "stopped") {
-			this.endpoint = `http://127.0.0.1:${port}`;
-			this.transition("running", "running_healthy");
-		} else if (!reachable && this.status === "running") {
-			this.transition("degraded", "running_degraded");
-		} else if (reachable && this.status === "starting") {
-			this.transition("running", "running_healthy");
+		this.healthy = detect.found;
+		this.ompPath = detect.path;
+		this.ompVersion = detect.version;
+		if (detect.found) {
+			if (this.status !== "running") this.transition("running", "running_healthy");
+		} else {
+			if (this.status === "running") this.transition("degraded", "error");
+			else if (this.status === "starting") this.transition("error", "error");
 		}
-		if (reachable !== wasHealthy) {
-			this.broadcast({ type: "health", healthy: reachable });
+		if (this.healthy !== wasHealthy) {
+			this.broadcast({ type: "health", healthy: this.healthy });
 		}
 	}
 
@@ -192,13 +124,6 @@ export class LauncherSupervisor {
 		this.status = status;
 		this.phase = phase;
 		this.broadcast({ type: "status_change", status, phase });
-	}
-
-	private emitLog(level: "info" | "warn" | "error" | "debug", line: string): void {
-		this.broadcast({
-			type: "log",
-			line: { ts: new Date().toISOString(), level, message: line, source: "runtime" },
-		});
 	}
 
 	private broadcast(event: LauncherStreamEvent): void {
@@ -209,25 +134,6 @@ export class LauncherSupervisor {
 				/* ignore */
 			}
 		}
-	}
-
-	private locateLaunchScript(): { command: string; args: string[]; cwd: string } | null {
-		const scriptDir = new URL(".", import.meta.url).pathname.replace(/^\//, "");
-		const candidates = [
-			this.config.installDir,
-			join(scriptDir, "..", "..", "..", ".."),
-		];
-		for (const repo of candidates) {
-			const relay = join(repo, "packages", "collab-web", "scripts", "local-relay.ts");
-			if (existsSync(relay)) {
-				return {
-					command: "bun",
-					args: ["run", relay, "--port", String(this.config.relayPort)],
-					cwd: join(repo, "packages", "collab-web"),
-				};
-			}
-		}
-		return null;
 	}
 }
 
@@ -293,32 +199,48 @@ export async function handleLauncher(ctx: BridgeContext, req: Request, url: URL)
 		return jsonResponse({ ok: true });
 	}
 	if (p === "/api/v1/launcher/diagnostics" && req.method === "POST") {
-		const port = ctx.config.relayPort;
-		const reachable = await probeTcp("127.0.0.1", port);
-		const result: DiagnosticsResponse = {
-			overallStatus: reachable ? "ok" : "warn",
-			runAt: new Date().toISOString(),
-			checks: [
-				{
-					id: "relay",
-					label: "Collab relay reachable",
-					status: reachable ? "ok" : "fail",
-					detail: `port ${port}`,
-					fixHint: reachable ? undefined : "Start the service from the Launcher.",
-				},
-				{
-					id: "installdir",
-					label: "Install directory writable",
-					status: existsSync(ctx.config.installDir) ? "ok" : "fail",
-					detail: ctx.config.installDir,
-				},
-			],
-		};
+		const detect = await findOmp();
+		const bridgePort = ctx.config.port;
+		const bridgeReachable = await probeTcp("127.0.0.1", bridgePort);
+		const installDirExists = existsSync(ctx.config.installDir);
+		const checks = [
+			{
+				id: "omp",
+				label: "omp installed",
+				status: detect.found ? ("ok" as const) : ("fail" as const),
+				detail: detect.found
+					? `${detect.path} ${detect.version ? `(${detect.version})` : ""}`.trim()
+					: "omp not found on PATH or known locations",
+				fixHint: detect.found ? undefined : "Re-run the installer from the previous screen.",
+			},
+			{
+				id: "bridge",
+				label: "Desktop bridge reachable",
+				status: bridgeReachable ? ("ok" as const) : ("fail" as const),
+				detail: `127.0.0.1:${bridgePort}`,
+			},
+			{
+				id: "installdir",
+				label: "Bridge install directory writable",
+				status: installDirExists ? ("ok" as const) : ("fail" as const),
+				detail: ctx.config.installDir,
+			},
+		];
+		const overallStatus: DiagnosticsResponse["overallStatus"] = checks.some(c => c.status === "fail") ? "fail" : "ok";
+		const result: DiagnosticsResponse = { overallStatus, runAt: new Date().toISOString(), checks };
 		return jsonResponse(result);
 	}
 	if (p === "/api/v1/launcher/logs" && req.method === "GET") {
 		return jsonResponse({ lines: [] });
 	}
 
+	if (p === "/api/v1/launcher/detect-omp" && req.method === "GET") {
+		const result = await findOmp();
+		return jsonResponse(result);
+	}
+
 	return errorResponse("NOT_FOUND", `No launcher route for ${req.method} ${p}`, 404);
 }
+
+// Re-export for any consumer that imported the type from this route module.
+export type { DetectOmpResult };

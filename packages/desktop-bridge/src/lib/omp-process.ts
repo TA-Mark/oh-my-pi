@@ -1,9 +1,14 @@
 /**
- * OmpProcess — wraps a single `omp --mode rpc` child process.
+ * OmpProcess — wraps a single `omp --mode rpc-ui` child process.
  *
  * Protocol (RFC: packages/coding-agent/src/modes/rpc/rpc-types.ts):
  *   stdin  ← NDJSON RpcCommand frames (one JSON object per line)
- *   stdout → NDJSON RpcResponse / RpcSession events / extension UI requests
+ *   stdout → NDJSON RpcResponse / RpcSessionEventFrame / RpcExtensionUIRequest
+ *
+ * We use `rpc-ui` (not bare `rpc`) so omp emits `extension_ui_request`
+ * frames for interactive prompts (model picker, login dialog, MCP wizard,
+ * the `ask` tool). The WebUI handles each by surfacing the right widget
+ * and writing back via `extension_ui_response`.
  *
  * Consumers (the per-session manager + bridge WS proxy) plug in via:
  *   - send(frame)       to push a command line
@@ -17,9 +22,9 @@
  *   4. `bun packages/coding-agent/src/cli.ts` from the monorepo (dev)
  */
 
+import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { killTree } from "./process";
 
 export interface OmpSpawnOpts {
@@ -73,7 +78,7 @@ export class OmpProcess {
 			throw new Error("omp not found: install it or set OMP_BIN");
 		}
 		const extra = opts.extraArgs ?? [];
-		const child = spawn(this.resolution.exe, [...this.resolution.args, ...extra, "--mode", "rpc"], {
+		const child = spawn(this.resolution.exe, [...this.resolution.args, ...extra, "--mode", "rpc-ui"], {
 			cwd: opts.cwd ?? process.cwd(),
 			env: { ...process.env, ...opts.env },
 			stdio: ["pipe", "pipe", "pipe"],
@@ -96,7 +101,7 @@ export class OmpProcess {
 				}
 			}
 		});
-		child.on("error", (err) => {
+		child.on("error", err => {
 			for (const l of this.logListeners) l(`spawn error: ${err.message}`, "stderr");
 		});
 	}

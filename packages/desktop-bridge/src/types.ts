@@ -35,10 +35,50 @@ export interface PreflightResponse {
 	hasWarnings: boolean;
 }
 
+/** README-documented install methods. Each maps to one shell command. */
+export type InstallMethodId = "windows-irm" | "macos-curl" | "homebrew" | "bun-global" | "mise";
+
+export interface InstallMethod {
+	id: InstallMethodId;
+	label: string;
+	command: string;
+	platforms: Array<"win32" | "darwin" | "linux">;
+	requires: string[];
+	notes?: string;
+	/**
+	 * Human-readable destination omp lands at when this method runs on the
+	 * current host (factors in default paths and detected Bun). The UI shows
+	 * this in place of the user-editable path textbox for methods that
+	 * ignore PI_INSTALL_DIR.
+	 */
+	targetHint?: string;
+}
+
+export interface InstallMethodsResponse {
+	methods: InstallMethod[];
+	recommended: InstallMethodId;
+	platform: NodeJS.Platform;
+	/**
+	 * Platform-correct default path for Binary mode (PI_INSTALL_DIR). The UI
+	 * uses this as the textbox seed so it matches the official installer's
+	 * default — only honored by `windows-irm` (Binary path); other methods
+	 * ignore it.
+	 */
+	defaultInstallPath: string;
+}
+
+/**
+ * Install request. All README methods are global installers — omp lands on
+ * $PATH. `installPath` is only honored by `windows-irm` (as `PI_INSTALL_DIR`)
+ * and is ignored by every other method, so it is optional here. The bridge
+ * still requires it when the chosen method is `windows-irm`.
+ */
 export interface InstallRequest {
-	repoUrl: string;
-	branch: string;
-	installPath: string;
+	method?: InstallMethodId;
+	installPath?: string;
+	/** Legacy fields kept for back-compat; ignored by the dispatch logic. */
+	repoUrl?: string;
+	branch?: string;
 	windowsInstallPath?: string;
 }
 

@@ -1,0 +1,249 @@
+{
+  "area": "omp-cli-surface",
+  "currentState": "omp (oh-my-pi) là một coding agent CLI rất giàu tính năng: 40+ providers, 32 built-in tools (read/write/edit/ast_edit/search/find/bash/eval/ssh/lsp/debug/task/irc/todo/job/ask/browser/web_search/github/generate_image/inspect_image/tts/checkpoint/rewind/retain/recall/reflect/resolve/search_tool_bm25), LSP (14 ops), DAP (28 ops), persistent Python+Bun eval kernels, time-traveling stream rules, subagents/task isolation, /collab live sharing với QR + relay, Hindsight memory (retain/recall/reflect), checkpoint/rewind, advisor pair, plan mode, /commit, /review, hashline edits, browser/Slack driving, 12 internal URL schemes (pr://, issue://, agent://, skill://, rule://, conflict://...), inherit rules/skills/MCP từ .claude/.cursor/.windsurf/.gemini/.codex/.cline. Có 4 entry points: interactive TUI (default), one-shot (-p), Node SDK embed (createAgentSession), và headless qua \"omp --mode rpc\" (NDJSON stdio), \"omp --mode rpc-ui\" (thêm extension_ui_request frames cho tool cards/selectors/dialogs), \"omp acp\" (Agent Client Protocol qua JSON-RPC cho IDE/editor). Đối với Tauri/Bun wrapper, channel phù hợp nhất là --mode rpc-ui vì nó giữ nguyên toàn bộ session + UI prompts (model selector, login dialog, ask tool, mcp wizard) dưới dạng JSON frames mà Rust shell có thể proxy thẳng vào WebView, trong khi --mode rpc cơ bản không phát extension UI events. Direct Node SDK embed không khả thi từ Rust shell nhưng có thể dùng nếu side-car là Bun process. Hiện WebUI mới ở giai đoạn khởi tạo và chưa wire bất kỳ channel nào.",
+  "keyFiles": [
+    "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\README.md",
+    "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\coding-agent\\src\\cli.ts",
+    "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\coding-agent\\src\\cli-commands.ts",
+    "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\coding-agent\\src\\commands\\acp.ts",
+    "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\coding-agent\\src\\commands\\launch.ts",
+    "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\coding-agent\\src\\modes\\rpc\\rpc-types.ts",
+    "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\coding-agent\\src\\modes\\rpc\\rpc-mode.ts",
+    "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\coding-agent\\src\\modes\\rpc\\rpc-client.ts",
+    "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\coding-agent\\src\\modes\\rpc\\rpc-subagents.ts",
+    "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\coding-agent\\src\\modes\\acp\\acp-mode.ts",
+    "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\coding-agent\\src\\modes\\acp\\acp-agent.ts",
+    "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\coding-agent\\src\\modes\\acp\\acp-event-mapper.ts",
+    "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\coding-agent\\src\\modes\\components\\extensions\\extension-dashboard.ts",
+    "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\coding-agent\\src\\modes\\controllers\\extension-ui-controller.ts",
+    "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\agent\\src\\agent.ts",
+    "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\agent\\src\\index.ts",
+    "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\wire\\src\\index.ts",
+    "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\coding-agent\\src\\capability\\mcp.ts",
+    "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\coding-agent\\src\\capability\\skill.ts",
+    "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\coding-agent\\src\\capability\\slash-command.ts",
+    "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\coding-agent\\src\\collab\\protocol.ts"
+  ],
+  "gaps": [
+    {
+      "id": "G1",
+      "severity": "blocker",
+      "description": "WebUI chưa có bất kỳ transport nào tới omp: chưa spawn 'omp --mode rpc-ui', chưa có NDJSON framer trong Rust side-car, chưa có chỗ nhận/gửi RpcCommand/RpcResponse/RpcSessionEventFrame."
+    },
+    {
+      "id": "G2",
+      "severity": "blocker",
+      "description": "Chưa có TypeScript type bridge cho RpcCommand union (40+ command types: prompt/steer/follow_up/abort/abort_and_prompt/new_session/get_state/set_model/cycle_model/compact/branch/switch_session/handoff/...) — WebUI cần share types với rpc-types.ts hoặc generate từ schema."
+    },
+    {
+      "id": "G3",
+      "severity": "blocker",
+      "description": "Chưa render chat transcript: assistant content blocks (text/thinking/redactedThinking/toolCall), tool result messages, user messages, developer messages, synthetic injections, usage/cost per turn, stopReason (stop/length/toolUse/error/aborted)."
+    },
+    {
+      "id": "G4",
+      "severity": "high",
+      "description": "Chưa có tool card UI cho 32 built-in tools — TUI hiện render mỗi tool dưới dạng card chuyên dụng (read summarized, edit hashline preview, bash with PTY output, eval cells Python/JS, lsp navigation, debug DAP scopes/variables, ast_edit proposed→accept, browser screenshots, web_search ranked results, generate_image, task subagent dashboard, todo phases)."
+    },
+    {
+      "id": "G5",
+      "severity": "high",
+      "description": "Chưa wire extension_ui_request frames (select/confirm/input/editor/cancel) — đây chính là cơ chế rpc-ui exposes interactive prompts (model picker, ask tool, login dialog, mcp wizard, hook editor, plan review overlay) ra ngoài; thiếu sẽ làm /collab, /model, /login, ask tool không dùng được."
+    },
+    {
+      "id": "G6",
+      "severity": "high",
+      "description": "Chưa có UI cho slash commands: get_available_commands trả về RpcAvailableSlashCommand[] với name/aliases/description/input.hint/subcommands/source — WebUI cần command palette + autocomplete cho /model, /collab, /review, /commit, /advisor, /debug, /login, /reload-plugins, /dump, /handoff, ..."
+    },
+    {
+      "id": "G7",
+      "severity": "high",
+      "description": "Chưa có panel quản lý LLM providers/models: 40+ providers (Anthropic/OpenAI/Codex/Gemini/Antigravity/xAI/Mistral/Groq/Cerebras/Fireworks/Together/HuggingFace/NVIDIA/OpenRouter/Synthetic/Vercel AI Gateway/Cloudflare/Wafer/Perplexity + coding plans Cursor/Copilot/GitLab Duo/Kimi/Moonshot/MiniMax/Alibaba/Qwen/GLM/MiMo/Qianfan/NanoGPT/Venice/Kilo/ZenMux/OpenCode + local Ollama/LM Studio/llama.cpp/vLLM/LiteLLM), roles (default/smol/slow/plan/commit), fallback chains, path-scoped models, round-robin credentials, auth tags oauth/plan/local."
+    },
+    {
+      "id": "G8",
+      "severity": "high",
+      "description": "Chưa có MCP server panel: list/add/enable/disable servers; mcp-add-wizard.ts là một extension_ui_request flow cần được mirror trong WebUI thay vì TUI selector."
+    },
+    {
+      "id": "G9",
+      "severity": "high",
+      "description": "Chưa có Skills & Rules panel: inherit từ .claude/.cursor/.windsurf/.gemini/.codex/.cline/.github/copilot/.vscode (Cursor MDC, Cline .clinerules, Codex AGENTS.md, Copilot applyTo); cần list/edit/scope/enable rules + time-traveling-stream-rules (TTSR) editor."
+    },
+    {
+      "id": "G10",
+      "severity": "high",
+      "description": "Chưa có Subagent / Task dashboard: rpc trả về RpcSubagentSnapshot với agent/agentSource/status/task/assignment/sessionFile + lifecycle/progress/event frames; cần tree view subagents, transcript viewer per worker, schema-validated findings panel, irc DM giữa peers."
+    },
+    {
+      "id": "G11",
+      "severity": "high",
+      "description": "Chưa có /collab live session UI: host/guest/relay-client/protocol/crypto đã có sealed-client-side framing, cần QR display, link copy, view-only vs read-write toggle, participant list, join via omp join."
+    },
+    {
+      "id": "G12",
+      "severity": "high",
+      "description": "Chưa có Hindsight memory UI: retain (queue facts), recall (search bank), reflect (synthesize), cross-session mental model loading on first turn, project-scoped vs global bank."
+    },
+    {
+      "id": "G13",
+      "severity": "high",
+      "description": "Chưa có Plan Mode / Advisor pane: plan-review-overlay.ts cần WebUI equivalent; advisor injects 'concern' / 'blocker' notes inline với một model riêng — cần advisor-message renderer + /advisor status panel."
+    },
+    {
+      "id": "G14",
+      "severity": "high",
+      "description": "Chưa có Code execution kernel viewer cho 'eval' tool (persistent Python + Bun, shared prelude, tool re-entry callback) — cần per-cell output rendering, DataFrame tables, charts, kernel restart, prelude editor."
+    },
+    {
+      "id": "G15",
+      "severity": "high",
+      "description": "Chưa có Debug (DAP) UI: 28 DAP ops, lldb/dlv/debugpy adapter, scopes/variables/frame/breakpoints/threads — cần debugger panel + step controls."
+    },
+    {
+      "id": "G16",
+      "severity": "medium",
+      "description": "Chưa có LSP UI: 14 LSP ops, diagnostics, references, rename preview, code actions — cần diagnostics panel + symbol navigator."
+    },
+    {
+      "id": "G17",
+      "severity": "medium",
+      "description": "Chưa có Sessions list / Session switcher: switch_session/new_session/branch/get_branch_messages/set_session_name/handoff đã expose qua RPC; cần sidebar sessions + branch tree."
+    },
+    {
+      "id": "G18",
+      "severity": "medium",
+      "description": "Chưa có Checkpoint/Rewind controls và Compaction UI: compact (with customInstructions) + set_auto_compaction; context usage indicator (contextUsage field trong RpcSessionState)."
+    },
+    {
+      "id": "G19",
+      "severity": "medium",
+      "description": "Chưa có Login / Auth panel: get_login_providers trả về Provider[] với available/authenticated; OAuth flow cần system browser open + callback handling."
+    },
+    {
+      "id": "G20",
+      "severity": "medium",
+      "description": "Chưa có Image generation / inspection / TTS UI: generate_image (Gemini/GPT/xAI Grok), inspect_image (vision), tts (5 voices, WAV/MP3) — cần media gallery + playback."
+    },
+    {
+      "id": "G21",
+      "severity": "medium",
+      "description": "Chưa có URL scheme resolver UI: pr://, issue://, agent://, skill://, rule://, conflict:// resolve transparently — cần preview hover/click handlers cho các scheme này trong messages."
+    },
+    {
+      "id": "G22",
+      "severity": "medium",
+      "description": "Chưa có thinking level / queue mode controls: set_thinking_level (off/low/medium/high), set_steering_mode, set_follow_up_mode, set_interrupt_mode — cần footer/status-line giống TUI."
+    },
+    {
+      "id": "G23",
+      "severity": "medium",
+      "description": "Chưa có host tools / host URI schemes injection: WebUI có thể đăng ký set_host_tools + set_host_uri_schemes để inject các tool chạy ở phía Rust (e.g. native dialogs, OS notifications) vào omp's tool namespace — đây là extensibility point."
+    },
+    {
+      "id": "G24",
+      "severity": "medium",
+      "description": "Chưa có Web search & GitHub panel: web_search (14 backends auto chain, structured citations), github tool — cần search UI + results viewer."
+    },
+    {
+      "id": "G25",
+      "severity": "low",
+      "description": "Chưa có Stats dashboard mirror: omp-stats package có in-process dashboard server; WebUI có thể embed iframe hoặc redraw bằng cùng data."
+    }
+  ],
+  "proposedActions": [
+    {
+      "id": "A1",
+      "phase": "p3-chat-core",
+      "description": "Spawn 'omp --mode rpc-ui' từ Rust side-car (Tauri command), wire stdin/stdout NDJSON với line-buffered framer; expose tới WebView qua Tauri events 'omp:frame' và Tauri command 'omp:send'."
+    },
+    {
+      "id": "A2",
+      "phase": "p3-chat-core",
+      "description": "Share/generate TypeScript types từ packages/coding-agent/src/modes/rpc/rpc-types.ts (RpcCommand, RpcResponse, RpcSessionEventFrame, RpcExtensionUIRequest, RpcSessionState) — copy hoặc symlink để WebUI dùng cùng union types, tránh drift."
+    },
+    {
+      "id": "A3",
+      "phase": "p3-chat-core",
+      "description": "Build chat transcript renderer cho AgentMessage: user/developer/assistant/toolResult messages, AssistantContent blocks (text + thinking + redactedThinking + toolCall), WireUsage display, stopReason banner; reuse cấu trúc từ packages/wire/src/index.ts."
+    },
+    {
+      "id": "A4",
+      "phase": "p3-chat-core",
+      "description": "Implement composer + command palette: prompt/steer/follow_up/abort/abort_and_prompt commands; slash-command autocomplete dùng get_available_commands → RpcAvailableSlashCommand[]."
+    },
+    {
+      "id": "A5",
+      "phase": "p3-chat-core",
+      "description": "Implement extension_ui_request handler: select/confirm/input/editor/cancel + response routing back qua extension_ui_response frame — đây là foundation cho mọi dialog (model picker, login, mcp wizard, ask tool).",
+      "dependsOn": [
+        "A1"
+      ]
+    },
+    {
+      "id": "A6",
+      "phase": "p3-chat-core",
+      "description": "Implement session header + status line: model name, thinking level, queue modes, context usage %, isStreaming/isCompacting indicators từ get_state."
+    },
+    {
+      "id": "A7",
+      "phase": "p4-features",
+      "description": "Tool card library cho 32 built-in tools — mỗi tool một component: read/write/edit/ast_edit (diff preview + Accept card), bash (PTY output), eval (Python/JS cells), lsp (diagnostics/refs/rename), debug (DAP scopes), task (subagent dashboard), browser (screenshot), web_search (ranked results), generate_image (media)."
+    },
+    {
+      "id": "A8",
+      "phase": "p4-features",
+      "description": "Models & Providers panel: get_available_models + login providers, role assignment (default/smol/slow/plan/commit), Ctrl+P cycle, /model selector, fallback chains editor, path-scoped models."
+    },
+    {
+      "id": "A9",
+      "phase": "p4-features",
+      "description": "MCP servers panel: list/add/enable/disable wizard — phản chiếu mcp-add-wizard flow nhưng dùng form HTML thay TUI selector."
+    },
+    {
+      "id": "A10",
+      "phase": "p4-features",
+      "description": "Skills & Rules panel: hiển thị rules/skills inherit từ .claude/.cursor/.windsurf/.gemini/.codex/.cline/.github; editor cho time-traveling stream rules (regex + injection body)."
+    },
+    {
+      "id": "A11",
+      "phase": "p4-features",
+      "description": "Subagent dashboard + transcript viewer: get_subagents + set_subagent_subscription(events) + get_subagent_messages(fromByte) streaming; render lifecycle/progress/event frames; expose findings JSON tree."
+    },
+    {
+      "id": "A12",
+      "phase": "p4-features",
+      "description": "/collab pane: QR display, link copy, view vs read-write toggle, participant list, sealed-frame status."
+    },
+    {
+      "id": "A13",
+      "phase": "p4-features",
+      "description": "Hindsight panel: retain queue, recall search, reflect synthesize; project-scoped vs global toggle."
+    },
+    {
+      "id": "A14",
+      "phase": "p4-features",
+      "description": "Plan mode overlay + Advisor side-pane: render advisor 'note'/'concern'/'blocker' cards inline, /advisor status."
+    },
+    {
+      "id": "A15",
+      "phase": "p4-features",
+      "description": "Sessions sidebar: list + switch_session + new_session + branch tree (get_branch_messages) + handoff + set_session_name; integrate checkpoint/rewind + compact controls."
+    },
+    {
+      "id": "A16",
+      "phase": "p4-features",
+      "description": "Auth/Login flow: get_login_providers + login command; OAuth callback handled qua Tauri custom URL scheme or local HTTP loopback."
+    },
+    {
+      "id": "A17",
+      "phase": "p4-features",
+      "description": "Host tools / URI schemes: dùng set_host_tools + set_host_uri_schemes để inject Tauri-side capabilities (native file dialogs, OS notifications, clipboard) vào omp tool namespace."
+    },
+    {
+      "id": "A18",
+      "phase": "p4-features",
+      "description": "URL scheme previews trong messages: pr://, issue://, agent://, skill://, rule://, conflict:// — hover/click resolve qua read tool và render trong side preview pane."
+    }
+  ]
+}

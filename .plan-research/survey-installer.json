@@ -1,0 +1,122 @@
+{
+  "area": "installer",
+  "currentState": "The installer UI flow (InstallerPage → SourceSetupCard / InstallChoicesCard / InstallProgressCard) talks to the bridge via REST + WS and dispatches one of five README one-liners (windows-irm, macos-curl, homebrew, bun-global, mise) as a tracked JobManager job. Round 1+2 fixes have landed: method-aware preflight (checkBun / checkBrew / checkMise / checkNetwork) only runs the dep check that matches the chosen method; SourceSetupCard hides the install-path textbox for global installers and only shows it for windows-irm; installer.ts only sets PI_INSTALL_DIR for windows-irm; logs are persisted to %LOCALAPPDATA%\\omp-desktop\\logs\\install-<jobId>.log and a logFile path is returned in the create-job response. The flow works on a host that already has Bun/Git, but on a clean Windows box the bundled bun.exe (~98 MB) and mingit (~114 MB) shipped inside the .exe are completely unused by the installer — bridge.rs passes OMP_BUNDLED_BUN / OMP_BUNDLED_GIT_DIR to the child, but installer.ts and preflight.ts never read either env var, never prepend them to PATH for the spawned powershell, and checkBun() / install.ps1's Test-BunInstalled both still query the bare system PATH. The result: bun-global and mise preflights fail \"not on PATH\" even though bun is sitting inside the .exe, windows-irm with -Source re-downloads Bun over the network, and Configure-BashShell shows the \"No bash shell found\" warning instead of using bundled mingit/bash.exe.",
+  "keyFiles": [
+    "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\desktop-bridge\\src\\routes\\installer.ts",
+    "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\desktop-bridge\\src\\lib\\preflight.ts",
+    "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\desktop-bridge\\src\\lib\\omp-detect.ts",
+    "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\desktop-bridge\\src\\lib\\process.ts",
+    "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\desktop-bridge\\src\\lib\\jobs.ts",
+    "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\desktop-bridge\\src\\lib\\omp-process.ts",
+    "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\desktop-bridge\\src\\server.ts",
+    "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\desktop-shell\\src-tauri\\src\\bridge.rs",
+    "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\desktop-shell\\src-tauri\\binaries\\bun-x86_64-pc-windows-msvc.exe",
+    "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\desktop-shell\\src-tauri\\resources\\mingit",
+    "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\collab-web\\src\\features\\installer\\pages\\InstallerPage.tsx",
+    "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\collab-web\\src\\features\\installer\\components\\SourceSetupCard.tsx",
+    "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\collab-web\\src\\features\\installer\\components\\InstallChoicesCard.tsx",
+    "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\collab-web\\src\\features\\installer\\components\\InstallProgressCard.tsx",
+    "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\collab-web\\src\\features\\installer\\api\\installerApi.ts",
+    "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\collab-web\\src\\features\\installer\\types\\installer.ts",
+    "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\scripts\\install.ps1"
+  ],
+  "gaps": [
+    {
+      "id": "bundled-bun-unused",
+      "severity": "blocker",
+      "description": "bridge.rs passes OMP_BUNDLED_BUN (and OMP_BUNDLED_GIT_DIR) to the desktop-bridge child, but neither installer.ts nor preflight.ts ever read them. spawnTracked just inherits process.env.PATH verbatim, so the powershell.exe that runs `irm | iex` never sees the bundled bun.exe (~98 MB) nor mingit (~114 MB). Consequence: (a) bun-global preflight fails with 'bun was not found on PATH' on every clean Windows box, even though bun is sitting next to the .exe; (b) install.ps1 Test-BunInstalled returns $false so windows-irm falls back to Binary mode (download release exe) — which works, but the whole point of shipping bun was so windows-irm with -Source / bun-global would 'just work' offline-ish; (c) Configure-BashShell can't find git/bash so the user sees the yellow 'No bash shell found' warning. The 99 MB the installer .exe carries for nothing is dead weight."
+    },
+    {
+      "id": "preflight-checks-block-bundled-paths",
+      "severity": "high",
+      "description": "checkBun, checkMise, checkBrew all shell out with bare command names ('bun', 'mise', 'brew') via execCapture and rely on PATH. They have no awareness of OMP_BUNDLED_BUN, so even after fixing (1) by prepending the bundled bin dir to the spawned child's PATH, these preflights run in the bridge's OWN process (not the child's) and will still fail. They need to either (a) reuse the resolved bundled-bun path before falling back to PATH, or (b) prepend the bundled dirs to process.env.PATH at bridge startup once."
+    },
+    {
+      "id": "checkgit-unused",
+      "severity": "low",
+      "description": "checkGit() is defined in preflight.ts but never called by checksForMethod() for any method. It is dead code. install.ps1 -Source mode requires git but the UI never warns. With (1) fixed, the bundled mingit could satisfy this."
+    },
+    {
+      "id": "step-marker-installed-too-greedy",
+      "severity": "medium",
+      "description": "STEP_MARKERS final regex `Installed omp (?:to|via)|Pouring|installed` has a bare lower-case 'installed' alternation that matches any line containing the substring — e.g. an early 'bun is already installed' style line would jump the progress bar to 85% before the real work starts. Tighten to `\\binstalled\\b` only inside a more specific context, or drop the bare 'installed' alternation."
+    },
+    {
+      "id": "logfile-path-not-surfaced-in-ui",
+      "severity": "medium",
+      "description": "JobManager writes %LOCALAPPDATA%\\omp-desktop\\logs\\install-<jobId>.log and the POST /jobs response returns logFile, but InstallerPage.tsx never displays or links it. When install fails, the user has no clue where the durable log lives. The current 'View Logs' action button in the error toast has no handler wired to open the file or copy the path."
+    },
+    {
+      "id": "repair-endpoint-is-stub",
+      "severity": "medium",
+      "description": "POST /api/v1/installer/jobs/:id/repair returns `{ok:true, message:'repair queued'}` and does nothing. handleRetry on the UI calls it on failure but the bridge takes no action. Either implement (rerun the same method with retry semantics, e.g. clean partial download in install path first) or remove the Repair button until it does something."
+    },
+    {
+      "id": "cancel-leaves-partial-files",
+      "severity": "low",
+      "description": "Cancel calls killTree (taskkill /T /F) on the powershell.exe tree. Mid-download Invoke-WebRequest leaves a partial omp.exe at $OutPath; mid-bun-install may leave half-written ~/.bun/bin/omp.exe. No cleanup is performed after cancel, so a subsequent install may resume into an inconsistent state."
+    },
+    {
+      "id": "child-env-path-snapshot",
+      "severity": "low",
+      "description": "install.ps1 -Binary mode appends $InstallDir to the User PATH via [Environment]::SetEnvironmentVariable. The bridge's process.env.PATH was snapshotted at bridge launch, so the post-install findOmp() `where.exe omp` will not see the new entry. Mitigated today by the known-location fallback (Binary mode resolves via %LOCALAPPDATA%\\omp\\omp.exe), so it works in practice — but the message 'restart the app' is misleading: even after restart, the child inherits whatever PATH Tauri inherited at spawn."
+    },
+    {
+      "id": "checkdisk-fake-diskstats",
+      "severity": "low",
+      "description": "preflight.ts checkDisk has a `// node:fs has no portable diskstats; trust the dir exists and is writable` comment and MIN_DISK_BYTES (2 GB) is referenced via `void` to silence unused. The check is never wired into checksForMethod either. Either remove or implement via a Tauri command that calls GetDiskFreeSpaceExW."
+    },
+    {
+      "id": "stream-buffering-progress-stall",
+      "severity": "low",
+      "description": "spawnTracked reads stdout line-by-line via newline split. PowerShell's `Write-Host` flushes per line, but Invoke-WebRequest progress is written to a different stream (Information / progress) that the bridge does not capture. Risk: between 'Downloading omp-windows-x64.exe...' and '✓ Installed omp to ...' the progress bar sits at 65% with no log output for the full download (multi-second on slow connections). Consider injecting `-Progress SilentlyContinue` or periodic heartbeat lines."
+    }
+  ],
+  "proposedActions": [
+    {
+      "id": "A1-prepend-bundled-path",
+      "phase": "p1-install",
+      "description": "In packages/desktop-bridge/src/server.ts (startup), if process.env.OMP_BUNDLED_BUN is set, prepend dirname(OMP_BUNDLED_BUN) to process.env.PATH; if process.env.OMP_BUNDLED_GIT_DIR is set, prepend it (plus the sibling .../mingw64/bin where bash.exe lives). This makes every subsequently spawned child (powershell.exe running install.ps1, bun, mise) see bundled bun + git + bash on PATH without any per-route plumbing. Single point of fix; resolves bundled-bun-unused, lets install.ps1's Test-BunInstalled / Find-BashShell succeed, and unblocks bun-global preflight. Estimated 10 lines of code."
+    },
+    {
+      "id": "A2-checkbun-prefers-bundled",
+      "phase": "p1-install",
+      "description": "In preflight.ts, change checkBun / checkGit / checkMise to first try process.env.OMP_BUNDLED_BUN (and the resolved bundled git path) as the explicit executable before falling back to execCapture('bun', ...). This is belt-and-braces in case A1 ordering is racy or the bridge child PATH was already initialized; ensures preflight is consistent with what the child spawn will actually use."
+    },
+    {
+      "id": "A3-call-checkgit-when-needed",
+      "phase": "p1-install",
+      "description": "Add checkGit() to checksForMethod() for windows-irm when the user has chosen -Source (or unconditionally on Windows where Configure-BashShell needs it). Today checkGit is dead code. With A1 the bundled mingit satisfies it, so the check should pass on a clean box."
+    },
+    {
+      "id": "A4-tighten-step-markers",
+      "phase": "p1-install",
+      "description": "In installer.ts STEP_MARKERS, replace `|installed` bare alternation in the last marker with a stricter pattern such as `bun\\.exe|@oh-my-pi\\/.*installed|omp installed`. Verified against install.ps1: the only success lines are '✓ Installed omp to <path>' and '✓ Installed omp via bun'. The current regex already matches those via 'Installed omp (?:to|via)'; the bare '|installed' adds nothing but false positives."
+    },
+    {
+      "id": "A5-surface-logfile-path",
+      "phase": "p1-install",
+      "description": "Plumb logFile from POST /installer/jobs response through useInstallerStateMachine into InstallerPage state, then render it in InstallProgressCard (small footer 'Log file: <path>' with a Copy button) and inside the error card. Optionally add a Tauri command openPath(path) so the existing 'View Logs' error action actually opens the folder."
+    },
+    {
+      "id": "A6-remove-or-implement-repair",
+      "phase": "p1-install",
+      "description": "Either (a) implement /jobs/:id/repair to: read the failed job's method, clean $InstallDir\\omp.exe (or %USERPROFILE%\\.bun\\bin\\omp.exe) if it exists and is non-functional, then re-dispatch the same method as a new job, returning the new jobId; or (b) drop the Repair button from the error toast and leave only Retry (which already creates a brand-new job). Today the endpoint is a no-op stub that lies to the user."
+    },
+    {
+      "id": "A7-cancel-cleanup",
+      "phase": "p1-install",
+      "description": "After cancel, before marking phase=cancelled, attempt best-effort cleanup of the half-written artifact: if method=windows-irm and installPath is set, delete <installPath>\\omp.exe if it exists and is smaller than expected (e.g. < 1 MB heuristic, since omp release binary is ~30 MB); for bun-global, no cleanup (bun handles its own atomicity). Log every cleanup attempt."
+    },
+    {
+      "id": "A8-strip-bundled-bun-if-unused",
+      "phase": "p1-install",
+      "description": "Decision gate: if A1+A2 land and bundled bun is actually used by the installer flow (and by the launcher's omp-process resolveOmp dev fallback), keep it. Otherwise — if the only consumer remains the dev-mode `bun run cli.ts` path that never fires for end users — remove bun-x86_64-pc-windows-msvc.exe from tauri.conf.json externalBin and shed ~98 MB off the installer .exe. Same question for mingit (114 MB): if it ends up only being read for Configure-BashShell, that is worth ~150 KB of UI hint code, not 114 MB of bundled binaries."
+    },
+    {
+      "id": "A9-implement-checkdisk-or-drop",
+      "phase": "p1-install",
+      "description": "Either wire checkDisk into checksForMethod() and implement a real free-space probe via a Tauri command calling GetDiskFreeSpaceExW (Win) / statvfs (POSIX), or delete the function plus MIN_DISK_BYTES. Current state is a placeholder masquerading as a check."
+    }
+  ]
+}

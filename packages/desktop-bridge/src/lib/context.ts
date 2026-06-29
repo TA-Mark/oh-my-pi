@@ -3,10 +3,10 @@
  * Kept in lib/ to break the routes ↔ server.ts import cycle.
  */
 
+import type { LauncherSupervisor } from "../routes/launcher";
 import type { BridgeConfig } from "./config";
 import type { JobManager } from "./jobs";
 import type { OmpSessionManager } from "./omp-manager";
-import type { LauncherSupervisor } from "../routes/launcher";
 
 export interface BridgeContext {
 	config: BridgeConfig;

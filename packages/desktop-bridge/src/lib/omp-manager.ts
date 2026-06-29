@@ -77,13 +77,11 @@ export class OmpSessionManager {
 		};
 		this.sessions.set(id, rec);
 
-		proc.onFrame((frame) => {
+		proc.onFrame(frame => {
 			this.publish(rec!, { type: "frame", frame, ts: new Date().toISOString() });
 			this.snoopSessionFile(id, frame);
 		});
-		proc.onLog((line, stream) =>
-			this.publish(rec!, { type: "log", line, stream, ts: new Date().toISOString() }),
-		);
+		proc.onLog((line, stream) => this.publish(rec!, { type: "log", line, stream, ts: new Date().toISOString() }));
 		proc.onExit((code, signal) => {
 			rec!.exitedAt = new Date().toISOString();
 			rec!.exitCode = code;
@@ -134,7 +132,7 @@ export class OmpSessionManager {
 	}
 
 	list(): OmpSessionSnapshot[] {
-		return Array.from(this.sessions.values()).map((r) => this.snapshotOf(r));
+		return Array.from(this.sessions.values()).map(r => this.snapshotOf(r));
 	}
 
 	subscribe(id: string, listener: Listener, replay = true): () => void {
@@ -147,7 +145,7 @@ export class OmpSessionManager {
 
 	async shutdown(): Promise<void> {
 		const ids = Array.from(this.sessions.keys());
-		await Promise.all(ids.map((id) => this.stop(id)));
+		await Promise.all(ids.map(id => this.stop(id)));
 	}
 
 	private publish(rec: SessionRecord, envelope: OmpFrameEnvelope): void {

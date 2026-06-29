@@ -21,11 +21,6 @@ export function jsonResponse(body: unknown, status = 200): Response {
 	});
 }
 
-export function errorResponse(
-	code: string,
-	message: string,
-	status = 500,
-	detail?: string,
-): Response {
+export function errorResponse(code: string, message: string, status = 500, detail?: string): Response {
 	return jsonResponse({ code, message, detail }, status);
 }

@@ -62,9 +62,7 @@ export function loadConfig(opts: { port?: number; scriptDir?: string } = {}): Br
 	const scriptDir = opts.scriptDir ?? dirname(new URL(import.meta.url).pathname.replace(/^\//, ""));
 	const file = readConfigFile(scriptDir);
 
-	const installDir = resolve(
-		process.env.OMP_DESKTOP_DIR ?? file.installDir ?? defaultInstallDir(),
-	);
+	const installDir = resolve(process.env.OMP_DESKTOP_DIR ?? file.installDir ?? defaultInstallDir());
 	const stateDir = join(installDir, "state");
 	const logsDir = join(installDir, "logs");
 	const port = opts.port ?? file.port ?? Number(process.env.OMP_BRIDGE_PORT ?? 8787);

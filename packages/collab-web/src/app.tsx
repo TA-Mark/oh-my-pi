@@ -1,8 +1,5 @@
 import type { ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { InstallerPage } from "./features/installer/pages/InstallerPage";
-import { LauncherPage } from "./features/launcher/pages/LauncherPage";
-import { MainChatPage } from "./features/chat/pages/MainChatPage";
 import { AgentDrawer } from "./components/agents/AgentDrawer";
 import { AgentsPanel } from "./components/agents/AgentsPanel";
 import { Banners } from "./components/shell/Banners";
@@ -11,6 +8,9 @@ import { ConnectScreen } from "./components/shell/ConnectScreen";
 import { HeaderBar } from "./components/shell/HeaderBar";
 import { Toasts } from "./components/shell/Toasts";
 import { Transcript } from "./components/transcript/Transcript";
+import { MainChatPage } from "./features/chat/pages/MainChatPage";
+import { InstallerPage } from "./features/installer/pages/InstallerPage";
+import { LauncherPage } from "./features/launcher/pages/LauncherPage";
 import { GuestClient } from "./lib/client";
 import { useGuestSnapshot } from "./lib/use-guest";
 import type { ToolRenderHost } from "./tool-render";
@@ -42,15 +42,27 @@ function hashLink(): string | null {
 }
 
 function isInstalled(): boolean {
-	try { return localStorage.getItem(INSTALLED_KEY) === "1"; } catch { return false; }
+	try {
+		return localStorage.getItem(INSTALLED_KEY) === "1";
+	} catch {
+		return false;
+	}
 }
 
 function markInstalled(): void {
-	try { localStorage.setItem(INSTALLED_KEY, "1"); } catch { /* storage unavailable */ }
+	try {
+		localStorage.setItem(INSTALLED_KEY, "1");
+	} catch {
+		/* storage unavailable */
+	}
 }
 
 function isLauncherDone(): boolean {
-	try { return localStorage.getItem(LAUNCHER_DONE_KEY) === "1"; } catch { return false; }
+	try {
+		return localStorage.getItem(LAUNCHER_DONE_KEY) === "1";
+	} catch {
+		return false;
+	}
 }
 
 export function App(): ReactNode {
@@ -77,11 +89,19 @@ export function App(): ReactNode {
 		return (
 			<LauncherPage
 				onEnterChat={() => {
-					try { localStorage.setItem(LAUNCHER_DONE_KEY, "1"); } catch { /* ignore */ }
+					try {
+						localStorage.setItem(LAUNCHER_DONE_KEY, "1");
+					} catch {
+						/* ignore */
+					}
 					setLauncherDone(true);
 				}}
 				onBackToInstaller={() => {
-					try { localStorage.removeItem(INSTALLED_KEY); } catch { /* ignore */ }
+					try {
+						localStorage.removeItem(INSTALLED_KEY);
+					} catch {
+						/* ignore */
+					}
 					setInstallerDone(false);
 				}}
 			/>
@@ -94,7 +114,11 @@ export function App(): ReactNode {
 		return (
 			<MainChatPage
 				onGoToLauncher={() => {
-					try { localStorage.removeItem(LAUNCHER_DONE_KEY); } catch { /* ignore */ }
+					try {
+						localStorage.removeItem(LAUNCHER_DONE_KEY);
+					} catch {
+						/* ignore */
+					}
 					setLauncherDone(false);
 				}}
 			/>

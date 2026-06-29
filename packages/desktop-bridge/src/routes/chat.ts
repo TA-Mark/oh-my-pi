@@ -13,12 +13,7 @@ import { randomBytes } from "node:crypto";
 import type { BridgeContext } from "../lib/context";
 import { errorResponse, jsonResponse } from "../lib/http";
 import { makeStore } from "../lib/store";
-import type {
-	ChatSession,
-	DataSource,
-	RuntimeConfig,
-	RuntimeConfigResponse,
-} from "../types";
+import type { ChatSession, DataSource, RuntimeConfig, RuntimeConfigResponse } from "../types";
 
 interface SessionsFile {
 	sessions: ChatSession[];
@@ -76,7 +71,7 @@ export async function handleChat(ctx: BridgeContext, req: Request, url: URL): Pr
 			messageCount: 0,
 			isActive: false,
 		};
-		sessions.mutate((s) => s.sessions.unshift(session));
+		sessions.mutate(s => s.sessions.unshift(session));
 		return jsonResponse({ session });
 	}
 
@@ -85,8 +80,8 @@ export async function handleChat(ctx: BridgeContext, req: Request, url: URL): Pr
 		const id = sessionMatch[1]!;
 		await ctx.omp.stop(id).catch(() => {});
 		ctx.omp.bindings.clear(id);
-		sessions.mutate((s) => {
-			s.sessions = s.sessions.filter((x) => x.id !== id);
+		sessions.mutate(s => {
+			s.sessions = s.sessions.filter(x => x.id !== id);
 		});
 		return jsonResponse({ ok: true });
 	}
@@ -94,7 +89,7 @@ export async function handleChat(ctx: BridgeContext, req: Request, url: URL): Pr
 	const startMatch = /^\/api\/v1\/chat\/sessions\/([^/]+)\/start$/.exec(p);
 	if (startMatch && req.method === "POST") {
 		const id = startMatch[1]!;
-		const found = sessions.get().sessions.find((x) => x.id === id);
+		const found = sessions.get().sessions.find(x => x.id === id);
 		if (!found) return errorResponse("SESSION_NOT_FOUND", "no such session", 404);
 		const binding = ctx.omp.bindings.get(id);
 		const extraArgs = binding ? ["--resume", binding.sessionFile] : undefined;
@@ -131,8 +126,8 @@ export async function handleChat(ctx: BridgeContext, req: Request, url: URL): Pr
 		const id = renameMatch[1]!;
 		const body = (await req.json().catch(() => ({}))) as { name?: string };
 		if (!body.name?.trim()) return errorResponse("BAD_REQUEST", "name is required", 400);
-		sessions.mutate((s) => {
-			const found = s.sessions.find((x) => x.id === id);
+		sessions.mutate(s => {
+			const found = s.sessions.find(x => x.id === id);
 			if (found) found.name = body.name!.trim();
 		});
 		return jsonResponse({ ok: true });
@@ -145,8 +140,8 @@ export async function handleChat(ctx: BridgeContext, req: Request, url: URL): Pr
 	const refreshMatch = /^\/api\/v1\/chat\/data-sources\/([^/]+)\/refresh$/.exec(p);
 	if (refreshMatch && req.method === "POST") {
 		const id = refreshMatch[1]!;
-		sources.mutate((s) => {
-			const found = s.sources.find((x) => x.id === id);
+		sources.mutate(s => {
+			const found = s.sources.find(x => x.id === id);
 			if (found) found.status = "connected";
 		});
 		return jsonResponse({ ok: true });
@@ -162,7 +157,7 @@ export async function handleChat(ctx: BridgeContext, req: Request, url: URL): Pr
 	}
 	if (p === "/api/v1/chat/runtime-config" && req.method === "POST") {
 		const patch = (await req.json().catch(() => ({}))) as Partial<RuntimeConfig>;
-		const next = config.mutate((c) => {
+		const next = config.mutate(c => {
 			if (patch.model !== undefined) c.model = patch.model;
 			if (patch.mode !== undefined) c.mode = patch.mode;
 			if (patch.thinkingEnabled !== undefined) c.thinkingEnabled = patch.thinkingEnabled;

@@ -3,18 +3,18 @@
  *
  *   1. **Bun** — sidecar binary. Without Bun on PATH, the Installer page
  *      can't run `bun install`, can't spawn omp.
- *   2. **MinGit** — portable Git for Windows. Required for `git clone`
- *      during the install flow.
- *   3. **pi_natives.<triple>.node** — precompiled native addon for omp.
+ *   2. **pi_natives.<triple>.node** — precompiled native addon for omp.
  *      Built locally via `bun --cwd=../../natives run build`.
  *
  * Output:
  *   src-tauri/binaries/bun-<rust-target-triple>.exe          (Tauri sidecar)
- *   src-tauri/resources/mingit/                              (Tauri resource folder)
  *   src-tauri/resources/native/pi_natives.<triple>.node      (Tauri resource file)
  *
  * Idempotent: skips downloads if cached version-files match.
  * Runs once during `bun run dev` / `bun run build` (see package.json).
+ *
+ * Note: MinGit was previously bundled (~30MB) but has zero consumers in the
+ * bridge codebase — `OMP_BUNDLED_GIT_DIR` was never read. Dropped per plan D1.
  */
 
 import { spawn } from "node:child_process";
@@ -38,13 +38,10 @@ const CACHE_DIR = join(SHELL_DIR, ".dep-cache");
 
 // Pin known-good versions so builds are reproducible across machines.
 const BUN_VERSION = "1.3.14";
-const MINGIT_VERSION = "2.50.1";
-const MINGIT_BUILD = "1";
 const PI_NATIVES_NPM_VERSION = "16.2.2";
 
 interface PlatformAsset {
 	bun: { url: string; archiveExePath: string };
-	mingit?: { url: string };
 }
 
 const ASSETS: Record<string, PlatformAsset> = {
@@ -52,9 +49,6 @@ const ASSETS: Record<string, PlatformAsset> = {
 		bun: {
 			url: `https://github.com/oven-sh/bun/releases/download/bun-v${BUN_VERSION}/bun-windows-x64.zip`,
 			archiveExePath: "bun-windows-x64/bun.exe",
-		},
-		mingit: {
-			url: `https://github.com/git-for-windows/git/releases/download/v${MINGIT_VERSION}.windows.${MINGIT_BUILD}/MinGit-${MINGIT_VERSION}-64-bit.zip`,
 		},
 	},
 	"aarch64-pc-windows-msvc": {
@@ -166,20 +160,6 @@ async function stageBun(triple: string): Promise<void> {
 	console.log(`  [stage] ${sidecarPath}`);
 }
 
-async function stageMinGit(triple: string): Promise<void> {
-	const asset = ASSETS[triple]?.mingit;
-	if (!asset) {
-		console.log(`  [skip] MinGit (no asset for ${triple} — relies on system git)`);
-		return;
-	}
-	const mingitDir = join(RESOURCES_DIR, "mingit");
-	const zipDest = join(CACHE_DIR, `mingit-${triple}.zip`);
-	await download(asset.url, zipDest);
-	if (existsSync(mingitDir)) rmSync(mingitDir, { recursive: true, force: true });
-	await unzip(zipDest, mingitDir);
-	console.log(`  [stage] ${mingitDir}`);
-}
-
 async function stageNative(triple: string): Promise<void> {
 	const mapping = mapTripleToNative(triple);
 	if (!mapping) {
@@ -247,11 +227,9 @@ async function main(): Promise<void> {
 	console.log(`[deps] target triple: ${triple}`);
 	mkdirSync(CACHE_DIR, { recursive: true });
 
-	console.log("[deps] (1/3) Bun");
+	console.log("[deps] (1/2) Bun");
 	await stageBun(triple);
-	console.log("[deps] (2/3) MinGit");
-	await stageMinGit(triple);
-	console.log("[deps] (3/3) pi_natives");
+	console.log("[deps] (2/2) pi_natives");
 	await stageNative(triple);
 
 	console.log("[deps] ✓ all bundled deps staged");

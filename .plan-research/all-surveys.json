@@ -1,0 +1,979 @@
+[
+  {
+    "area": "update-bundle",
+    "currentState": "Bundle pipeline (fetch-bundled-deps.ts) stages 3 thứ vào Tauri build: Bun 1.3.14 (~98MB sidecar binary), MinGit 2.50.1 (~30MB Windows resource), và pi_natives.<triple>.node (~vài MB). bridge.rs::BundledDeps::resolve() phát hiện cả 3, rồi forward dưới dạng env vars OMP_BUNDLED_BUN / OMP_BUNDLED_GIT_DIR / OMP_BUNDLED_NATIVE cho cả sidecar và Bun-script process. Nhưng phía consumer (desktop-bridge): OMP_BUNDLED_NATIVE chỉ được dùng ở installer.ts:405 (stageBundledNative — copy .node vào installPath sau khi install xong, chỉ áp dụng cho windows-irm Binary mode); OMP_BUNDLED_BUN chỉ được dùng ở omp-process.ts:204 trong nhánh \"dev\" fallback khi không có omp trên PATH; OMP_BUNDLED_GIT_DIR KHÔNG có consumer nào trong codebase — bundled MinGit (30MB) đang là dead weight. Installer route spawn `powershell.exe -Command \"irm https://omp.sh/install.ps1 | iex\"` mà không prepend bundled Bun/Git vào PATH, nghĩa là khi máy clean chạy windows-irm sẽ vẫn re-download Bun từ internet (qua install.ps1 -> Install-Bun -> irm bun.sh/install.ps1). Tauri updater plugin có trong Cargo.toml và được register ở lib.rs nhưng `updater.active=false` và `pubkey=REPLACE_ME` trong tauri.conf.json — chưa hoạt động. Launcher route /update/check trả về stub `available:false`; /update/apply trả về \"not implemented in v0.1\". Coding-agent có sẵn `omp update` CLI command (packages/coding-agent/src/cli/update-cli.ts) tự handle update cho omp binary — đây là update path đã production-ready và độc lập với desktop shell.",
+    "keyFiles": [
+      "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\desktop-shell\\src-tauri\\tauri.conf.json",
+      "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\desktop-shell\\scripts\\fetch-bundled-deps.ts",
+      "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\desktop-shell\\src-tauri\\src\\bridge.rs",
+      "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\desktop-shell\\src-tauri\\src\\lib.rs",
+      "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\desktop-shell\\src-tauri\\Cargo.toml",
+      "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\desktop-bridge\\src\\routes\\installer.ts",
+      "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\desktop-bridge\\src\\routes\\launcher.ts",
+      "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\desktop-bridge\\src\\lib\\omp-process.ts",
+      "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\coding-agent\\src\\cli\\update-cli.ts",
+      "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\scripts\\install.ps1"
+    ],
+    "gaps": [
+      {
+        "id": "G1",
+        "severity": "high",
+        "description": "MinGit (~30MB) is bundled and forwarded as OMP_BUNDLED_GIT_DIR but has zero consumers in desktop-bridge — pure dead weight inflating installer size."
+      },
+      {
+        "id": "G2",
+        "severity": "high",
+        "description": "Bundled Bun (~98MB) is not used by the installer route. windows-irm method spawns `irm bun.sh/install.ps1 | iex` which re-downloads Bun, defeating the entire point of bundling. Only consumer is the dev-mode fallback in resolveOmp() which only activates when omp is missing from PATH AND repo root is detected — not the user-facing happy path."
+      },
+      {
+        "id": "G3",
+        "severity": "high",
+        "description": "Tauri updater is half-wired: plugin registered + endpoint URL templated, but pubkey=REPLACE_ME, updater.active=false, and there is no omp.sh/desktop/updates/* server implementation. Enabling requires generating an updater key pair + signing every release + hosting an update manifest server — significant ops investment for a wrapper app."
+      },
+      {
+        "id": "G4",
+        "severity": "medium",
+        "description": "Launcher /update/check and /update/apply are stubs returning fixed responses; no integration with the existing `omp update` CLI that already implements bun/brew/mise/binary update paths."
+      },
+      {
+        "id": "G5",
+        "severity": "medium",
+        "description": "stageBundledNative in installer.ts only runs when `installPath` is set (windows-irm Binary mode). For bun-global / homebrew / mise the bundled native addon is skipped — but those installers already pull pi-natives from npm, so this is actually correct; documenting it would help."
+      },
+      {
+        "id": "G6",
+        "severity": "low",
+        "description": "Installer.ts does not prepend bundled Bun's directory to PATH before spawning install.ps1, so even if we wanted to skip the Bun download we couldn't without code changes."
+      }
+    ],
+    "proposedActions": [
+      {
+        "id": "A1",
+        "phase": "p1-install",
+        "description": "DROP bundled MinGit entirely. Remove `resources/mingit/**/*` from tauri.conf.json bundle.resources, remove stageMinGit() from fetch-bundled-deps.ts, remove mingit_cmd_dir from BundledDeps in bridge.rs, remove OMP_BUNDLED_GIT_DIR env forward. Saves ~30MB with zero functional regression — no consumer exists. install.ps1 / brew / bun-global all rely on system git (or don't need git at all for bun-global)."
+      },
+      {
+        "id": "A2",
+        "phase": "p1-install",
+        "description": "DROP bundled Bun from default build. Remove `binaries/bun` from externalBin and remove stageBun() — saves ~98MB. Rationale: (a) windows-irm method re-downloads Bun anyway via install.ps1, (b) bun-global method requires user to already have Bun, (c) only consumer is dev-mode fallback which devs can satisfy with `bun` on PATH. Keep prep-sidecar (omp-bridge ~10-15MB compiled) as the only sidecar. Net installer target: ~30-40MB lean instead of 130MB+."
+      },
+      {
+        "id": "A3",
+        "phase": "p1-install",
+        "description": "Keep bundled pi_natives (~few MB) for windows-irm Binary mode offline-after-install scenario — it's small and stageBundledNative is wired. Alternative: drop it too and rely on `omp update` to fetch via npm; saves complexity but requires internet after install for natives. Recommendation: keep it, the size cost is negligible (<5MB) and it lets Binary-mode users get a working install with no further network round-trip."
+      },
+      {
+        "id": "A4",
+        "phase": "p5-update",
+        "description": "Do NOT enable tauri-plugin-updater for v0.1. Reasons: (a) requires generating + safeguarding a signing key, (b) requires hosting omp.sh/desktop/updates/* manifest server, (c) requires CI to sign every release, (d) the wrapper shell rarely changes — the thing that updates frequently is `omp` itself, which already has `omp update`. Remove tauri-plugin-updater dep from Cargo.toml, remove plugin().init() from lib.rs, remove updater block from tauri.conf.json. Defer to a hypothetical v0.2."
+      },
+      {
+        "id": "A5",
+        "phase": "p5-update",
+        "description": "Wire launcher /update/check and /update/apply to the existing `omp update` CLI. /update/check spawns `omp update --check` (or queries https://api.github.com/repos/can1357/oh-my-pi/releases/latest the same way update-cli.ts does) and returns currentVersion vs latestVersion. /update/apply runs `omp update` as a tracked JobManager job streaming logs to the WebUI — same pattern as installer.ts. This gives users a one-click update for the *agent* (the part that matters) without any signing/server infra. The desktop shell itself stays out of the update loop until v0.2."
+      },
+      {
+        "id": "A6",
+        "phase": "p5-update",
+        "description": "For shell-level updates in v0.1, surface a 'Reinstall desktop app' WebUI link that opens https://omp.sh/desktop (the installer download page) in the system browser via tauri-plugin-shell open(). User re-runs the .msi/.nsis installer. Cheap, honest, requires zero ops infrastructure.",
+        "dependsOn": [
+          "A4"
+        ]
+      },
+      {
+        "id": "A7",
+        "phase": "p1-install",
+        "description": "After A1/A2, update fetch-bundled-deps.ts header docstring + resources/README.md to reflect lean strategy. Update bridge.rs::BundledDeps + log lines to drop bun/git fields (keep native_node). Update spawn_bun_script fallback path in bridge.rs to require system bun explicitly (or fail with a clear error message pointing user to install.ps1)."
+      },
+      {
+        "id": "A8",
+        "phase": "p6-polish",
+        "description": "Add docs note: desktop shell is a thin wrapper, omp itself updates via `omp update`, shell updates via re-running installer from omp.sh/desktop. Document MinGit decision (system git on Windows is rare for non-devs, but our target audience is developers who already have git — installer.ts methods all assume git OR don't need it).",
+        "dependsOn": [
+          "A1",
+          "A2",
+          "A4"
+        ]
+      }
+    ]
+  },
+  {
+    "area": "omp-cli-surface",
+    "currentState": "omp (oh-my-pi) là một coding agent CLI rất giàu tính năng: 40+ providers, 32 built-in tools (read/write/edit/ast_edit/search/find/bash/eval/ssh/lsp/debug/task/irc/todo/job/ask/browser/web_search/github/generate_image/inspect_image/tts/checkpoint/rewind/retain/recall/reflect/resolve/search_tool_bm25), LSP (14 ops), DAP (28 ops), persistent Python+Bun eval kernels, time-traveling stream rules, subagents/task isolation, /collab live sharing với QR + relay, Hindsight memory (retain/recall/reflect), checkpoint/rewind, advisor pair, plan mode, /commit, /review, hashline edits, browser/Slack driving, 12 internal URL schemes (pr://, issue://, agent://, skill://, rule://, conflict://...), inherit rules/skills/MCP từ .claude/.cursor/.windsurf/.gemini/.codex/.cline. Có 4 entry points: interactive TUI (default), one-shot (-p), Node SDK embed (createAgentSession), và headless qua \"omp --mode rpc\" (NDJSON stdio), \"omp --mode rpc-ui\" (thêm extension_ui_request frames cho tool cards/selectors/dialogs), \"omp acp\" (Agent Client Protocol qua JSON-RPC cho IDE/editor). Đối với Tauri/Bun wrapper, channel phù hợp nhất là --mode rpc-ui vì nó giữ nguyên toàn bộ session + UI prompts (model selector, login dialog, ask tool, mcp wizard) dưới dạng JSON frames mà Rust shell có thể proxy thẳng vào WebView, trong khi --mode rpc cơ bản không phát extension UI events. Direct Node SDK embed không khả thi từ Rust shell nhưng có thể dùng nếu side-car là Bun process. Hiện WebUI mới ở giai đoạn khởi tạo và chưa wire bất kỳ channel nào.",
+    "keyFiles": [
+      "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\README.md",
+      "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\coding-agent\\src\\cli.ts",
+      "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\coding-agent\\src\\cli-commands.ts",
+      "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\coding-agent\\src\\commands\\acp.ts",
+      "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\coding-agent\\src\\commands\\launch.ts",
+      "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\coding-agent\\src\\modes\\rpc\\rpc-types.ts",
+      "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\coding-agent\\src\\modes\\rpc\\rpc-mode.ts",
+      "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\coding-agent\\src\\modes\\rpc\\rpc-client.ts",
+      "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\coding-agent\\src\\modes\\rpc\\rpc-subagents.ts",
+      "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\coding-agent\\src\\modes\\acp\\acp-mode.ts",
+      "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\coding-agent\\src\\modes\\acp\\acp-agent.ts",
+      "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\coding-agent\\src\\modes\\acp\\acp-event-mapper.ts",
+      "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\coding-agent\\src\\modes\\components\\extensions\\extension-dashboard.ts",
+      "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\coding-agent\\src\\modes\\controllers\\extension-ui-controller.ts",
+      "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\agent\\src\\agent.ts",
+      "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\agent\\src\\index.ts",
+      "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\wire\\src\\index.ts",
+      "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\coding-agent\\src\\capability\\mcp.ts",
+      "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\coding-agent\\src\\capability\\skill.ts",
+      "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\coding-agent\\src\\capability\\slash-command.ts",
+      "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\coding-agent\\src\\collab\\protocol.ts"
+    ],
+    "gaps": [
+      {
+        "id": "G1",
+        "severity": "blocker",
+        "description": "WebUI chưa có bất kỳ transport nào tới omp: chưa spawn 'omp --mode rpc-ui', chưa có NDJSON framer trong Rust side-car, chưa có chỗ nhận/gửi RpcCommand/RpcResponse/RpcSessionEventFrame."
+      },
+      {
+        "id": "G2",
+        "severity": "blocker",
+        "description": "Chưa có TypeScript type bridge cho RpcCommand union (40+ command types: prompt/steer/follow_up/abort/abort_and_prompt/new_session/get_state/set_model/cycle_model/compact/branch/switch_session/handoff/...) — WebUI cần share types với rpc-types.ts hoặc generate từ schema."
+      },
+      {
+        "id": "G3",
+        "severity": "blocker",
+        "description": "Chưa render chat transcript: assistant content blocks (text/thinking/redactedThinking/toolCall), tool result messages, user messages, developer messages, synthetic injections, usage/cost per turn, stopReason (stop/length/toolUse/error/aborted)."
+      },
+      {
+        "id": "G4",
+        "severity": "high",
+        "description": "Chưa có tool card UI cho 32 built-in tools — TUI hiện render mỗi tool dưới dạng card chuyên dụng (read summarized, edit hashline preview, bash with PTY output, eval cells Python/JS, lsp navigation, debug DAP scopes/variables, ast_edit proposed→accept, browser screenshots, web_search ranked results, generate_image, task subagent dashboard, todo phases)."
+      },
+      {
+        "id": "G5",
+        "severity": "high",
+        "description": "Chưa wire extension_ui_request frames (select/confirm/input/editor/cancel) — đây chính là cơ chế rpc-ui exposes interactive prompts (model picker, ask tool, login dialog, mcp wizard, hook editor, plan review overlay) ra ngoài; thiếu sẽ làm /collab, /model, /login, ask tool không dùng được."
+      },
+      {
+        "id": "G6",
+        "severity": "high",
+        "description": "Chưa có UI cho slash commands: get_available_commands trả về RpcAvailableSlashCommand[] với name/aliases/description/input.hint/subcommands/source — WebUI cần command palette + autocomplete cho /model, /collab, /review, /commit, /advisor, /debug, /login, /reload-plugins, /dump, /handoff, ..."
+      },
+      {
+        "id": "G7",
+        "severity": "high",
+        "description": "Chưa có panel quản lý LLM providers/models: 40+ providers (Anthropic/OpenAI/Codex/Gemini/Antigravity/xAI/Mistral/Groq/Cerebras/Fireworks/Together/HuggingFace/NVIDIA/OpenRouter/Synthetic/Vercel AI Gateway/Cloudflare/Wafer/Perplexity + coding plans Cursor/Copilot/GitLab Duo/Kimi/Moonshot/MiniMax/Alibaba/Qwen/GLM/MiMo/Qianfan/NanoGPT/Venice/Kilo/ZenMux/OpenCode + local Ollama/LM Studio/llama.cpp/vLLM/LiteLLM), roles (default/smol/slow/plan/commit), fallback chains, path-scoped models, round-robin credentials, auth tags oauth/plan/local."
+      },
+      {
+        "id": "G8",
+        "severity": "high",
+        "description": "Chưa có MCP server panel: list/add/enable/disable servers; mcp-add-wizard.ts là một extension_ui_request flow cần được mirror trong WebUI thay vì TUI selector."
+      },
+      {
+        "id": "G9",
+        "severity": "high",
+        "description": "Chưa có Skills & Rules panel: inherit từ .claude/.cursor/.windsurf/.gemini/.codex/.cline/.github/copilot/.vscode (Cursor MDC, Cline .clinerules, Codex AGENTS.md, Copilot applyTo); cần list/edit/scope/enable rules + time-traveling-stream-rules (TTSR) editor."
+      },
+      {
+        "id": "G10",
+        "severity": "high",
+        "description": "Chưa có Subagent / Task dashboard: rpc trả về RpcSubagentSnapshot với agent/agentSource/status/task/assignment/sessionFile + lifecycle/progress/event frames; cần tree view subagents, transcript viewer per worker, schema-validated findings panel, irc DM giữa peers."
+      },
+      {
+        "id": "G11",
+        "severity": "high",
+        "description": "Chưa có /collab live session UI: host/guest/relay-client/protocol/crypto đã có sealed-client-side framing, cần QR display, link copy, view-only vs read-write toggle, participant list, join via omp join."
+      },
+      {
+        "id": "G12",
+        "severity": "high",
+        "description": "Chưa có Hindsight memory UI: retain (queue facts), recall (search bank), reflect (synthesize), cross-session mental model loading on first turn, project-scoped vs global bank."
+      },
+      {
+        "id": "G13",
+        "severity": "high",
+        "description": "Chưa có Plan Mode / Advisor pane: plan-review-overlay.ts cần WebUI equivalent; advisor injects 'concern' / 'blocker' notes inline với một model riêng — cần advisor-message renderer + /advisor status panel."
+      },
+      {
+        "id": "G14",
+        "severity": "high",
+        "description": "Chưa có Code execution kernel viewer cho 'eval' tool (persistent Python + Bun, shared prelude, tool re-entry callback) — cần per-cell output rendering, DataFrame tables, charts, kernel restart, prelude editor."
+      },
+      {
+        "id": "G15",
+        "severity": "high",
+        "description": "Chưa có Debug (DAP) UI: 28 DAP ops, lldb/dlv/debugpy adapter, scopes/variables/frame/breakpoints/threads — cần debugger panel + step controls."
+      },
+      {
+        "id": "G16",
+        "severity": "medium",
+        "description": "Chưa có LSP UI: 14 LSP ops, diagnostics, references, rename preview, code actions — cần diagnostics panel + symbol navigator."
+      },
+      {
+        "id": "G17",
+        "severity": "medium",
+        "description": "Chưa có Sessions list / Session switcher: switch_session/new_session/branch/get_branch_messages/set_session_name/handoff đã expose qua RPC; cần sidebar sessions + branch tree."
+      },
+      {
+        "id": "G18",
+        "severity": "medium",
+        "description": "Chưa có Checkpoint/Rewind controls và Compaction UI: compact (with customInstructions) + set_auto_compaction; context usage indicator (contextUsage field trong RpcSessionState)."
+      },
+      {
+        "id": "G19",
+        "severity": "medium",
+        "description": "Chưa có Login / Auth panel: get_login_providers trả về Provider[] với available/authenticated; OAuth flow cần system browser open + callback handling."
+      },
+      {
+        "id": "G20",
+        "severity": "medium",
+        "description": "Chưa có Image generation / inspection / TTS UI: generate_image (Gemini/GPT/xAI Grok), inspect_image (vision), tts (5 voices, WAV/MP3) — cần media gallery + playback."
+      },
+      {
+        "id": "G21",
+        "severity": "medium",
+        "description": "Chưa có URL scheme resolver UI: pr://, issue://, agent://, skill://, rule://, conflict:// resolve transparently — cần preview hover/click handlers cho các scheme này trong messages."
+      },
+      {
+        "id": "G22",
+        "severity": "medium",
+        "description": "Chưa có thinking level / queue mode controls: set_thinking_level (off/low/medium/high), set_steering_mode, set_follow_up_mode, set_interrupt_mode — cần footer/status-line giống TUI."
+      },
+      {
+        "id": "G23",
+        "severity": "medium",
+        "description": "Chưa có host tools / host URI schemes injection: WebUI có thể đăng ký set_host_tools + set_host_uri_schemes để inject các tool chạy ở phía Rust (e.g. native dialogs, OS notifications) vào omp's tool namespace — đây là extensibility point."
+      },
+      {
+        "id": "G24",
+        "severity": "medium",
+        "description": "Chưa có Web search & GitHub panel: web_search (14 backends auto chain, structured citations), github tool — cần search UI + results viewer."
+      },
+      {
+        "id": "G25",
+        "severity": "low",
+        "description": "Chưa có Stats dashboard mirror: omp-stats package có in-process dashboard server; WebUI có thể embed iframe hoặc redraw bằng cùng data."
+      }
+    ],
+    "proposedActions": [
+      {
+        "id": "A1",
+        "phase": "p3-chat-core",
+        "description": "Spawn 'omp --mode rpc-ui' từ Rust side-car (Tauri command), wire stdin/stdout NDJSON với line-buffered framer; expose tới WebView qua Tauri events 'omp:frame' và Tauri command 'omp:send'."
+      },
+      {
+        "id": "A2",
+        "phase": "p3-chat-core",
+        "description": "Share/generate TypeScript types từ packages/coding-agent/src/modes/rpc/rpc-types.ts (RpcCommand, RpcResponse, RpcSessionEventFrame, RpcExtensionUIRequest, RpcSessionState) — copy hoặc symlink để WebUI dùng cùng union types, tránh drift."
+      },
+      {
+        "id": "A3",
+        "phase": "p3-chat-core",
+        "description": "Build chat transcript renderer cho AgentMessage: user/developer/assistant/toolResult messages, AssistantContent blocks (text + thinking + redactedThinking + toolCall), WireUsage display, stopReason banner; reuse cấu trúc từ packages/wire/src/index.ts."
+      },
+      {
+        "id": "A4",
+        "phase": "p3-chat-core",
+        "description": "Implement composer + command palette: prompt/steer/follow_up/abort/abort_and_prompt commands; slash-command autocomplete dùng get_available_commands → RpcAvailableSlashCommand[]."
+      },
+      {
+        "id": "A5",
+        "phase": "p3-chat-core",
+        "description": "Implement extension_ui_request handler: select/confirm/input/editor/cancel + response routing back qua extension_ui_response frame — đây là foundation cho mọi dialog (model picker, login, mcp wizard, ask tool).",
+        "dependsOn": [
+          "A1"
+        ]
+      },
+      {
+        "id": "A6",
+        "phase": "p3-chat-core",
+        "description": "Implement session header + status line: model name, thinking level, queue modes, context usage %, isStreaming/isCompacting indicators từ get_state."
+      },
+      {
+        "id": "A7",
+        "phase": "p4-features",
+        "description": "Tool card library cho 32 built-in tools — mỗi tool một component: read/write/edit/ast_edit (diff preview + Accept card), bash (PTY output), eval (Python/JS cells), lsp (diagnostics/refs/rename), debug (DAP scopes), task (subagent dashboard), browser (screenshot), web_search (ranked results), generate_image (media)."
+      },
+      {
+        "id": "A8",
+        "phase": "p4-features",
+        "description": "Models & Providers panel: get_available_models + login providers, role assignment (default/smol/slow/plan/commit), Ctrl+P cycle, /model selector, fallback chains editor, path-scoped models."
+      },
+      {
+        "id": "A9",
+        "phase": "p4-features",
+        "description": "MCP servers panel: list/add/enable/disable wizard — phản chiếu mcp-add-wizard flow nhưng dùng form HTML thay TUI selector."
+      },
+      {
+        "id": "A10",
+        "phase": "p4-features",
+        "description": "Skills & Rules panel: hiển thị rules/skills inherit từ .claude/.cursor/.windsurf/.gemini/.codex/.cline/.github; editor cho time-traveling stream rules (regex + injection body)."
+      },
+      {
+        "id": "A11",
+        "phase": "p4-features",
+        "description": "Subagent dashboard + transcript viewer: get_subagents + set_subagent_subscription(events) + get_subagent_messages(fromByte) streaming; render lifecycle/progress/event frames; expose findings JSON tree."
+      },
+      {
+        "id": "A12",
+        "phase": "p4-features",
+        "description": "/collab pane: QR display, link copy, view vs read-write toggle, participant list, sealed-frame status."
+      },
+      {
+        "id": "A13",
+        "phase": "p4-features",
+        "description": "Hindsight panel: retain queue, recall search, reflect synthesize; project-scoped vs global toggle."
+      },
+      {
+        "id": "A14",
+        "phase": "p4-features",
+        "description": "Plan mode overlay + Advisor side-pane: render advisor 'note'/'concern'/'blocker' cards inline, /advisor status."
+      },
+      {
+        "id": "A15",
+        "phase": "p4-features",
+        "description": "Sessions sidebar: list + switch_session + new_session + branch tree (get_branch_messages) + handoff + set_session_name; integrate checkpoint/rewind + compact controls."
+      },
+      {
+        "id": "A16",
+        "phase": "p4-features",
+        "description": "Auth/Login flow: get_login_providers + login command; OAuth callback handled qua Tauri custom URL scheme or local HTTP loopback."
+      },
+      {
+        "id": "A17",
+        "phase": "p4-features",
+        "description": "Host tools / URI schemes: dùng set_host_tools + set_host_uri_schemes để inject Tauri-side capabilities (native file dialogs, OS notifications, clipboard) vào omp tool namespace."
+      },
+      {
+        "id": "A18",
+        "phase": "p4-features",
+        "description": "URL scheme previews trong messages: pr://, issue://, agent://, skill://, rule://, conflict:// — hover/click resolve qua read tool và render trong side preview pane."
+      }
+    ]
+  },
+  {
+    "area": "chat",
+    "currentState": "Pipeline chat đã wire end-to-end: ChatComposer gọi client.sendPrompt → RpcClient mở WS tại ws://127.0.0.1:8787/api/v1/chat/sessions/:id/rpc, gửi NDJSON RpcCommand. Bridge server.ts upgrade WS với topic chat:<id>, OmpSessionManager.start() sinh đúng một OmpProcess mỗi session (idempotent), spawn child với args [...resolution.args, ...extraArgs, '--mode', 'rpc'] — đây là RPC mode (không phải rpc-ui). OmpProcess parse NDJSON từ stdout, đẩy frame cho onFrame, stderr cho onLog; manager bọc thành envelope {type:'frame'|'log'|'exit'} rồi publish cho tất cả WS subscriber (có replay buffer 64). RpcClient.applyFrame map AgentEvent → GuestSnapshot: agent_start/end → working, message_start/update (assistant) → stream (streaming token-by-token qua message_update), message_end → append entry + clear stream, tool_execution_start/update/end → Map activeTools, notice → notices ring 50. Resume hoạt động: snoopSessionFile pluck sessionFile từ response và lưu SessionBindingStore (state/session-bindings.json); /start kế tiếp pass --resume <file>; sau connect, client gọi get_state rồi get_messages nếu messageCount>0 để seed entries. Multi-session ổn: SessionList → REST /chat/sessions (state/sessions.json), mỗi session → một OmpProcess riêng. Cancel/abort hoạt động qua sendAbort → frame {type:'abort'}; Regenerate hiện chỉ là alias sendAbort (RpcClient.sendRegenerate gọi sendAbort, comment thừa nhận \"RPC has no native regenerate\"). Tool views phong phú (~30 tools dưới tool-render/tools/).",
+    "keyFiles": [
+      "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\collab-web\\src\\features\\chat\\pages\\MainChatPage.tsx",
+      "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\collab-web\\src\\features\\chat\\components\\ChatComposer.tsx",
+      "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\collab-web\\src\\features\\chat\\components\\ConnectionStatusBar.tsx",
+      "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\collab-web\\src\\features\\chat\\components\\SessionList.tsx",
+      "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\collab-web\\src\\features\\chat\\components\\LeftSidebar.tsx",
+      "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\collab-web\\src\\features\\chat\\hooks\\useChatStateMachine.ts",
+      "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\collab-web\\src\\features\\chat\\api\\chatApi.ts",
+      "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\collab-web\\src\\lib\\rpc-client.ts",
+      "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\collab-web\\src\\lib\\chat-client.ts",
+      "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\desktop-bridge\\src\\lib\\omp-manager.ts",
+      "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\desktop-bridge\\src\\lib\\omp-process.ts",
+      "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\desktop-bridge\\src\\lib\\session-binding.ts",
+      "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\desktop-bridge\\src\\routes\\chat.ts",
+      "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\desktop-bridge\\src\\server.ts",
+      "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\collab-web\\src\\tool-render\\registry.ts"
+    ],
+    "gaps": [
+      {
+        "id": "g1",
+        "severity": "high",
+        "description": "Slash commands chưa có ở WebUI. ChatComposer chỉ trim text và sendPrompt; không có popup gợi ý / lệnh /help, /clear, /resume, /model, /think... — RPC mode có thể hỗ trợ qua command frames riêng (sendSetModel, sendSetThinkingLevel đã có) nhưng UI chưa surface."
+      },
+      {
+        "id": "g2",
+        "severity": "high",
+        "description": "Regenerate fake: RpcClient.sendRegenerate = sendAbort. Nút Regen của composer chỉ hiển thị khi !busy nên thực ra gửi abort cho child idle (no-op) — người dùng nhấn Regen sẽ không thấy gì xảy ra."
+      },
+      {
+        "id": "g3",
+        "severity": "high",
+        "description": "Không có Plan mode / advisor UI. Grep 'plan|advisor' trong features/chat trả về rỗng. Nếu omp có plan mode (yield tool có sẵn ở tool-render) thì cần composer toggle + visual."
+      },
+      {
+        "id": "g4",
+        "severity": "high",
+        "description": "messageCount của ChatSession không bao giờ tăng. Route POST /chat/sessions tạo với messageCount=0 và không có nơi nào tăng; UI hiển thị số sai. Tương tự lastActiveAt luôn null sau khi tải lại."
+      },
+      {
+        "id": "g5",
+        "severity": "high",
+        "description": "Session rename không có UI: chatApi.renameSession có nhưng SessionList chỉ render name read-only; không có inline edit."
+      },
+      {
+        "id": "g6",
+        "severity": "medium",
+        "description": "Reconnect cycle có thể mất dữ liệu giữa chừng: replay buffer chỉ 64 envelope; nếu omp đang stream long answer khi WS rớt, các frame trước cửa sổ replay sẽ mất. RpcClient không re-issue get_state/get_messages sau reconnect (chỉ gọi 1 lần trên 'open' event đầu, nhưng đúng là 'open' fire mỗi lần openSocket — kiểm tra lại). Cần xác nhận hành vi 'open' khi reconnect."
+      },
+      {
+        "id": "g7",
+        "severity": "medium",
+        "description": "Optimistic user entry không rollback khi gửi thất bại: sendPrompt append entry trước, rồi #send chỉ ghi khi WS OPEN; nếu socket vừa rớt, entry nằm lại trong transcript dù message không tới omp."
+      },
+      {
+        "id": "g8",
+        "severity": "medium",
+        "description": "Runtime config patch không atomic với phía omp: handleConfigUpdate gọi REST update + sendSetModel/sendSetThinkingLevel song song; nếu set_model fail ở omp, config persistent đã thay đổi. Cũng không có feedback errors từ omp response (chỉ command='get_state'|'get_messages' được xử lý)."
+      },
+      {
+        "id": "g9",
+        "severity": "medium",
+        "description": "Data sources hoàn toàn là stub: GET trả store rỗng, refresh chỉ set status='connected' mà không thực sự kết nối. Không có CRUD add/remove."
+      },
+      {
+        "id": "g10",
+        "severity": "medium",
+        "description": "AVAILABLE_MODELS hardcode trong chat.ts (claude-opus-4-8, gpt-5.5, gemini-3-flash...), không sync với danh sách model thật của omp child. Default 'anthropic/claude-sonnet-4-6' có thể không tồn tại."
+      },
+      {
+        "id": "g11",
+        "severity": "medium",
+        "description": "Khi snapshot.phase==='ended' do exit của omp, người dùng không có nút 'Restart session' rõ ràng — chỉ có Reconnect (ConnectionStatusBar) gọi client.connect, nhưng nếu omp child đã chết thì WS upgrade trả 4404, cần POST /start lại. handleReconnect chỉ rebuild client khi !client; cần re-start omp trước."
+      },
+      {
+        "id": "g12",
+        "severity": "medium",
+        "description": "Stderr line cắt 240 ký tự rồi thành notice 'warning' — bất kỳ output stderr nào (kể cả debug info từ bun/node) sẽ nhồi noticesPanel. Cần filter."
+      },
+      {
+        "id": "g13",
+        "severity": "medium",
+        "description": "Session ID là UUID server-gen còn topic WS = 'chat:<id>' không có auth; bất kỳ ai mở localhost:8787 đều subscribe được session khác. Bridge bind 127.0.0.1 nhưng vẫn nên có token-per-session."
+      },
+      {
+        "id": "g14",
+        "severity": "low",
+        "description": "useChatStateMachine không có MESSAGE_COUNT_INCREMENT / LAST_ACTIVE_AT update khi assistant message_end. Sessions list sẽ stale cho đến refresh."
+      },
+      {
+        "id": "g15",
+        "severity": "low",
+        "description": "RpcClient không gửi sendSetSubagentSubscription lại sau reconnect (nó nằm trong 'open' listener đăng ký 1 lần per socket, nhưng khi reconnect ta tạo socket mới — OK, cần kiểm thực tế)."
+      },
+      {
+        "id": "g16",
+        "severity": "low",
+        "description": "ChatComposer auto-grow textarea dùng useLayoutEffect nhưng không clamp scrollHeight; multiline paste lớn có thể nhảy giật."
+      },
+      {
+        "id": "g17",
+        "severity": "low",
+        "description": "Tool views có sẵn (ask, ast-edit, bash, browser, debug, edit, fetch, find, github, goal, lsp, memory-*, read, search, ssh, task, todo, web-search, write, yield, ...) — nhưng cần xác nhận registry.ts route đúng toolName từ RPC frames (tool_execution_start.toolName); không có check ở khảo sát này."
+      },
+      {
+        "id": "g18",
+        "severity": "low",
+        "description": "Phase chuyển 'connecting'→'live' xảy ra ngay khi WS open, trước khi xác nhận omp child sẵn sàng. Nếu omp đang khởi tạo chậm và promptt gửi sớm, frame prompt có thể bị omp ignore."
+      }
+    ],
+    "proposedActions": [
+      {
+        "id": "a1",
+        "phase": "p3-chat-core",
+        "description": "Bổ sung slash command palette trong ChatComposer: detect prefix '/', show popup với danh sách (/clear, /resume, /model <id>, /think <level>, /help). Map sang RPC command tương ứng (đã có set_model/set_thinking_level; thêm clear_messages, get_models trong omp nếu thiếu)."
+      },
+      {
+        "id": "a2",
+        "phase": "p3-chat-core",
+        "description": "Thực hiện Regenerate đúng nghĩa: thêm RPC command 'regenerate' ở coding-agent (drop last assistant message + replay user) hoặc trong RpcClient lưu lastUserPrompt và tự gửi lại sau abort. Cập nhật nút Regen hiển thị khi có history."
+      },
+      {
+        "id": "a3",
+        "phase": "p3-chat-core",
+        "description": "Sửa optimistic user entry: chỉ append sau khi #send trả true; nếu WS chưa OPEN, hiện toast 'reconnecting...' và queue prompt trong RpcClient để gửi khi 'open' fire lại."
+      },
+      {
+        "id": "a4",
+        "phase": "p3-chat-core",
+        "description": "Cập nhật sessions.json khi assistant message_end: bridge listen frame trong omp-manager, mutate sessions store (messageCount++, lastActiveAt=now). Hoặc thêm REST POST /chat/sessions/:id/touch để UI gọi. Đảm bảo SessionList refresh."
+      },
+      {
+        "id": "a5",
+        "phase": "p3-chat-core",
+        "description": "Sửa handleReconnect: khi phase==='ended' do exit, gọi lại startOmpForSession trước khi new RpcClient. Hiển thị 'Restarting omp...' trong ConnectionStatusBar."
+      },
+      {
+        "id": "a6",
+        "phase": "p3-chat-core",
+        "description": "Phân biệt stderr 'info' vs 'warning': mặc định stderr → debug log (chỉ hiện trong dev panel), chỉ nâng cấp thành notice khi match pattern error/warn. Tránh nhồi noticesPanel."
+      },
+      {
+        "id": "a7",
+        "phase": "p3-chat-core",
+        "description": "Thêm token authentication cho WS upgrade: /start trả {wsToken}, RpcClient append ?token=... query, server.ts verify trước upgrade. Bind 127.0.0.1 chưa đủ trên máy multi-user."
+      },
+      {
+        "id": "a8",
+        "phase": "p3-chat-core",
+        "description": "Lấy AVAILABLE_MODELS động: thêm RPC command 'list_models' ở omp, bridge cache; loại bỏ list hardcode trong chat.ts."
+      },
+      {
+        "id": "a9",
+        "phase": "p3-chat-core",
+        "description": "Phase 'live' chỉ chuyển khi omp gửi initial response (vd ack get_state) thay vì WS open ngay. Tránh prompt sớm bị drop. ChatComposer disable Send cho đến khi snapshot.state !== null."
+      },
+      {
+        "id": "a10",
+        "phase": "p3-chat-core",
+        "description": "Tăng replay buffer hoặc đổi sang sequence-id-based replay: omp đánh số frame, RpcClient gửi lastSeenSeq khi reconnect, bridge resend từ seq+1. Tránh mất stream giữa long answer."
+      },
+      {
+        "id": "a11",
+        "phase": "p4-features",
+        "description": "Plan mode UI: thêm toggle 'Plan / Build' trong composer, gửi RPC set_mode. Hiển thị plan output bằng tool-render/tools/goal.tsx hoặc todo.tsx; commit plan để switch sang build mode."
+      },
+      {
+        "id": "a12",
+        "phase": "p4-features",
+        "description": "Inline rename session: double-click name trong SessionList → textbox → enter → chatApi.renameSession, dispatch SESSION_RENAMED."
+      },
+      {
+        "id": "a13",
+        "phase": "p4-features",
+        "description": "Data sources thực thụ: thiết kế contract (filesystem path, MCP server, http url) + CRUD route. Refresh ping nguồn thật. Hiện tại đang 100% stub."
+      },
+      {
+        "id": "a14",
+        "phase": "p4-features",
+        "description": "Xác nhận registry.ts mapping với toolName từ RPC frames (snake_case vs camelCase); thêm fallback generic.tsx + log toolName thiếu để dễ debug."
+      },
+      {
+        "id": "a15",
+        "phase": "p6-polish",
+        "description": "Atomic config update: chờ omp response cho set_model rồi mới mutate state/runtime-config.json; nếu fail rollback và surface error qua actions.setError."
+      }
+    ]
+  },
+  {
+    "area": "launcher",
+    "currentState": "Post-install launcher screen exists with a complete UI shell (RuntimeStatusCard, LaunchControlCard, WorkspaceCard, UpdateMaintenanceCard, DiagnosticsCard, LauncherLogDrawer) wired through useServiceStateMachine and launcherApi to a desktop-bridge supervisor over REST+WebSocket. The bridge's LauncherSupervisor.locateLaunchScript spawns `bun run packages/collab-web/scripts/local-relay.ts --port <relayPort>`, and health is a TCP probe on `relayPort` (default 8765). The routing in app.tsx is purely localStorage-driven: `installed`=1 -> LauncherPage, then `launcher.entered`=1 -> MainChatPage; the launcher is NOT gated on `detectOmp` — `/launcher/detect-omp` is implemented in the bridge and even called by InstallerPage, but LauncherPage never calls it and never surfaces whether omp is actually present. Workspaces returns a single hardcoded `default` entry pointing at `installDir`, activation is a no-op, and Update/Repair/Reset-Cache/Diagnostics-fix are stubs returning `{ok:true}` or \"not implemented in v0.1\". The \"runtime\" being supervised is the collab live-share relay (rooms / host+guest WS rewrite), not the omp coding agent at all — so this launcher currently launches the wrong process for the stated vision.",
+    "keyFiles": [
+      "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\desktop-bridge\\src\\routes\\launcher.ts",
+      "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\desktop-bridge\\src\\lib\\omp-detect.ts",
+      "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\collab-web\\scripts\\local-relay.ts",
+      "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\collab-web\\src\\app.tsx",
+      "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\collab-web\\src\\features\\launcher\\pages\\LauncherPage.tsx",
+      "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\collab-web\\src\\features\\launcher\\api\\launcherApi.ts",
+      "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\collab-web\\src\\features\\launcher\\hooks\\useServiceStateMachine.ts",
+      "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\collab-web\\src\\features\\launcher\\components\\RuntimeStatusCard.tsx",
+      "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\collab-web\\src\\features\\launcher\\components\\LaunchControlCard.tsx",
+      "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\collab-web\\src\\features\\launcher\\components\\WorkspaceCard.tsx",
+      "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\collab-web\\src\\features\\launcher\\components\\UpdateMaintenanceCard.tsx",
+      "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\collab-web\\src\\features\\launcher\\components\\DiagnosticsCard.tsx",
+      "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\collab-web\\src\\features\\launcher\\components\\LauncherLogDrawer.tsx",
+      "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\collab-web\\src\\features\\chat\\hooks\\useLauncherHealthGate.ts"
+    ],
+    "gaps": [
+      {
+        "id": "G1",
+        "severity": "blocker",
+        "description": "Wrong process supervised: LauncherSupervisor.locateLaunchScript (launcher.ts:216-230) spawns `bun run packages/collab-web/scripts/local-relay.ts`, which the file's own header describes as 'Offline stand-in for the public collab relay (wss://my.omp.sh)' — a host/guest WebSocket room relay for /collab live-share, not the omp coding agent. For a wrapper whose mission is to launch omp chat, this means: (a) the bridge launches a relay even when the user just wants to chat with omp; (b) it does NOT launch omp itself; (c) it requires checking out the source repo + bun runtime (existsSync on `packages/collab-web/scripts/local-relay.ts` inside installDir or repo root), so a user who installed omp via the Bun-global one-liner or Binary mode literally cannot start the runtime — locateLaunchScript will return null with 'launch script not found'."
+      },
+      {
+        "id": "G2",
+        "severity": "blocker",
+        "description": "Health probe is misaligned with omp: probeHealth does TCP probe on `config.relayPort` (default 8765, declared in bridge config). omp the agent does not bind that port; only the collab relay does. So `running_healthy` literally means 'a collab relay socket accepts connections', which has nothing to do with whether omp is callable. The Enter-Chat gate in LauncherPage (canEnterChat = phase==='running_healthy') therefore gates entry on the wrong signal."
+      },
+      {
+        "id": "G3",
+        "severity": "high",
+        "description": "detectOmp endpoint exists in the bridge (/api/v1/launcher/detect-omp wired in launcher.ts:322-325) and is exposed in installerApi.ts as detectOmp(), but LauncherPage.tsx never calls it. The launcher does not know — and does not display — whether `omp` is actually present on PATH or in a known location. The InstallerPage uses it for post-install verification, then control passes to the launcher with no carry-over. Result: a user who completed the installer with omp truly missing (or who deleted omp after the fact) lands on a Launcher that talks about a 'runtime' it can neither find nor explain. There is no `Omp Detected: …` row in RuntimeStatusCard."
+      },
+      {
+        "id": "G4",
+        "severity": "high",
+        "description": "Routing is not gated on omp presence. app.tsx flow is INSTALLED_KEY=='1' -> LauncherPage, LAUNCHER_DONE_KEY=='1' -> MainChatPage. Both are localStorage flags set by clicking 'Continue'/'Enter Main Chat'. Nothing re-verifies omp at launcher mount or before allowing Enter-Chat. A user whose omp was removed between sessions still sees the same UI; the only failure signal is the TCP probe on the relay port, which (as G2 notes) is unrelated."
+      },
+      {
+        "id": "G5",
+        "severity": "high",
+        "description": "WorkspaceCard is effectively a stub. GET /api/v1/launcher/workspaces returns one hardcoded entry `{id:'default', name:'default', path: installDir, isActive:true}` (launcher.ts:278-289). The activate route (`POST /workspaces/:id/activate`) returns `{ok:true}` with no state change. The bridge has no concept of an omp session directory, working directory for the agent, or per-project history. The very concept of 'workspace' is undefined in this codebase: in the omp coding-agent world a 'workspace' would naturally be the repo/CWD the agent operates on, but the bridge treats it as installDir."
+      },
+      {
+        "id": "G6",
+        "severity": "high",
+        "description": "UpdateMaintenanceCard is fully stubbed. /update/check returns `{available:false, currentVersion:'0.1.0', latestVersion:null}` unconditionally — no GitHub Releases lookup, no version comparison, no channel handling. /update/apply, /repair, /reset-cache all return `{ok:true, message:'not implemented in v0.1' / 'no-op in v0.1'}`. The UI confidently shows 'Up to date — 0.1.0 (stable)' which is misleading."
+      },
+      {
+        "id": "G7",
+        "severity": "medium",
+        "description": "Diagnostics are thin and tied to the relay. The only checks are 'Collab relay reachable' (TCP probe relayPort) and 'Install directory writable' (existsSync). For an omp wrapper the diagnostic that matters is 'omp on PATH? omp --version works? credentials present? model reachable?' — none of those are run."
+      },
+      {
+        "id": "G8",
+        "severity": "medium",
+        "description": "Supervisor 'already running' branch is fragile: in start(), if the relay port is already in use (`!isPortFree(relayPort)`) the supervisor silently assumes the previous process is healthy and reports `running_healthy` without checking pid ownership. A foreign process listening on 8765 (a different relay, a dev server) will be silently adopted, and `stop()` will try to kill a pid we don't actually own (via state.json's stored pid, which may be stale or null)."
+      },
+      {
+        "id": "G9",
+        "severity": "medium",
+        "description": "Metrics never populated. RuntimeStatusCard renders CPU/Memory/Uptime when `metrics` is non-null, but launcher.ts never emits a `metrics` event nor populates `this.metrics`. The UI block is dead code paths today."
+      },
+      {
+        "id": "G10",
+        "severity": "medium",
+        "description": "Logs route stubbed: GET /launcher/logs returns `{lines: []}` (launcher.ts:318-320). Live WS log streaming works (onStdout/onStderr emit log events), but historical logs after a reload are lost — LauncherLogDrawer always starts empty."
+      },
+      {
+        "id": "G11",
+        "severity": "low",
+        "description": "Safe Mode is a synonym for restart: POST /launcher/safe-mode calls `sup.restart()` with no flag toggled (launcher.ts:254-257). The button promises something it does not deliver."
+      },
+      {
+        "id": "G12",
+        "severity": "low",
+        "description": "Hardcoded VERSION='0.1.0' string in launcher.ts is the source of truth for the 'currentVersion' shown in Update card — not read from package.json or omp --version."
+      }
+    ],
+    "proposedActions": [
+      {
+        "id": "A1",
+        "phase": "p2-launcher",
+        "description": "Redefine 'runtime' as omp itself. Replace LauncherSupervisor.locateLaunchScript with logic that uses the existing findOmp() (omp-detect.ts) to resolve the omp binary, then spawns `omp <subcommand>` instead of bun+local-relay.ts. Decide and document the exact subcommand the wrapper expects (likely `omp serve` / `omp --mode rpc` / `omp daemon`); if omp does not yet have such a mode, file that as a blocker in oh-my-pi core. Drop the local-relay dependency from the launcher path entirely — it belongs to the /collab feature, not to the post-install runtime."
+      },
+      {
+        "id": "A2",
+        "phase": "p2-launcher",
+        "description": "Replace TCP-port health probe with a real omp readiness check. Options: (a) probe an HTTP endpoint omp exposes when running in serve mode; (b) call `omp --version` periodically as a liveness check; (c) read a 'ready' line from stdout. Whichever omp itself supports — TCP on relayPort is wrong because the relay is unrelated. Add an explicit `ompPort` distinct from `relayPort` in BridgeConfig so /collab and the omp runtime never share a probe.",
+        "dependsOn": [
+          "A1"
+        ]
+      },
+      {
+        "id": "A3",
+        "phase": "p2-launcher",
+        "description": "Gate LauncherPage on detectOmp. On mount, call detectOmp() (already in installerApi). If `!found`, render a recovery card explaining omp is missing and offering 'Return to Installer' / 'Re-run install'. Block Start/Enter-Chat buttons until detection passes. Surface `omp version` and `omp path` in RuntimeStatusCard as a permanent row — this is the most basic question the user has."
+      },
+      {
+        "id": "A4",
+        "phase": "p2-launcher",
+        "description": "Re-verify omp at every Enter-Chat transition. In app.tsx route 2->3, do not trust LAUNCHER_DONE_KEY alone; call detectOmp + getRuntimeStatus.healthy before mounting MainChatPage. If either fails, bounce back to LauncherPage with an explanatory banner. Reuse useLauncherHealthGate's pattern but extend its API to include `ompPresent`."
+      },
+      {
+        "id": "A5",
+        "phase": "p2-launcher",
+        "description": "Define and implement the workspace concept properly. A workspace = a directory the omp agent operates on (a repo, a project). Persist a list in state.json under `workspaces`, with `{id, name, path, lastOpenedAt}`. Add POST /workspaces (create/import a directory), DELETE /workspaces/:id, and make /workspaces/:id/activate actually pass the path to the omp child process (e.g. `omp serve --cwd <path>` or as env). WorkspaceCard then becomes the directory picker / recent-project list it visually pretends to be."
+      },
+      {
+        "id": "A6",
+        "phase": "p2-launcher",
+        "description": "Fix the 'already running' branch in supervisor.start(). When relayPort/ompPort is busy, do NOT silently claim healthy. Read state.json pid; if pid is alive AND its image matches the omp binary path, adopt and probe; otherwise return a 'PORT_OCCUPIED' error to the UI with the offending port. Never store a foreign pid as ours."
+      },
+      {
+        "id": "A7",
+        "phase": "p2-launcher",
+        "description": "Implement a minimal metrics emitter or remove the UI section. Use `pidusage` or platform-specific `ps`/`tasklist` reads every POLL_HEALTH_MS, broadcast `{type:'metrics', metrics:{cpuPct, memMb, uptimeMs}}` on the WS stream. If metrics are out-of-scope for v0.1, gate the UI block on a config flag so we do not render dead UI."
+      },
+      {
+        "id": "A8",
+        "phase": "p2-launcher",
+        "description": "Persist runtime logs to disk (ring buffer in stateDir, e.g. last 1000 lines), and make GET /launcher/logs return them so LauncherLogDrawer is useful after a page reload."
+      },
+      {
+        "id": "A9",
+        "phase": "p2-launcher",
+        "description": "Either implement Safe Mode (e.g. spawn omp with --safe / disable plugins / use clean config dir) or remove the button from LaunchControlCard. A button that lies erodes trust.",
+        "dependsOn": [
+          "A1"
+        ]
+      },
+      {
+        "id": "A10",
+        "phase": "p2-launcher",
+        "description": "Rewrite DiagnosticsCard checks to be omp-centric: (1) omp on PATH; (2) `omp --version` succeeds; (3) omp config dir present and readable; (4) credentials/API key reachable (call omp's own check command if available); (5) bridge<->omp child process alive. Keep the install-dir check. Add `fixHint` text for each fail so the user has a path forward."
+      },
+      {
+        "id": "A11",
+        "phase": "p5-update",
+        "description": "Wire UpdateMaintenanceCard to a real source. Either query the GitHub Releases API for oh-my-pi (or omp itself) and compare versions, or expose `omp self-update` via the bridge and shell out. Stop hardcoding VERSION='0.1.0'; read from package.json at build time and from `omp --version` at runtime."
+      },
+      {
+        "id": "A12",
+        "phase": "p6-polish",
+        "description": "Carry omp detection state from InstallerPage to LauncherPage instead of re-fetching. Today the installer detects omp and proceeds; the launcher then ignores that and assumes healthy. A small shared atom / context (`detectedOmp: DetectOmpResult | null`) plus a re-check on mount avoids a stale-state UX glitch and a redundant which/where roundtrip."
+      }
+    ]
+  },
+  {
+    "area": "features-mockup",
+    "currentState": "The collab-web mockup ships a respectable but narrow chat surface: a three-tab LeftSidebar (Controls / Sessions / Sources), a SessionList wired to bridge endpoints for create/rename/delete/start/stop/state, a UserControlsPanel exposing model, mode (normal/safe/debug), extended-thinking toggle, and a DataSourcesPanel that only renders a static refresh button. The Composer supports send / abort / regenerate but has no slash-command grammar, no plan-mode toggle, no advisor pair, no checkpoint/rewind, and no MCP/skill registry. Tool-rendering is the most complete area — 32 omp tools (bash, edit/apply_patch, read, write, find, search/grep, search_bm25, ast_grep/ast_edit, fetch, web_search, browser/puppeteer, generate_image, inspect_image, eval/js/python/notebook, lsp, debug, github, irc, ssh, ask, goal, todo, task, job/await/poll/cancel_job, resolve, recall/reflect/retain, report_finding/report_tool_issue, yield) are mapped in `tool-render/registry.ts` with renderer files in `tool-render/tools/`. The bridge has zero endpoints for MCP, skills, advisor, hindsight memory store, checkpoints, kernel lifecycle, or live-collab session sharing — `/api/v1/chat/*` covers only sessions, data-sources, and runtime-config (with a hardcoded 7-entry `AVAILABLE_MODELS` list rather than reading omp's `/model` output).",
+    "keyFiles": [
+      "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\collab-web\\src\\features\\chat\\components\\LeftSidebar.tsx",
+      "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\collab-web\\src\\features\\chat\\components\\UserControlsPanel.tsx",
+      "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\collab-web\\src\\features\\chat\\components\\DataSourcesPanel.tsx",
+      "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\collab-web\\src\\features\\chat\\components\\SessionList.tsx",
+      "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\collab-web\\src\\features\\chat\\components\\ChatComposer.tsx",
+      "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\collab-web\\src\\features\\chat\\pages\\MainChatPage.tsx",
+      "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\collab-web\\src\\features\\chat\\types\\chat.ts",
+      "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\collab-web\\src\\features\\chat\\api\\chatApi.ts",
+      "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\collab-web\\src\\tool-render\\registry.ts",
+      "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\collab-web\\src\\tool-render\\tools\\",
+      "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\collab-web\\src\\lib\\chat-client.ts",
+      "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\collab-web\\src\\lib\\rpc-client.ts",
+      "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\desktop-bridge\\src\\routes\\chat.ts"
+    ],
+    "gaps": [
+      {
+        "id": "feat-session-mgmt",
+        "severity": "low",
+        "description": "Session list & management — STATUS: done. SessionList component plus bridge endpoints GET/POST /api/v1/chat/sessions, DELETE :id, POST :id/start|stop|rename, GET :id/state cover create/rename/delete/switch/start/stop. Persisted via makeStore('sessions'). Minor: no per-session metadata (cwd, model override, branch). Evidence: chat.ts:60-134, SessionList.tsx, useChatStateMachine.ts."
+      },
+      {
+        "id": "feat-model-picker",
+        "severity": "high",
+        "description": "LLM provider/model picker — STATUS: partial. UserControlsPanel renders a <select> over availableModels and POSTs /runtime-config; MainChatPage:171-179 splits provider/model on '/' and calls client.sendSetModel. PROBLEM: AVAILABLE_MODELS in chat.ts:33-41 is a hardcoded list (claude-opus-4-8, sonnet-4-6, gpt-5.5, gemini-3-flash, grok-4-fast). Bridge does not call omp's `/model` to discover real providers/models, doesn't expose API-key status, and has no provider-config (base URL, key path) surface. Evidence: chat.ts:33-41, UserControlsPanel.tsx:29-46."
+      },
+      {
+        "id": "feat-mcp-registry",
+        "severity": "high",
+        "description": "MCP server list / add / remove / status — STATUS: missing. Zero `mcp` references in collab-web/src or desktop-bridge/src (Grep). No UI panel, no bridge endpoint, no store file, no tool-renderer for MCP-status. omp speaks MCP but the mockup ignores it entirely."
+      },
+      {
+        "id": "feat-skill-registry",
+        "severity": "high",
+        "description": "Skill registry (.omp/agent, inherited .claude/.cursor rules) — STATUS: missing. No `skill` references in chat features or bridge routes. No UI to list/enable/disable skills, no inheritance preview, no editor for project rule files. Important because omp's selling point vs Claude Code is the inherited skill graph."
+      },
+      {
+        "id": "feat-tool-views",
+        "severity": "low",
+        "description": "Tool views (32 omp tools) — STATUS: done. tool-render/registry.ts maps all 32 wire tool names plus aliases (puppeteer→browser, apply_patch→edit, grep→search, js/python/notebook→eval, await/poll/cancel_job→job) to dedicated renderers. genericRenderer fallback for unknown tools. Evidence: registry.ts:1-87, tool-render/tools/ has 32 .tsx files."
+      },
+      {
+        "id": "feat-slash-commands",
+        "severity": "blocker",
+        "description": "Slash commands (/model, /collab, /review, /commit, /advisor, /debug, /reload-plugins, /init, /verify, ...) — STATUS: missing. ChatComposer.tsx:43-55 sends raw text via client.sendPrompt with no slash detection, autocomplete, parameter prompting, or command palette. No slashCommand registry in collab-web/src. The only '/' references are model-id-splitting and JSX route paths. omp/Claude Code's slash-command discovery (skill list, MCP tool list) has no surface here."
+      },
+      {
+        "id": "feat-plan-mode",
+        "severity": "high",
+        "description": "Plan mode toggle — STATUS: missing. RuntimeConfig.mode is {normal,safe,debug} — there is no `plan` value, no plan-approval UI, no plan-diff viewer. Composer doesn't route plan-mode prompts differently. Grep for 'plan' returns only AVAILABLE_MODELS strings."
+      },
+      {
+        "id": "feat-advisor",
+        "severity": "high",
+        "description": "Advisor pair (second model watching) — STATUS: missing. No `advisor` references in collab-web/src or desktop-bridge/src. No second-model configuration in RuntimeConfig, no transcript lane for advisor commentary, no bridge wiring to omp's advisor coprocess."
+      },
+      {
+        "id": "feat-hindsight",
+        "severity": "high",
+        "description": "Hindsight (retain/recall/reflect) — STATUS: partial (tools only). retain/recall/reflect tool renderers exist (memory-retain.tsx, memory-recall.tsx, memory-reflect.tsx) so call sites are visualized, but there is NO sidebar memory browser, no project-scoped memory store surface, no manual retain UI, no recall-search panel. The skill is invocable but not curatable."
+      },
+      {
+        "id": "feat-checkpoint-rewind",
+        "severity": "high",
+        "description": "Checkpoint / rewind — STATUS: missing. No checkpoint, rewind, snapshot, or fork references in chat features or bridge. ChatComposer's regenerate maps to plain abort+regenerate (rpc-client.ts:145-147) with no turn-history rewind. omp's checkpoint store has no UI."
+      },
+      {
+        "id": "feat-kernels",
+        "severity": "medium",
+        "description": "Code execution kernels (Python+Bun) — STATUS: partial (tool render only). eval.tsx (lines 1-3 'persistent kernel py/js/rb/jl') renders kernel call cards, registry aliases js/python/notebook→eval. No kernel-lifecycle UI (start/stop/restart, list active kernels, install deps), no bridge endpoint to manage kernels. Users see what ran but can't manage runtimes."
+      },
+      {
+        "id": "feat-lsp-debug",
+        "severity": "low",
+        "description": "LSP / Debug panes — STATUS: partial. Tool renderers lsp.tsx and debug.tsx exist and render call results inline; no dedicated dock panes. Acceptable per prompt note ('or just rely on tool view cards'), but no surface for LSP server list or debug-session attach controls."
+      },
+      {
+        "id": "feat-collab-live",
+        "severity": "medium",
+        "description": "/collab live session sharing — STATUS: partial. Sessions get a relay link (chat.ts:47-51 newLink() builds ws://127.0.0.1:relayPort/r/{roomId}.{key}) and GuestClient connects to it, but there is NO UI to invite a peer, no read-only viewer mode toggle, no participant list, no shareable URL displayed to the user, no /collab slash command. The plumbing exists; the social/share UI does not."
+      },
+      {
+        "id": "feat-image-gen-browser-web",
+        "severity": "low",
+        "description": "Image gen / browser / web_search inline results — STATUS: done at render level. generate-image.tsx, browser.tsx (also aliased from puppeteer), web-search.tsx, inspect-image.tsx, fetch.tsx renderers are all in tool-render/tools/. Tool results render inline. No higher-level surfaces (image gallery, web-clipping inbox, browser sidecar window) but per prompt's scope this is acceptable."
+      },
+      {
+        "id": "feat-settings",
+        "severity": "high",
+        "description": "Global settings surface — STATUS: stub. UserControlsPanel only exposes model/mode/thinking. No general settings page for: API keys, default cwd, default skill set, allowed/blocked tools, hook config, telemetry, theme, font, keybindings. settings.json discovery + edit surface is absent."
+      },
+      {
+        "id": "feat-data-sources",
+        "severity": "medium",
+        "description": "Data sources panel — STATUS: stub. DataSourcesPanel only renders an empty list (default sources=[]) with a single refresh button per row (chat.ts:140-148 always sets status='connected'). No add-source flow, no source types (file folder, web RSS, DB, repo, RAG index), no inline indexing progress. Designed as a placeholder."
+      }
+    ],
+    "proposedActions": [
+      {
+        "id": "p4-model-discovery",
+        "phase": "p4-features",
+        "description": "Replace hardcoded AVAILABLE_MODELS in routes/chat.ts with a bridge call that runs `omp /model --json` (or reads omp's model manifest) at start-up and on POST /runtime-config/refresh. Surface provider grouping in UserControlsPanel (optgroup per provider) and expose API-key presence so missing keys show a warning chip."
+      },
+      {
+        "id": "p4-mcp-registry",
+        "phase": "p4-features",
+        "description": "Add MCP surface: bridge routes GET/POST/DELETE /api/v1/mcp/servers backed by state/mcp.json, plus GET :id/status that proxies to omp's MCP probe. New LeftSidebar tab 'MCP' with add-server dialog (name, command, args, env). Stream server state via WS so red/green dots update live."
+      },
+      {
+        "id": "p4-skill-registry",
+        "phase": "p4-features",
+        "description": "Add Skills surface: bridge route GET /api/v1/skills that scans cwd for .omp/agent, .claude/skills, .cursor/rules and returns merged list with inheritance source. UI panel under new 'Skills' tab; checkbox to enable/disable per session, link to open underlying file."
+      },
+      {
+        "id": "p4-slash-palette",
+        "phase": "p4-features",
+        "description": "In ChatComposer, detect leading '/' to open a command palette popover. Source commands from skill registry + built-ins (/model, /collab, /review, /commit, /advisor, /debug, /reload-plugins, /init, /verify). Tab-completes args; on submit, route to client.sendSlashCommand (add to ChatClient interface) which RPC-forwards to omp; legacy fallback prepends '/' into sendPrompt."
+      },
+      {
+        "id": "p4-plan-mode",
+        "phase": "p4-features",
+        "description": "Extend RuntimeConfig.mode union with 'plan'. Add toggle in UserControlsPanel; when plan, Composer shows a Plan badge and the Transcript renders an additional Plan card (new tool renderer 'plan'). Approve/edit/reject buttons map to client.sendSlashCommand('/approve' | '/revise')."
+      },
+      {
+        "id": "p4-advisor",
+        "phase": "p4-features",
+        "description": "Add advisorModel field to RuntimeConfig plus a Composer-pinned secondary lane (`<TranscriptLane role='advisor'>`) that subscribes to a `advisor.delta` WS event from omp. Bridge spawns/manages the second omp process (or talks to omp's built-in advisor coproc) via state/advisor.json."
+      },
+      {
+        "id": "p4-hindsight-browser",
+        "phase": "p4-features",
+        "description": "New 'Memory' tab in LeftSidebar listing retained items (search box, tag chips, source link). Bridge routes GET /api/v1/memory/items, POST /retain (manual), POST /forget. Reuse memory-retain/recall/reflect renderers for detail view."
+      },
+      {
+        "id": "p4-checkpoint-rewind",
+        "phase": "p4-features",
+        "description": "Bridge routes GET /api/v1/chat/sessions/:id/checkpoints + POST .../rewind?to=<cp-id> that drive omp's checkpoint store. In Transcript, render a left-margin rail with checkpoint dots per turn; click → 'Rewind to here' confirmation. Replace regenerate's silent abort with an explicit rewind-1 if the user holds shift."
+      },
+      {
+        "id": "p4-kernel-manager",
+        "phase": "p4-features",
+        "description": "Add a 'Kernels' subpanel under Controls listing active py/bun kernels (GET /api/v1/kernels), with restart and 'install package' buttons. Bridge proxies to omp's kernel manager. eval.tsx tool cards link to their kernel row."
+      },
+      {
+        "id": "p4-collab-share",
+        "phase": "p4-features",
+        "description": "Show the relay link from chat.ts:newLink() as a 'Share' button in the chat header that copies a deeplink and opens a peer dialog (QR + read-only checkbox). Add participant chip row driven by GuestClient peer-list events. Plumb a /collab slash command that toggles guest-write permission."
+      },
+      {
+        "id": "p4-settings-page",
+        "phase": "p4-features",
+        "description": "Add /settings route with sections: API Providers (key paths, base URLs), Defaults (cwd, model, mode, thinking), Tools (allowed/blocked toolset per skill), Hooks (preview only — write via /update-config), Appearance (theme, font, density), Keybindings. Bridge: GET/PATCH /api/v1/settings backed by ~/.omp/settings.json with schema validation."
+      },
+      {
+        "id": "p4-data-sources-real",
+        "phase": "p4-features",
+        "description": "Promote DataSourcesPanel from stub: source types (folder, git repo, web URL, sqlite/duckdb, MCP-resource). Add-source dialog with type-specific fields. Bridge wires to omp's indexer; report progress percentage via WS event so the dot shows loading→connected transitions."
+      },
+      {
+        "id": "p4-image-gallery",
+        "phase": "p4-features",
+        "description": "Optional polish: a 'Gallery' tab aggregating all generate_image and inspect_image outputs from the active session for quick reuse — backed by an in-memory index built from the existing tool-call stream (no new bridge route needed). Lowest priority."
+      }
+    ]
+  },
+  {
+    "area": "installer",
+    "currentState": "The installer UI flow (InstallerPage → SourceSetupCard / InstallChoicesCard / InstallProgressCard) talks to the bridge via REST + WS and dispatches one of five README one-liners (windows-irm, macos-curl, homebrew, bun-global, mise) as a tracked JobManager job. Round 1+2 fixes have landed: method-aware preflight (checkBun / checkBrew / checkMise / checkNetwork) only runs the dep check that matches the chosen method; SourceSetupCard hides the install-path textbox for global installers and only shows it for windows-irm; installer.ts only sets PI_INSTALL_DIR for windows-irm; logs are persisted to %LOCALAPPDATA%\\omp-desktop\\logs\\install-<jobId>.log and a logFile path is returned in the create-job response. The flow works on a host that already has Bun/Git, but on a clean Windows box the bundled bun.exe (~98 MB) and mingit (~114 MB) shipped inside the .exe are completely unused by the installer — bridge.rs passes OMP_BUNDLED_BUN / OMP_BUNDLED_GIT_DIR to the child, but installer.ts and preflight.ts never read either env var, never prepend them to PATH for the spawned powershell, and checkBun() / install.ps1's Test-BunInstalled both still query the bare system PATH. The result: bun-global and mise preflights fail \"not on PATH\" even though bun is sitting inside the .exe, windows-irm with -Source re-downloads Bun over the network, and Configure-BashShell shows the \"No bash shell found\" warning instead of using bundled mingit/bash.exe.",
+    "keyFiles": [
+      "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\desktop-bridge\\src\\routes\\installer.ts",
+      "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\desktop-bridge\\src\\lib\\preflight.ts",
+      "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\desktop-bridge\\src\\lib\\omp-detect.ts",
+      "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\desktop-bridge\\src\\lib\\process.ts",
+      "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\desktop-bridge\\src\\lib\\jobs.ts",
+      "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\desktop-bridge\\src\\lib\\omp-process.ts",
+      "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\desktop-bridge\\src\\server.ts",
+      "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\desktop-shell\\src-tauri\\src\\bridge.rs",
+      "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\desktop-shell\\src-tauri\\binaries\\bun-x86_64-pc-windows-msvc.exe",
+      "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\desktop-shell\\src-tauri\\resources\\mingit",
+      "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\collab-web\\src\\features\\installer\\pages\\InstallerPage.tsx",
+      "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\collab-web\\src\\features\\installer\\components\\SourceSetupCard.tsx",
+      "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\collab-web\\src\\features\\installer\\components\\InstallChoicesCard.tsx",
+      "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\collab-web\\src\\features\\installer\\components\\InstallProgressCard.tsx",
+      "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\collab-web\\src\\features\\installer\\api\\installerApi.ts",
+      "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\collab-web\\src\\features\\installer\\types\\installer.ts",
+      "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\scripts\\install.ps1"
+    ],
+    "gaps": [
+      {
+        "id": "bundled-bun-unused",
+        "severity": "blocker",
+        "description": "bridge.rs passes OMP_BUNDLED_BUN (and OMP_BUNDLED_GIT_DIR) to the desktop-bridge child, but neither installer.ts nor preflight.ts ever read them. spawnTracked just inherits process.env.PATH verbatim, so the powershell.exe that runs `irm | iex` never sees the bundled bun.exe (~98 MB) nor mingit (~114 MB). Consequence: (a) bun-global preflight fails with 'bun was not found on PATH' on every clean Windows box, even though bun is sitting next to the .exe; (b) install.ps1 Test-BunInstalled returns $false so windows-irm falls back to Binary mode (download release exe) — which works, but the whole point of shipping bun was so windows-irm with -Source / bun-global would 'just work' offline-ish; (c) Configure-BashShell can't find git/bash so the user sees the yellow 'No bash shell found' warning. The 99 MB the installer .exe carries for nothing is dead weight."
+      },
+      {
+        "id": "preflight-checks-block-bundled-paths",
+        "severity": "high",
+        "description": "checkBun, checkMise, checkBrew all shell out with bare command names ('bun', 'mise', 'brew') via execCapture and rely on PATH. They have no awareness of OMP_BUNDLED_BUN, so even after fixing (1) by prepending the bundled bin dir to the spawned child's PATH, these preflights run in the bridge's OWN process (not the child's) and will still fail. They need to either (a) reuse the resolved bundled-bun path before falling back to PATH, or (b) prepend the bundled dirs to process.env.PATH at bridge startup once."
+      },
+      {
+        "id": "checkgit-unused",
+        "severity": "low",
+        "description": "checkGit() is defined in preflight.ts but never called by checksForMethod() for any method. It is dead code. install.ps1 -Source mode requires git but the UI never warns. With (1) fixed, the bundled mingit could satisfy this."
+      },
+      {
+        "id": "step-marker-installed-too-greedy",
+        "severity": "medium",
+        "description": "STEP_MARKERS final regex `Installed omp (?:to|via)|Pouring|installed` has a bare lower-case 'installed' alternation that matches any line containing the substring — e.g. an early 'bun is already installed' style line would jump the progress bar to 85% before the real work starts. Tighten to `\\binstalled\\b` only inside a more specific context, or drop the bare 'installed' alternation."
+      },
+      {
+        "id": "logfile-path-not-surfaced-in-ui",
+        "severity": "medium",
+        "description": "JobManager writes %LOCALAPPDATA%\\omp-desktop\\logs\\install-<jobId>.log and the POST /jobs response returns logFile, but InstallerPage.tsx never displays or links it. When install fails, the user has no clue where the durable log lives. The current 'View Logs' action button in the error toast has no handler wired to open the file or copy the path."
+      },
+      {
+        "id": "repair-endpoint-is-stub",
+        "severity": "medium",
+        "description": "POST /api/v1/installer/jobs/:id/repair returns `{ok:true, message:'repair queued'}` and does nothing. handleRetry on the UI calls it on failure but the bridge takes no action. Either implement (rerun the same method with retry semantics, e.g. clean partial download in install path first) or remove the Repair button until it does something."
+      },
+      {
+        "id": "cancel-leaves-partial-files",
+        "severity": "low",
+        "description": "Cancel calls killTree (taskkill /T /F) on the powershell.exe tree. Mid-download Invoke-WebRequest leaves a partial omp.exe at $OutPath; mid-bun-install may leave half-written ~/.bun/bin/omp.exe. No cleanup is performed after cancel, so a subsequent install may resume into an inconsistent state."
+      },
+      {
+        "id": "child-env-path-snapshot",
+        "severity": "low",
+        "description": "install.ps1 -Binary mode appends $InstallDir to the User PATH via [Environment]::SetEnvironmentVariable. The bridge's process.env.PATH was snapshotted at bridge launch, so the post-install findOmp() `where.exe omp` will not see the new entry. Mitigated today by the known-location fallback (Binary mode resolves via %LOCALAPPDATA%\\omp\\omp.exe), so it works in practice — but the message 'restart the app' is misleading: even after restart, the child inherits whatever PATH Tauri inherited at spawn."
+      },
+      {
+        "id": "checkdisk-fake-diskstats",
+        "severity": "low",
+        "description": "preflight.ts checkDisk has a `// node:fs has no portable diskstats; trust the dir exists and is writable` comment and MIN_DISK_BYTES (2 GB) is referenced via `void` to silence unused. The check is never wired into checksForMethod either. Either remove or implement via a Tauri command that calls GetDiskFreeSpaceExW."
+      },
+      {
+        "id": "stream-buffering-progress-stall",
+        "severity": "low",
+        "description": "spawnTracked reads stdout line-by-line via newline split. PowerShell's `Write-Host` flushes per line, but Invoke-WebRequest progress is written to a different stream (Information / progress) that the bridge does not capture. Risk: between 'Downloading omp-windows-x64.exe...' and '✓ Installed omp to ...' the progress bar sits at 65% with no log output for the full download (multi-second on slow connections). Consider injecting `-Progress SilentlyContinue` or periodic heartbeat lines."
+      }
+    ],
+    "proposedActions": [
+      {
+        "id": "A1-prepend-bundled-path",
+        "phase": "p1-install",
+        "description": "In packages/desktop-bridge/src/server.ts (startup), if process.env.OMP_BUNDLED_BUN is set, prepend dirname(OMP_BUNDLED_BUN) to process.env.PATH; if process.env.OMP_BUNDLED_GIT_DIR is set, prepend it (plus the sibling .../mingw64/bin where bash.exe lives). This makes every subsequently spawned child (powershell.exe running install.ps1, bun, mise) see bundled bun + git + bash on PATH without any per-route plumbing. Single point of fix; resolves bundled-bun-unused, lets install.ps1's Test-BunInstalled / Find-BashShell succeed, and unblocks bun-global preflight. Estimated 10 lines of code."
+      },
+      {
+        "id": "A2-checkbun-prefers-bundled",
+        "phase": "p1-install",
+        "description": "In preflight.ts, change checkBun / checkGit / checkMise to first try process.env.OMP_BUNDLED_BUN (and the resolved bundled git path) as the explicit executable before falling back to execCapture('bun', ...). This is belt-and-braces in case A1 ordering is racy or the bridge child PATH was already initialized; ensures preflight is consistent with what the child spawn will actually use."
+      },
+      {
+        "id": "A3-call-checkgit-when-needed",
+        "phase": "p1-install",
+        "description": "Add checkGit() to checksForMethod() for windows-irm when the user has chosen -Source (or unconditionally on Windows where Configure-BashShell needs it). Today checkGit is dead code. With A1 the bundled mingit satisfies it, so the check should pass on a clean box."
+      },
+      {
+        "id": "A4-tighten-step-markers",
+        "phase": "p1-install",
+        "description": "In installer.ts STEP_MARKERS, replace `|installed` bare alternation in the last marker with a stricter pattern such as `bun\\.exe|@oh-my-pi\\/.*installed|omp installed`. Verified against install.ps1: the only success lines are '✓ Installed omp to <path>' and '✓ Installed omp via bun'. The current regex already matches those via 'Installed omp (?:to|via)'; the bare '|installed' adds nothing but false positives."
+      },
+      {
+        "id": "A5-surface-logfile-path",
+        "phase": "p1-install",
+        "description": "Plumb logFile from POST /installer/jobs response through useInstallerStateMachine into InstallerPage state, then render it in InstallProgressCard (small footer 'Log file: <path>' with a Copy button) and inside the error card. Optionally add a Tauri command openPath(path) so the existing 'View Logs' error action actually opens the folder."
+      },
+      {
+        "id": "A6-remove-or-implement-repair",
+        "phase": "p1-install",
+        "description": "Either (a) implement /jobs/:id/repair to: read the failed job's method, clean $InstallDir\\omp.exe (or %USERPROFILE%\\.bun\\bin\\omp.exe) if it exists and is non-functional, then re-dispatch the same method as a new job, returning the new jobId; or (b) drop the Repair button from the error toast and leave only Retry (which already creates a brand-new job). Today the endpoint is a no-op stub that lies to the user."
+      },
+      {
+        "id": "A7-cancel-cleanup",
+        "phase": "p1-install",
+        "description": "After cancel, before marking phase=cancelled, attempt best-effort cleanup of the half-written artifact: if method=windows-irm and installPath is set, delete <installPath>\\omp.exe if it exists and is smaller than expected (e.g. < 1 MB heuristic, since omp release binary is ~30 MB); for bun-global, no cleanup (bun handles its own atomicity). Log every cleanup attempt."
+      },
+      {
+        "id": "A8-strip-bundled-bun-if-unused",
+        "phase": "p1-install",
+        "description": "Decision gate: if A1+A2 land and bundled bun is actually used by the installer flow (and by the launcher's omp-process resolveOmp dev fallback), keep it. Otherwise — if the only consumer remains the dev-mode `bun run cli.ts` path that never fires for end users — remove bun-x86_64-pc-windows-msvc.exe from tauri.conf.json externalBin and shed ~98 MB off the installer .exe. Same question for mingit (114 MB): if it ends up only being read for Configure-BashShell, that is worth ~150 KB of UI hint code, not 114 MB of bundled binaries."
+      },
+      {
+        "id": "A9-implement-checkdisk-or-drop",
+        "phase": "p1-install",
+        "description": "Either wire checkDisk into checksForMethod() and implement a real free-space probe via a Tauri command calling GetDiskFreeSpaceExW (Win) / statvfs (POSIX), or delete the function plus MIN_DISK_BYTES. Current state is a placeholder masquerading as a check."
+      }
+    ]
+  }
+]

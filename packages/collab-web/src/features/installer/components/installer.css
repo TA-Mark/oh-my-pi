@@ -503,3 +503,98 @@
     padding: 14px 12px;
   }
 }
+
+/* ---- InstallChoicesCard ---- */
+.ins-choices {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 12px 0;
+}
+
+.ins-choice {
+  text-align: left;
+  background: var(--panel-2, #0f1115);
+  border: 1px solid var(--border, #1f2632);
+  border-radius: 8px;
+  padding: 12px 14px;
+  color: var(--fg);
+  cursor: pointer;
+  transition: border-color 120ms, background 120ms;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.ins-choice:hover:not(:disabled) {
+  border-color: var(--accent, #4f8cff);
+}
+
+.ins-choice:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.ins-choice-selected {
+  border-color: var(--accent, #4f8cff);
+  background: rgba(79, 140, 255, 0.06);
+}
+
+.ins-choice-recommended {
+  outline: 1px dashed rgba(79, 140, 255, 0.4);
+  outline-offset: -1px;
+}
+
+.ins-choice-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.ins-choice-label {
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.ins-choice-pill {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  background: var(--accent, #4f8cff);
+  color: #0b0d12;
+  border-radius: 4px;
+  padding: 1px 6px;
+}
+
+.ins-choice-command {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+  color: var(--fg-muted, #a8b0bd);
+  background: var(--bg, #0b0d12);
+  padding: 6px 8px;
+  border-radius: 4px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.ins-choice-requires, .ins-choice-notes {
+  font-size: 11px;
+  color: var(--fg-faint, #8892a0);
+}
+
+.ins-choices-meta {
+  font-size: 12px;
+  color: var(--fg-muted, #a8b0bd);
+  margin-top: 4px;
+}
+
+.ins-choices-meta code {
+  font-family: var(--font-mono, ui-monospace, monospace);
+}
+
+.ins-choices-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 12px;
+}

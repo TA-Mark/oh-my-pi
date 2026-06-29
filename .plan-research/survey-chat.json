@@ -1,0 +1,190 @@
+{
+  "area": "chat",
+  "currentState": "Pipeline chat đã wire end-to-end: ChatComposer gọi client.sendPrompt → RpcClient mở WS tại ws://127.0.0.1:8787/api/v1/chat/sessions/:id/rpc, gửi NDJSON RpcCommand. Bridge server.ts upgrade WS với topic chat:<id>, OmpSessionManager.start() sinh đúng một OmpProcess mỗi session (idempotent), spawn child với args [...resolution.args, ...extraArgs, '--mode', 'rpc'] — đây là RPC mode (không phải rpc-ui). OmpProcess parse NDJSON từ stdout, đẩy frame cho onFrame, stderr cho onLog; manager bọc thành envelope {type:'frame'|'log'|'exit'} rồi publish cho tất cả WS subscriber (có replay buffer 64). RpcClient.applyFrame map AgentEvent → GuestSnapshot: agent_start/end → working, message_start/update (assistant) → stream (streaming token-by-token qua message_update), message_end → append entry + clear stream, tool_execution_start/update/end → Map activeTools, notice → notices ring 50. Resume hoạt động: snoopSessionFile pluck sessionFile từ response và lưu SessionBindingStore (state/session-bindings.json); /start kế tiếp pass --resume <file>; sau connect, client gọi get_state rồi get_messages nếu messageCount>0 để seed entries. Multi-session ổn: SessionList → REST /chat/sessions (state/sessions.json), mỗi session → một OmpProcess riêng. Cancel/abort hoạt động qua sendAbort → frame {type:'abort'}; Regenerate hiện chỉ là alias sendAbort (RpcClient.sendRegenerate gọi sendAbort, comment thừa nhận \"RPC has no native regenerate\"). Tool views phong phú (~30 tools dưới tool-render/tools/).",
+  "keyFiles": [
+    "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\collab-web\\src\\features\\chat\\pages\\MainChatPage.tsx",
+    "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\collab-web\\src\\features\\chat\\components\\ChatComposer.tsx",
+    "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\collab-web\\src\\features\\chat\\components\\ConnectionStatusBar.tsx",
+    "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\collab-web\\src\\features\\chat\\components\\SessionList.tsx",
+    "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\collab-web\\src\\features\\chat\\components\\LeftSidebar.tsx",
+    "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\collab-web\\src\\features\\chat\\hooks\\useChatStateMachine.ts",
+    "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\collab-web\\src\\features\\chat\\api\\chatApi.ts",
+    "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\collab-web\\src\\lib\\rpc-client.ts",
+    "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\collab-web\\src\\lib\\chat-client.ts",
+    "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\desktop-bridge\\src\\lib\\omp-manager.ts",
+    "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\desktop-bridge\\src\\lib\\omp-process.ts",
+    "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\desktop-bridge\\src\\lib\\session-binding.ts",
+    "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\desktop-bridge\\src\\routes\\chat.ts",
+    "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\desktop-bridge\\src\\server.ts",
+    "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\collab-web\\src\\tool-render\\registry.ts"
+  ],
+  "gaps": [
+    {
+      "id": "g1",
+      "severity": "high",
+      "description": "Slash commands chưa có ở WebUI. ChatComposer chỉ trim text và sendPrompt; không có popup gợi ý / lệnh /help, /clear, /resume, /model, /think... — RPC mode có thể hỗ trợ qua command frames riêng (sendSetModel, sendSetThinkingLevel đã có) nhưng UI chưa surface."
+    },
+    {
+      "id": "g2",
+      "severity": "high",
+      "description": "Regenerate fake: RpcClient.sendRegenerate = sendAbort. Nút Regen của composer chỉ hiển thị khi !busy nên thực ra gửi abort cho child idle (no-op) — người dùng nhấn Regen sẽ không thấy gì xảy ra."
+    },
+    {
+      "id": "g3",
+      "severity": "high",
+      "description": "Không có Plan mode / advisor UI. Grep 'plan|advisor' trong features/chat trả về rỗng. Nếu omp có plan mode (yield tool có sẵn ở tool-render) thì cần composer toggle + visual."
+    },
+    {
+      "id": "g4",
+      "severity": "high",
+      "description": "messageCount của ChatSession không bao giờ tăng. Route POST /chat/sessions tạo với messageCount=0 và không có nơi nào tăng; UI hiển thị số sai. Tương tự lastActiveAt luôn null sau khi tải lại."
+    },
+    {
+      "id": "g5",
+      "severity": "high",
+      "description": "Session rename không có UI: chatApi.renameSession có nhưng SessionList chỉ render name read-only; không có inline edit."
+    },
+    {
+      "id": "g6",
+      "severity": "medium",
+      "description": "Reconnect cycle có thể mất dữ liệu giữa chừng: replay buffer chỉ 64 envelope; nếu omp đang stream long answer khi WS rớt, các frame trước cửa sổ replay sẽ mất. RpcClient không re-issue get_state/get_messages sau reconnect (chỉ gọi 1 lần trên 'open' event đầu, nhưng đúng là 'open' fire mỗi lần openSocket — kiểm tra lại). Cần xác nhận hành vi 'open' khi reconnect."
+    },
+    {
+      "id": "g7",
+      "severity": "medium",
+      "description": "Optimistic user entry không rollback khi gửi thất bại: sendPrompt append entry trước, rồi #send chỉ ghi khi WS OPEN; nếu socket vừa rớt, entry nằm lại trong transcript dù message không tới omp."
+    },
+    {
+      "id": "g8",
+      "severity": "medium",
+      "description": "Runtime config patch không atomic với phía omp: handleConfigUpdate gọi REST update + sendSetModel/sendSetThinkingLevel song song; nếu set_model fail ở omp, config persistent đã thay đổi. Cũng không có feedback errors từ omp response (chỉ command='get_state'|'get_messages' được xử lý)."
+    },
+    {
+      "id": "g9",
+      "severity": "medium",
+      "description": "Data sources hoàn toàn là stub: GET trả store rỗng, refresh chỉ set status='connected' mà không thực sự kết nối. Không có CRUD add/remove."
+    },
+    {
+      "id": "g10",
+      "severity": "medium",
+      "description": "AVAILABLE_MODELS hardcode trong chat.ts (claude-opus-4-8, gpt-5.5, gemini-3-flash...), không sync với danh sách model thật của omp child. Default 'anthropic/claude-sonnet-4-6' có thể không tồn tại."
+    },
+    {
+      "id": "g11",
+      "severity": "medium",
+      "description": "Khi snapshot.phase==='ended' do exit của omp, người dùng không có nút 'Restart session' rõ ràng — chỉ có Reconnect (ConnectionStatusBar) gọi client.connect, nhưng nếu omp child đã chết thì WS upgrade trả 4404, cần POST /start lại. handleReconnect chỉ rebuild client khi !client; cần re-start omp trước."
+    },
+    {
+      "id": "g12",
+      "severity": "medium",
+      "description": "Stderr line cắt 240 ký tự rồi thành notice 'warning' — bất kỳ output stderr nào (kể cả debug info từ bun/node) sẽ nhồi noticesPanel. Cần filter."
+    },
+    {
+      "id": "g13",
+      "severity": "medium",
+      "description": "Session ID là UUID server-gen còn topic WS = 'chat:<id>' không có auth; bất kỳ ai mở localhost:8787 đều subscribe được session khác. Bridge bind 127.0.0.1 nhưng vẫn nên có token-per-session."
+    },
+    {
+      "id": "g14",
+      "severity": "low",
+      "description": "useChatStateMachine không có MESSAGE_COUNT_INCREMENT / LAST_ACTIVE_AT update khi assistant message_end. Sessions list sẽ stale cho đến refresh."
+    },
+    {
+      "id": "g15",
+      "severity": "low",
+      "description": "RpcClient không gửi sendSetSubagentSubscription lại sau reconnect (nó nằm trong 'open' listener đăng ký 1 lần per socket, nhưng khi reconnect ta tạo socket mới — OK, cần kiểm thực tế)."
+    },
+    {
+      "id": "g16",
+      "severity": "low",
+      "description": "ChatComposer auto-grow textarea dùng useLayoutEffect nhưng không clamp scrollHeight; multiline paste lớn có thể nhảy giật."
+    },
+    {
+      "id": "g17",
+      "severity": "low",
+      "description": "Tool views có sẵn (ask, ast-edit, bash, browser, debug, edit, fetch, find, github, goal, lsp, memory-*, read, search, ssh, task, todo, web-search, write, yield, ...) — nhưng cần xác nhận registry.ts route đúng toolName từ RPC frames (tool_execution_start.toolName); không có check ở khảo sát này."
+    },
+    {
+      "id": "g18",
+      "severity": "low",
+      "description": "Phase chuyển 'connecting'→'live' xảy ra ngay khi WS open, trước khi xác nhận omp child sẵn sàng. Nếu omp đang khởi tạo chậm và promptt gửi sớm, frame prompt có thể bị omp ignore."
+    }
+  ],
+  "proposedActions": [
+    {
+      "id": "a1",
+      "phase": "p3-chat-core",
+      "description": "Bổ sung slash command palette trong ChatComposer: detect prefix '/', show popup với danh sách (/clear, /resume, /model <id>, /think <level>, /help). Map sang RPC command tương ứng (đã có set_model/set_thinking_level; thêm clear_messages, get_models trong omp nếu thiếu)."
+    },
+    {
+      "id": "a2",
+      "phase": "p3-chat-core",
+      "description": "Thực hiện Regenerate đúng nghĩa: thêm RPC command 'regenerate' ở coding-agent (drop last assistant message + replay user) hoặc trong RpcClient lưu lastUserPrompt và tự gửi lại sau abort. Cập nhật nút Regen hiển thị khi có history."
+    },
+    {
+      "id": "a3",
+      "phase": "p3-chat-core",
+      "description": "Sửa optimistic user entry: chỉ append sau khi #send trả true; nếu WS chưa OPEN, hiện toast 'reconnecting...' và queue prompt trong RpcClient để gửi khi 'open' fire lại."
+    },
+    {
+      "id": "a4",
+      "phase": "p3-chat-core",
+      "description": "Cập nhật sessions.json khi assistant message_end: bridge listen frame trong omp-manager, mutate sessions store (messageCount++, lastActiveAt=now). Hoặc thêm REST POST /chat/sessions/:id/touch để UI gọi. Đảm bảo SessionList refresh."
+    },
+    {
+      "id": "a5",
+      "phase": "p3-chat-core",
+      "description": "Sửa handleReconnect: khi phase==='ended' do exit, gọi lại startOmpForSession trước khi new RpcClient. Hiển thị 'Restarting omp...' trong ConnectionStatusBar."
+    },
+    {
+      "id": "a6",
+      "phase": "p3-chat-core",
+      "description": "Phân biệt stderr 'info' vs 'warning': mặc định stderr → debug log (chỉ hiện trong dev panel), chỉ nâng cấp thành notice khi match pattern error/warn. Tránh nhồi noticesPanel."
+    },
+    {
+      "id": "a7",
+      "phase": "p3-chat-core",
+      "description": "Thêm token authentication cho WS upgrade: /start trả {wsToken}, RpcClient append ?token=... query, server.ts verify trước upgrade. Bind 127.0.0.1 chưa đủ trên máy multi-user."
+    },
+    {
+      "id": "a8",
+      "phase": "p3-chat-core",
+      "description": "Lấy AVAILABLE_MODELS động: thêm RPC command 'list_models' ở omp, bridge cache; loại bỏ list hardcode trong chat.ts."
+    },
+    {
+      "id": "a9",
+      "phase": "p3-chat-core",
+      "description": "Phase 'live' chỉ chuyển khi omp gửi initial response (vd ack get_state) thay vì WS open ngay. Tránh prompt sớm bị drop. ChatComposer disable Send cho đến khi snapshot.state !== null."
+    },
+    {
+      "id": "a10",
+      "phase": "p3-chat-core",
+      "description": "Tăng replay buffer hoặc đổi sang sequence-id-based replay: omp đánh số frame, RpcClient gửi lastSeenSeq khi reconnect, bridge resend từ seq+1. Tránh mất stream giữa long answer."
+    },
+    {
+      "id": "a11",
+      "phase": "p4-features",
+      "description": "Plan mode UI: thêm toggle 'Plan / Build' trong composer, gửi RPC set_mode. Hiển thị plan output bằng tool-render/tools/goal.tsx hoặc todo.tsx; commit plan để switch sang build mode."
+    },
+    {
+      "id": "a12",
+      "phase": "p4-features",
+      "description": "Inline rename session: double-click name trong SessionList → textbox → enter → chatApi.renameSession, dispatch SESSION_RENAMED."
+    },
+    {
+      "id": "a13",
+      "phase": "p4-features",
+      "description": "Data sources thực thụ: thiết kế contract (filesystem path, MCP server, http url) + CRUD route. Refresh ping nguồn thật. Hiện tại đang 100% stub."
+    },
+    {
+      "id": "a14",
+      "phase": "p4-features",
+      "description": "Xác nhận registry.ts mapping với toolName từ RPC frames (snake_case vs camelCase); thêm fallback generic.tsx + log toolName thiếu để dễ debug."
+    },
+    {
+      "id": "a15",
+      "phase": "p6-polish",
+      "description": "Atomic config update: chờ omp response cho set_model rồi mới mutate state/runtime-config.json; nếu fail rollback và surface error qua actions.setError."
+    }
+  ]
+}

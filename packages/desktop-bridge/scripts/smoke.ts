@@ -47,7 +47,7 @@ async function hit(name: string, method: string, url: string, body?: unknown): P
 
 const port = 18787;
 const handle = start({ port });
-await new Promise((r) => setTimeout(r, 200));
+await new Promise(r => setTimeout(r, 200));
 const base = `http://127.0.0.1:${port}/api/v1`;
 
 const results: Result[] = [];
@@ -64,9 +64,7 @@ results.push(await hit("GET /launcher/workspaces", "GET", `${base}/launcher/work
 results.push(await hit("POST /launcher/diagnostics", "POST", `${base}/launcher/diagnostics`));
 results.push(await hit("GET /launcher/update/check", "GET", `${base}/launcher/update/check`));
 results.push(await hit("GET /chat/sessions", "GET", `${base}/chat/sessions`));
-results.push(
-	await hit("POST /chat/sessions", "POST", `${base}/chat/sessions`, { name: "smoke" }),
-);
+results.push(await hit("POST /chat/sessions", "POST", `${base}/chat/sessions`, { name: "smoke" }));
 results.push(await hit("GET /chat/data-sources", "GET", `${base}/chat/data-sources`));
 results.push(await hit("GET /chat/runtime-config", "GET", `${base}/chat/runtime-config`));
 results.push(
@@ -78,7 +76,7 @@ results.push(
 let failed = 0;
 for (const r of results) {
 	const sym = r.ok ? "✓" : "✗";
-	console.log(`${sym} ${String(r.status).padStart(3)} ${r.name}${r.detail ? "  " + r.detail : ""}`);
+	console.log(`${sym} ${String(r.status).padStart(3)} ${r.name}${r.detail ? `  ${r.detail}` : ""}`);
 	if (!r.ok) failed++;
 }
 
@@ -106,7 +104,7 @@ if (ompRes.source === "not-found") {
 	// Probe — give omp 5s to settle, then ensure the child didn't exit early.
 	let ompAlive = false;
 	if (spawn.ok) {
-		await new Promise((r) => setTimeout(r, 5000));
+		await new Promise(r => setTimeout(r, 5000));
 		const stateRes = await fetch(`${base}/chat/sessions/${id}/state`);
 		if (stateRes.ok) {
 			const snap = (await stateRes.json()) as { running?: boolean; exitCode?: number | null };
@@ -136,7 +134,7 @@ if (ompRes.source === "not-found") {
 				ws.addEventListener("open", () => {
 					ws.send(JSON.stringify({ id: "smoke-1", type: "get_available_models" }));
 				});
-				ws.addEventListener("message", (evt) => {
+				ws.addEventListener("message", evt => {
 					try {
 						const env = JSON.parse(String(evt.data)) as {
 							type?: string;
@@ -153,7 +151,11 @@ if (ompRes.source === "not-found") {
 							reject(new Error(`omp exited (code=${env.code ?? "null"}) before responding`));
 							return;
 						}
-						if (env.type === "frame" && env.frame?.type === "response" && env.frame?.command === "get_available_models") {
+						if (
+							env.type === "frame" &&
+							env.frame?.type === "response" &&
+							env.frame?.command === "get_available_models"
+						) {
 							clearTimeout(timer);
 							ws.close();
 							console.log(`✓ WS RPC get_available_models -> success=${env.frame.success}`);

@@ -57,13 +57,12 @@ async function main(): Promise<void> {
 	console.log(`[bridge] output: ${outFile}`);
 
 	await new Promise<void>((resolveSpawn, reject) => {
-		const child = spawn(
-			"bun",
-			["build", "--compile", ENTRY, "--outfile", outFile, "--minify"],
-			{ stdio: "inherit", windowsHide: true },
-		);
+		const child = spawn("bun", ["build", "--compile", ENTRY, "--outfile", outFile, "--minify"], {
+			stdio: "inherit",
+			windowsHide: true,
+		});
 		child.on("error", reject);
-		child.on("exit", (code) => (code === 0 ? resolveSpawn() : reject(new Error(`bun build exit ${code}`))));
+		child.on("exit", code => (code === 0 ? resolveSpawn() : reject(new Error(`bun build exit ${code}`))));
 	});
 
 	console.log(`[bridge] ✓ compiled → ${outFile}`);

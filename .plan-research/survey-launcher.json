@@ -1,0 +1,150 @@
+{
+  "area": "launcher",
+  "currentState": "Post-install launcher screen exists with a complete UI shell (RuntimeStatusCard, LaunchControlCard, WorkspaceCard, UpdateMaintenanceCard, DiagnosticsCard, LauncherLogDrawer) wired through useServiceStateMachine and launcherApi to a desktop-bridge supervisor over REST+WebSocket. The bridge's LauncherSupervisor.locateLaunchScript spawns `bun run packages/collab-web/scripts/local-relay.ts --port <relayPort>`, and health is a TCP probe on `relayPort` (default 8765). The routing in app.tsx is purely localStorage-driven: `installed`=1 -> LauncherPage, then `launcher.entered`=1 -> MainChatPage; the launcher is NOT gated on `detectOmp` — `/launcher/detect-omp` is implemented in the bridge and even called by InstallerPage, but LauncherPage never calls it and never surfaces whether omp is actually present. Workspaces returns a single hardcoded `default` entry pointing at `installDir`, activation is a no-op, and Update/Repair/Reset-Cache/Diagnostics-fix are stubs returning `{ok:true}` or \"not implemented in v0.1\". The \"runtime\" being supervised is the collab live-share relay (rooms / host+guest WS rewrite), not the omp coding agent at all — so this launcher currently launches the wrong process for the stated vision.",
+  "keyFiles": [
+    "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\desktop-bridge\\src\\routes\\launcher.ts",
+    "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\desktop-bridge\\src\\lib\\omp-detect.ts",
+    "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\collab-web\\scripts\\local-relay.ts",
+    "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\collab-web\\src\\app.tsx",
+    "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\collab-web\\src\\features\\launcher\\pages\\LauncherPage.tsx",
+    "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\collab-web\\src\\features\\launcher\\api\\launcherApi.ts",
+    "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\collab-web\\src\\features\\launcher\\hooks\\useServiceStateMachine.ts",
+    "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\collab-web\\src\\features\\launcher\\components\\RuntimeStatusCard.tsx",
+    "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\collab-web\\src\\features\\launcher\\components\\LaunchControlCard.tsx",
+    "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\collab-web\\src\\features\\launcher\\components\\WorkspaceCard.tsx",
+    "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\collab-web\\src\\features\\launcher\\components\\UpdateMaintenanceCard.tsx",
+    "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\collab-web\\src\\features\\launcher\\components\\DiagnosticsCard.tsx",
+    "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\collab-web\\src\\features\\launcher\\components\\LauncherLogDrawer.tsx",
+    "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\collab-web\\src\\features\\chat\\hooks\\useLauncherHealthGate.ts"
+  ],
+  "gaps": [
+    {
+      "id": "G1",
+      "severity": "blocker",
+      "description": "Wrong process supervised: LauncherSupervisor.locateLaunchScript (launcher.ts:216-230) spawns `bun run packages/collab-web/scripts/local-relay.ts`, which the file's own header describes as 'Offline stand-in for the public collab relay (wss://my.omp.sh)' — a host/guest WebSocket room relay for /collab live-share, not the omp coding agent. For a wrapper whose mission is to launch omp chat, this means: (a) the bridge launches a relay even when the user just wants to chat with omp; (b) it does NOT launch omp itself; (c) it requires checking out the source repo + bun runtime (existsSync on `packages/collab-web/scripts/local-relay.ts` inside installDir or repo root), so a user who installed omp via the Bun-global one-liner or Binary mode literally cannot start the runtime — locateLaunchScript will return null with 'launch script not found'."
+    },
+    {
+      "id": "G2",
+      "severity": "blocker",
+      "description": "Health probe is misaligned with omp: probeHealth does TCP probe on `config.relayPort` (default 8765, declared in bridge config). omp the agent does not bind that port; only the collab relay does. So `running_healthy` literally means 'a collab relay socket accepts connections', which has nothing to do with whether omp is callable. The Enter-Chat gate in LauncherPage (canEnterChat = phase==='running_healthy') therefore gates entry on the wrong signal."
+    },
+    {
+      "id": "G3",
+      "severity": "high",
+      "description": "detectOmp endpoint exists in the bridge (/api/v1/launcher/detect-omp wired in launcher.ts:322-325) and is exposed in installerApi.ts as detectOmp(), but LauncherPage.tsx never calls it. The launcher does not know — and does not display — whether `omp` is actually present on PATH or in a known location. The InstallerPage uses it for post-install verification, then control passes to the launcher with no carry-over. Result: a user who completed the installer with omp truly missing (or who deleted omp after the fact) lands on a Launcher that talks about a 'runtime' it can neither find nor explain. There is no `Omp Detected: …` row in RuntimeStatusCard."
+    },
+    {
+      "id": "G4",
+      "severity": "high",
+      "description": "Routing is not gated on omp presence. app.tsx flow is INSTALLED_KEY=='1' -> LauncherPage, LAUNCHER_DONE_KEY=='1' -> MainChatPage. Both are localStorage flags set by clicking 'Continue'/'Enter Main Chat'. Nothing re-verifies omp at launcher mount or before allowing Enter-Chat. A user whose omp was removed between sessions still sees the same UI; the only failure signal is the TCP probe on the relay port, which (as G2 notes) is unrelated."
+    },
+    {
+      "id": "G5",
+      "severity": "high",
+      "description": "WorkspaceCard is effectively a stub. GET /api/v1/launcher/workspaces returns one hardcoded entry `{id:'default', name:'default', path: installDir, isActive:true}` (launcher.ts:278-289). The activate route (`POST /workspaces/:id/activate`) returns `{ok:true}` with no state change. The bridge has no concept of an omp session directory, working directory for the agent, or per-project history. The very concept of 'workspace' is undefined in this codebase: in the omp coding-agent world a 'workspace' would naturally be the repo/CWD the agent operates on, but the bridge treats it as installDir."
+    },
+    {
+      "id": "G6",
+      "severity": "high",
+      "description": "UpdateMaintenanceCard is fully stubbed. /update/check returns `{available:false, currentVersion:'0.1.0', latestVersion:null}` unconditionally — no GitHub Releases lookup, no version comparison, no channel handling. /update/apply, /repair, /reset-cache all return `{ok:true, message:'not implemented in v0.1' / 'no-op in v0.1'}`. The UI confidently shows 'Up to date — 0.1.0 (stable)' which is misleading."
+    },
+    {
+      "id": "G7",
+      "severity": "medium",
+      "description": "Diagnostics are thin and tied to the relay. The only checks are 'Collab relay reachable' (TCP probe relayPort) and 'Install directory writable' (existsSync). For an omp wrapper the diagnostic that matters is 'omp on PATH? omp --version works? credentials present? model reachable?' — none of those are run."
+    },
+    {
+      "id": "G8",
+      "severity": "medium",
+      "description": "Supervisor 'already running' branch is fragile: in start(), if the relay port is already in use (`!isPortFree(relayPort)`) the supervisor silently assumes the previous process is healthy and reports `running_healthy` without checking pid ownership. A foreign process listening on 8765 (a different relay, a dev server) will be silently adopted, and `stop()` will try to kill a pid we don't actually own (via state.json's stored pid, which may be stale or null)."
+    },
+    {
+      "id": "G9",
+      "severity": "medium",
+      "description": "Metrics never populated. RuntimeStatusCard renders CPU/Memory/Uptime when `metrics` is non-null, but launcher.ts never emits a `metrics` event nor populates `this.metrics`. The UI block is dead code paths today."
+    },
+    {
+      "id": "G10",
+      "severity": "medium",
+      "description": "Logs route stubbed: GET /launcher/logs returns `{lines: []}` (launcher.ts:318-320). Live WS log streaming works (onStdout/onStderr emit log events), but historical logs after a reload are lost — LauncherLogDrawer always starts empty."
+    },
+    {
+      "id": "G11",
+      "severity": "low",
+      "description": "Safe Mode is a synonym for restart: POST /launcher/safe-mode calls `sup.restart()` with no flag toggled (launcher.ts:254-257). The button promises something it does not deliver."
+    },
+    {
+      "id": "G12",
+      "severity": "low",
+      "description": "Hardcoded VERSION='0.1.0' string in launcher.ts is the source of truth for the 'currentVersion' shown in Update card — not read from package.json or omp --version."
+    }
+  ],
+  "proposedActions": [
+    {
+      "id": "A1",
+      "phase": "p2-launcher",
+      "description": "Redefine 'runtime' as omp itself. Replace LauncherSupervisor.locateLaunchScript with logic that uses the existing findOmp() (omp-detect.ts) to resolve the omp binary, then spawns `omp <subcommand>` instead of bun+local-relay.ts. Decide and document the exact subcommand the wrapper expects (likely `omp serve` / `omp --mode rpc` / `omp daemon`); if omp does not yet have such a mode, file that as a blocker in oh-my-pi core. Drop the local-relay dependency from the launcher path entirely — it belongs to the /collab feature, not to the post-install runtime."
+    },
+    {
+      "id": "A2",
+      "phase": "p2-launcher",
+      "description": "Replace TCP-port health probe with a real omp readiness check. Options: (a) probe an HTTP endpoint omp exposes when running in serve mode; (b) call `omp --version` periodically as a liveness check; (c) read a 'ready' line from stdout. Whichever omp itself supports — TCP on relayPort is wrong because the relay is unrelated. Add an explicit `ompPort` distinct from `relayPort` in BridgeConfig so /collab and the omp runtime never share a probe.",
+      "dependsOn": [
+        "A1"
+      ]
+    },
+    {
+      "id": "A3",
+      "phase": "p2-launcher",
+      "description": "Gate LauncherPage on detectOmp. On mount, call detectOmp() (already in installerApi). If `!found`, render a recovery card explaining omp is missing and offering 'Return to Installer' / 'Re-run install'. Block Start/Enter-Chat buttons until detection passes. Surface `omp version` and `omp path` in RuntimeStatusCard as a permanent row — this is the most basic question the user has."
+    },
+    {
+      "id": "A4",
+      "phase": "p2-launcher",
+      "description": "Re-verify omp at every Enter-Chat transition. In app.tsx route 2->3, do not trust LAUNCHER_DONE_KEY alone; call detectOmp + getRuntimeStatus.healthy before mounting MainChatPage. If either fails, bounce back to LauncherPage with an explanatory banner. Reuse useLauncherHealthGate's pattern but extend its API to include `ompPresent`."
+    },
+    {
+      "id": "A5",
+      "phase": "p2-launcher",
+      "description": "Define and implement the workspace concept properly. A workspace = a directory the omp agent operates on (a repo, a project). Persist a list in state.json under `workspaces`, with `{id, name, path, lastOpenedAt}`. Add POST /workspaces (create/import a directory), DELETE /workspaces/:id, and make /workspaces/:id/activate actually pass the path to the omp child process (e.g. `omp serve --cwd <path>` or as env). WorkspaceCard then becomes the directory picker / recent-project list it visually pretends to be."
+    },
+    {
+      "id": "A6",
+      "phase": "p2-launcher",
+      "description": "Fix the 'already running' branch in supervisor.start(). When relayPort/ompPort is busy, do NOT silently claim healthy. Read state.json pid; if pid is alive AND its image matches the omp binary path, adopt and probe; otherwise return a 'PORT_OCCUPIED' error to the UI with the offending port. Never store a foreign pid as ours."
+    },
+    {
+      "id": "A7",
+      "phase": "p2-launcher",
+      "description": "Implement a minimal metrics emitter or remove the UI section. Use `pidusage` or platform-specific `ps`/`tasklist` reads every POLL_HEALTH_MS, broadcast `{type:'metrics', metrics:{cpuPct, memMb, uptimeMs}}` on the WS stream. If metrics are out-of-scope for v0.1, gate the UI block on a config flag so we do not render dead UI."
+    },
+    {
+      "id": "A8",
+      "phase": "p2-launcher",
+      "description": "Persist runtime logs to disk (ring buffer in stateDir, e.g. last 1000 lines), and make GET /launcher/logs return them so LauncherLogDrawer is useful after a page reload."
+    },
+    {
+      "id": "A9",
+      "phase": "p2-launcher",
+      "description": "Either implement Safe Mode (e.g. spawn omp with --safe / disable plugins / use clean config dir) or remove the button from LaunchControlCard. A button that lies erodes trust.",
+      "dependsOn": [
+        "A1"
+      ]
+    },
+    {
+      "id": "A10",
+      "phase": "p2-launcher",
+      "description": "Rewrite DiagnosticsCard checks to be omp-centric: (1) omp on PATH; (2) `omp --version` succeeds; (3) omp config dir present and readable; (4) credentials/API key reachable (call omp's own check command if available); (5) bridge<->omp child process alive. Keep the install-dir check. Add `fixHint` text for each fail so the user has a path forward."
+    },
+    {
+      "id": "A11",
+      "phase": "p5-update",
+      "description": "Wire UpdateMaintenanceCard to a real source. Either query the GitHub Releases API for oh-my-pi (or omp itself) and compare versions, or expose `omp self-update` via the bridge and shell out. Stop hardcoding VERSION='0.1.0'; read from package.json at build time and from `omp --version` at runtime."
+    },
+    {
+      "id": "A12",
+      "phase": "p6-polish",
+      "description": "Carry omp detection state from InstallerPage to LauncherPage instead of re-fetching. Today the installer detects omp and proceeds; the launcher then ignores that and assumes healthy. A small shared atom / context (`detectedOmp: DetectOmpResult | null`) plus a re-check on mount avoids a stale-state UX glitch and a redundant which/where roundtrip."
+    }
+  ]
+}

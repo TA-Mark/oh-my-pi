@@ -8,50 +8,50 @@
 // ---------------------------------------------------------------------------
 
 export type ChatPhase =
-  | 'idle'           // waiting for session link / launcher health
-  | 'connecting'     // WS handshake in progress
-  | 'live'           // session active, streaming possible
-  | 'streaming'      // assistant is generating
-  | 'tool_running'   // tool execution in progress
-  | 'error'          // recoverable error
-  | 'disconnected'   // lost connection
-  | 'reconnecting'   // auto-reconnect in progress
-  | 'ended';         // session ended (no reconnect)
+	| "idle" // waiting for session link / launcher health
+	| "connecting" // WS handshake in progress
+	| "live" // session active, streaming possible
+	| "streaming" // assistant is generating
+	| "tool_running" // tool execution in progress
+	| "error" // recoverable error
+	| "disconnected" // lost connection
+	| "reconnecting" // auto-reconnect in progress
+	| "ended"; // session ended (no reconnect)
 
 // ---------------------------------------------------------------------------
 // Session
 // ---------------------------------------------------------------------------
 
 export interface ChatSession {
-  id: string;
-  name: string;
-  link: string;
-  createdAt: string;
-  lastActiveAt: string | null;
-  messageCount: number;
-  isActive: boolean;
+	id: string;
+	name: string;
+	link: string;
+	createdAt: string;
+	lastActiveAt: string | null;
+	messageCount: number;
+	isActive: boolean;
 }
 
 export interface SessionListResponse {
-  sessions: ChatSession[];
+	sessions: ChatSession[];
 }
 
 // ---------------------------------------------------------------------------
 // Data sources
 // ---------------------------------------------------------------------------
 
-export type DataSourceStatus = 'connected' | 'disconnected' | 'error' | 'loading';
+export type DataSourceStatus = "connected" | "disconnected" | "error" | "loading";
 
 export interface DataSource {
-  id: string;
-  name: string;
-  type: string;
-  status: DataSourceStatus;
-  detail?: string;
+	id: string;
+	name: string;
+	type: string;
+	status: DataSourceStatus;
+	detail?: string;
 }
 
 export interface DataSourceListResponse {
-  sources: DataSource[];
+	sources: DataSource[];
 }
 
 // ---------------------------------------------------------------------------
@@ -59,14 +59,14 @@ export interface DataSourceListResponse {
 // ---------------------------------------------------------------------------
 
 export interface RuntimeConfig {
-  model: string;
-  mode: 'normal' | 'safe' | 'debug';
-  thinkingEnabled: boolean;
-  maxTokens: number;
+	model: string;
+	mode: "normal" | "safe" | "debug";
+	thinkingEnabled: boolean;
+	maxTokens: number;
 }
 
 export interface RuntimeConfigResponse extends RuntimeConfig {
-  availableModels: string[];
+	availableModels: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -74,10 +74,10 @@ export interface RuntimeConfigResponse extends RuntimeConfig {
 // ---------------------------------------------------------------------------
 
 export interface ChatError {
-  code: string;
-  message: string;
-  detail?: string;
-  recoverable: boolean;
+	code: string;
+	message: string;
+	detail?: string;
+	recoverable: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -85,8 +85,8 @@ export interface ChatError {
 // ---------------------------------------------------------------------------
 
 export interface LauncherHealthStatus {
-  healthy: boolean;
-  phase: string;
-  endpoint: string | null;
-  checkedAt: string;
+	healthy: boolean;
+	phase: string;
+	endpoint: string | null;
+	checkedAt: string;
 }

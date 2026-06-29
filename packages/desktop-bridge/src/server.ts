@@ -10,6 +10,7 @@
  * localhost only — the bridge binds to 127.0.0.1 and is never exposed.
  */
 
+import { dirname } from "node:path";
 import { loadConfig } from "./lib/config";
 import type { BridgeContext } from "./lib/context";
 import { corsPreflight, errorResponse } from "./lib/http";
@@ -20,6 +21,24 @@ import { handleHealth } from "./routes/health";
 import { handleInstaller } from "./routes/installer";
 import { handleLauncher, LauncherSupervisor } from "./routes/launcher";
 
+/**
+ * If the Tauri shell bundles a Bun sidecar, it forwards the absolute path via
+ * `OMP_BUNDLED_BUN`. Prepend that directory to PATH so every child we spawn
+ * (PowerShell running `bun install -g`, install.ps1 detecting Bun, etc.)
+ * resolves `bun` against the bundled binary — no internet round-trip required
+ * on a clean machine.
+ */
+function prependBundledToPath(): void {
+	const bun = process.env.OMP_BUNDLED_BUN;
+	if (!bun) return;
+	const sep = process.platform === "win32" ? ";" : ":";
+	const dir = dirname(bun);
+	const current = process.env.PATH ?? "";
+	if (current.split(sep).some(p => p.toLowerCase() === dir.toLowerCase())) return;
+	process.env.PATH = `${dir}${sep}${current}`;
+	console.log(`[desktop-bridge] prepended bundled bun dir to PATH: ${dir}`);
+}
+
 interface SocketData {
 	topic: string;
 	jobId?: string;
@@ -27,6 +46,7 @@ interface SocketData {
 }
 
 export function start(opts: { port?: number } = {}): { url: string; stop(): Promise<void> } {
+	prependBundledToPath();
 	const config = loadConfig({ port: opts.port });
 	// Persist job logs to <installDir>/logs/install-<jobId>.log so the user
 	// has a stable artifact to share when something fails.
@@ -96,12 +116,12 @@ export function start(opts: { port?: number } = {}): { url: string; stop(): Prom
 							}),
 						);
 					}
-					const unsub = jobs.subscribe(ws.data.jobId, (event) => ws.send(JSON.stringify(event)));
+					const unsub = jobs.subscribe(ws.data.jobId, event => ws.send(JSON.stringify(event)));
 					subscribers.set(ws, unsub);
 					return;
 				}
 				if (ws.data.topic === "launcher") {
-					const unsub = launcher.subscribe((event) => ws.send(JSON.stringify(event)));
+					const unsub = launcher.subscribe(event => ws.send(JSON.stringify(event)));
 					subscribers.set(ws, unsub);
 					return;
 				}
@@ -112,7 +132,7 @@ export function start(opts: { port?: number } = {}): { url: string; stop(): Prom
 						ws.close(4404, "session not started");
 						return;
 					}
-					const unsub = omp.subscribe(id, (envelope) => ws.send(JSON.stringify(envelope)));
+					const unsub = omp.subscribe(id, envelope => ws.send(JSON.stringify(envelope)));
 					subscribers.set(ws, unsub);
 				}
 			},

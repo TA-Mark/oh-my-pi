@@ -1,0 +1,98 @@
+{
+  "area": "update-bundle",
+  "currentState": "Bundle pipeline (fetch-bundled-deps.ts) stages 3 thứ vào Tauri build: Bun 1.3.14 (~98MB sidecar binary), MinGit 2.50.1 (~30MB Windows resource), và pi_natives.<triple>.node (~vài MB). bridge.rs::BundledDeps::resolve() phát hiện cả 3, rồi forward dưới dạng env vars OMP_BUNDLED_BUN / OMP_BUNDLED_GIT_DIR / OMP_BUNDLED_NATIVE cho cả sidecar và Bun-script process. Nhưng phía consumer (desktop-bridge): OMP_BUNDLED_NATIVE chỉ được dùng ở installer.ts:405 (stageBundledNative — copy .node vào installPath sau khi install xong, chỉ áp dụng cho windows-irm Binary mode); OMP_BUNDLED_BUN chỉ được dùng ở omp-process.ts:204 trong nhánh \"dev\" fallback khi không có omp trên PATH; OMP_BUNDLED_GIT_DIR KHÔNG có consumer nào trong codebase — bundled MinGit (30MB) đang là dead weight. Installer route spawn `powershell.exe -Command \"irm https://omp.sh/install.ps1 | iex\"` mà không prepend bundled Bun/Git vào PATH, nghĩa là khi máy clean chạy windows-irm sẽ vẫn re-download Bun từ internet (qua install.ps1 -> Install-Bun -> irm bun.sh/install.ps1). Tauri updater plugin có trong Cargo.toml và được register ở lib.rs nhưng `updater.active=false` và `pubkey=REPLACE_ME` trong tauri.conf.json — chưa hoạt động. Launcher route /update/check trả về stub `available:false`; /update/apply trả về \"not implemented in v0.1\". Coding-agent có sẵn `omp update` CLI command (packages/coding-agent/src/cli/update-cli.ts) tự handle update cho omp binary — đây là update path đã production-ready và độc lập với desktop shell.",
+  "keyFiles": [
+    "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\desktop-shell\\src-tauri\\tauri.conf.json",
+    "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\desktop-shell\\scripts\\fetch-bundled-deps.ts",
+    "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\desktop-shell\\src-tauri\\src\\bridge.rs",
+    "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\desktop-shell\\src-tauri\\src\\lib.rs",
+    "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\desktop-shell\\src-tauri\\Cargo.toml",
+    "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\desktop-bridge\\src\\routes\\installer.ts",
+    "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\desktop-bridge\\src\\routes\\launcher.ts",
+    "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\desktop-bridge\\src\\lib\\omp-process.ts",
+    "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\packages\\coding-agent\\src\\cli\\update-cli.ts",
+    "C:\\Users\\Mark-MJ\\Documents\\oh-my-pi\\scripts\\install.ps1"
+  ],
+  "gaps": [
+    {
+      "id": "G1",
+      "severity": "high",
+      "description": "MinGit (~30MB) is bundled and forwarded as OMP_BUNDLED_GIT_DIR but has zero consumers in desktop-bridge — pure dead weight inflating installer size."
+    },
+    {
+      "id": "G2",
+      "severity": "high",
+      "description": "Bundled Bun (~98MB) is not used by the installer route. windows-irm method spawns `irm bun.sh/install.ps1 | iex` which re-downloads Bun, defeating the entire point of bundling. Only consumer is the dev-mode fallback in resolveOmp() which only activates when omp is missing from PATH AND repo root is detected — not the user-facing happy path."
+    },
+    {
+      "id": "G3",
+      "severity": "high",
+      "description": "Tauri updater is half-wired: plugin registered + endpoint URL templated, but pubkey=REPLACE_ME, updater.active=false, and there is no omp.sh/desktop/updates/* server implementation. Enabling requires generating an updater key pair + signing every release + hosting an update manifest server — significant ops investment for a wrapper app."
+    },
+    {
+      "id": "G4",
+      "severity": "medium",
+      "description": "Launcher /update/check and /update/apply are stubs returning fixed responses; no integration with the existing `omp update` CLI that already implements bun/brew/mise/binary update paths."
+    },
+    {
+      "id": "G5",
+      "severity": "medium",
+      "description": "stageBundledNative in installer.ts only runs when `installPath` is set (windows-irm Binary mode). For bun-global / homebrew / mise the bundled native addon is skipped — but those installers already pull pi-natives from npm, so this is actually correct; documenting it would help."
+    },
+    {
+      "id": "G6",
+      "severity": "low",
+      "description": "Installer.ts does not prepend bundled Bun's directory to PATH before spawning install.ps1, so even if we wanted to skip the Bun download we couldn't without code changes."
+    }
+  ],
+  "proposedActions": [
+    {
+      "id": "A1",
+      "phase": "p1-install",
+      "description": "DROP bundled MinGit entirely. Remove `resources/mingit/**/*` from tauri.conf.json bundle.resources, remove stageMinGit() from fetch-bundled-deps.ts, remove mingit_cmd_dir from BundledDeps in bridge.rs, remove OMP_BUNDLED_GIT_DIR env forward. Saves ~30MB with zero functional regression — no consumer exists. install.ps1 / brew / bun-global all rely on system git (or don't need git at all for bun-global)."
+    },
+    {
+      "id": "A2",
+      "phase": "p1-install",
+      "description": "DROP bundled Bun from default build. Remove `binaries/bun` from externalBin and remove stageBun() — saves ~98MB. Rationale: (a) windows-irm method re-downloads Bun anyway via install.ps1, (b) bun-global method requires user to already have Bun, (c) only consumer is dev-mode fallback which devs can satisfy with `bun` on PATH. Keep prep-sidecar (omp-bridge ~10-15MB compiled) as the only sidecar. Net installer target: ~30-40MB lean instead of 130MB+."
+    },
+    {
+      "id": "A3",
+      "phase": "p1-install",
+      "description": "Keep bundled pi_natives (~few MB) for windows-irm Binary mode offline-after-install scenario — it's small and stageBundledNative is wired. Alternative: drop it too and rely on `omp update` to fetch via npm; saves complexity but requires internet after install for natives. Recommendation: keep it, the size cost is negligible (<5MB) and it lets Binary-mode users get a working install with no further network round-trip."
+    },
+    {
+      "id": "A4",
+      "phase": "p5-update",
+      "description": "Do NOT enable tauri-plugin-updater for v0.1. Reasons: (a) requires generating + safeguarding a signing key, (b) requires hosting omp.sh/desktop/updates/* manifest server, (c) requires CI to sign every release, (d) the wrapper shell rarely changes — the thing that updates frequently is `omp` itself, which already has `omp update`. Remove tauri-plugin-updater dep from Cargo.toml, remove plugin().init() from lib.rs, remove updater block from tauri.conf.json. Defer to a hypothetical v0.2."
+    },
+    {
+      "id": "A5",
+      "phase": "p5-update",
+      "description": "Wire launcher /update/check and /update/apply to the existing `omp update` CLI. /update/check spawns `omp update --check` (or queries https://api.github.com/repos/can1357/oh-my-pi/releases/latest the same way update-cli.ts does) and returns currentVersion vs latestVersion. /update/apply runs `omp update` as a tracked JobManager job streaming logs to the WebUI — same pattern as installer.ts. This gives users a one-click update for the *agent* (the part that matters) without any signing/server infra. The desktop shell itself stays out of the update loop until v0.2."
+    },
+    {
+      "id": "A6",
+      "phase": "p5-update",
+      "description": "For shell-level updates in v0.1, surface a 'Reinstall desktop app' WebUI link that opens https://omp.sh/desktop (the installer download page) in the system browser via tauri-plugin-shell open(). User re-runs the .msi/.nsis installer. Cheap, honest, requires zero ops infrastructure.",
+      "dependsOn": [
+        "A4"
+      ]
+    },
+    {
+      "id": "A7",
+      "phase": "p1-install",
+      "description": "After A1/A2, update fetch-bundled-deps.ts header docstring + resources/README.md to reflect lean strategy. Update bridge.rs::BundledDeps + log lines to drop bun/git fields (keep native_node). Update spawn_bun_script fallback path in bridge.rs to require system bun explicitly (or fail with a clear error message pointing user to install.ps1)."
+    },
+    {
+      "id": "A8",
+      "phase": "p6-polish",
+      "description": "Add docs note: desktop shell is a thin wrapper, omp itself updates via `omp update`, shell updates via re-running installer from omp.sh/desktop. Document MinGit decision (system git on Windows is rare for non-devs, but our target audience is developers who already have git — installer.ts methods all assume git OR don't need it).",
+      "dependsOn": [
+        "A1",
+        "A2",
+        "A4"
+      ]
+    }
+  ]
+}

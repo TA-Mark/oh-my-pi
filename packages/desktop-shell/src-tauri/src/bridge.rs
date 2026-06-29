@@ -38,7 +38,6 @@ const TARGET_TRIPLE: &str = env!("TAURI_ENV_TARGET_TRIPLE");
 #[derive(Clone, Debug)]
 pub struct BundledDeps {
     pub bun_path: Option<PathBuf>,
-    pub mingit_cmd_dir: Option<PathBuf>,
     pub native_node: Option<PathBuf>,
 }
 
@@ -46,15 +45,11 @@ impl BundledDeps {
     pub fn resolve(app: &AppHandle) -> Self {
         let bun_path = resolve_bundled_bun(app);
         let resource_dir = app.path().resource_dir().ok();
-        let mingit_cmd_dir = resource_dir
-            .as_ref()
-            .map(|d| d.join("resources").join("mingit").join("cmd"))
-            .filter(|p| p.exists());
         let native_node = resource_dir
             .as_ref()
             .map(|d| d.join("resources").join("native").join(NATIVE_NODE_FILENAME))
             .filter(|p| p.exists());
-        Self { bun_path, mingit_cmd_dir, native_node }
+        Self { bun_path, native_node }
     }
 }
 
@@ -112,7 +107,6 @@ pub async fn spawn_and_wait(
     let deps = BundledDeps::resolve(app);
     eprintln!("[desktop-shell] bundled deps:");
     eprintln!("  bun:   {}", deps.bun_path.as_deref().map(Path::display).map(|d| d.to_string()).unwrap_or_else(|| "(missing)".into()));
-    eprintln!("  git:   {}", deps.mingit_cmd_dir.as_deref().map(Path::display).map(|d| d.to_string()).unwrap_or_else(|| "(missing)".into()));
     eprintln!("  native:{}", deps.native_node.as_deref().map(Path::display).map(|d| d.to_string()).unwrap_or_else(|| "(missing)".into()));
 
     // Try sidecar first; if missing (dev w/o prep-sidecar), fall back to bun.
@@ -149,9 +143,6 @@ fn spawn_sidecar(
     if let Some(p) = deps.bun_path.as_ref() {
         cmd = cmd.env("OMP_BUNDLED_BUN", p.display().to_string());
     }
-    if let Some(p) = deps.mingit_cmd_dir.as_ref() {
-        cmd = cmd.env("OMP_BUNDLED_GIT_DIR", p.display().to_string());
-    }
     if let Some(p) = deps.native_node.as_ref() {
         cmd = cmd.env("OMP_BUNDLED_NATIVE", p.display().to_string());
     }
@@ -179,9 +170,6 @@ fn spawn_bun_script(install_dir: Option<&std::path::Path>, port: u16, deps: &Bun
     cmd.env("OMP_BRIDGE_PORT", port.to_string());
     if let Some(p) = deps.bun_path.as_ref() {
         cmd.env("OMP_BUNDLED_BUN", p);
-    }
-    if let Some(p) = deps.mingit_cmd_dir.as_ref() {
-        cmd.env("OMP_BUNDLED_GIT_DIR", p);
     }
     if let Some(p) = deps.native_node.as_ref() {
         cmd.env("OMP_BUNDLED_NATIVE", p);

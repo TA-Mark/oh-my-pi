@@ -193,7 +193,7 @@ export class RpcClient {
 			this.#send({ id: this.#nextReqId(), type: "set_subagent_subscription", level: "events" });
 		});
 
-		this.#ws.addEventListener("message", (evt) => {
+		this.#ws.addEventListener("message", evt => {
 			const text = typeof evt.data === "string" ? evt.data : "";
 			if (!text) return;
 			let env: BridgeEnvelope;
@@ -205,7 +205,7 @@ export class RpcClient {
 			this.#applyEnvelope(env);
 		});
 
-		this.#ws.addEventListener("close", (evt) => {
+		this.#ws.addEventListener("close", evt => {
 			this.#ws = null;
 			if (this.#closing) return;
 			if (evt.code === 4404) {
@@ -358,11 +358,7 @@ export class RpcClient {
 				const existing = agents.get(p.progress.id);
 				if (existing) {
 					const status: AgentSnapshot["status"] =
-						p.progress.status === "running"
-							? "running"
-							: p.progress.status === "aborted"
-								? "aborted"
-								: "idle";
+						p.progress.status === "running" ? "running" : p.progress.status === "aborted" ? "aborted" : "idle";
 					agents.set(p.progress.id, { ...existing, status, lastActivity: Date.now() });
 					this.#agents = agents;
 				}

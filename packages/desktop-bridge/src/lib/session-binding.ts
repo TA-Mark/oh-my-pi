@@ -6,7 +6,7 @@
  * tells us to spawn omp with `--resume <file>` so the transcript reloads.
  */
 
-import { makeStore, type JsonStore } from "./store";
+import { type JsonStore, makeStore } from "./store";
 
 export interface SessionBinding {
 	sessionFile: string;
@@ -29,13 +29,13 @@ export class SessionBindingStore {
 	}
 
 	set(sessionId: string, sessionFile: string): void {
-		this.store.mutate((s) => {
+		this.store.mutate(s => {
 			s.bindings[sessionId] = { sessionFile, updatedAt: new Date().toISOString() };
 		});
 	}
 
 	clear(sessionId: string): void {
-		this.store.mutate((s) => {
+		this.store.mutate(s => {
 			delete s.bindings[sessionId];
 		});
 	}
