@@ -19,6 +19,7 @@ import { corsPreflight, errorResponse } from "./lib/http";
 import { JobManager } from "./lib/jobs";
 import { OmpSessionManager } from "./lib/omp-manager";
 import { handleChat } from "./routes/chat";
+import { handleConfig } from "./routes/config";
 import { handleHealth } from "./routes/health";
 import { handleInstaller } from "./routes/installer";
 import { handleLauncher, LauncherSupervisor } from "./routes/launcher";
@@ -55,6 +56,7 @@ export function start(opts: { port?: number } = {}): { url: string; stop(): Prom
 	// has a stable artifact to share when something fails.
 	const jobs = new JobManager({ logDir: `${config.installDir}/logs` });
 	const launcher = new LauncherSupervisor(config);
+	launcher.attachJobs(jobs); // enable auto-install via shared JobManager
 	const omp = new OmpSessionManager(config);
 	const apiKeys = new ApiKeyStore(config.stateDir);
 	const ctx: BridgeContext = { config, jobs, launcher, omp, apiKeys };
@@ -109,6 +111,7 @@ export function start(opts: { port?: number } = {}): { url: string; stop(): Prom
 			if (p.startsWith("/api/v1/installer/")) return handleInstaller(ctx, req, url);
 			if (p.startsWith("/api/v1/launcher/")) return handleLauncher(ctx, req, url);
 			if (p.startsWith("/api/v1/chat/")) return handleChat(ctx, req, url);
+			if (p === "/api/v1/config" || p.startsWith("/api/v1/config/")) return handleConfig(req, url);
 
 			return errorResponse("NOT_FOUND", `No route for ${req.method} ${p}`, 404);
 		},

@@ -9,16 +9,18 @@
  * feature handled elsewhere; the launcher no longer spawns it.
  */
 
-import { existsSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { BridgeConfig } from "../lib/config";
 import type { BridgeContext } from "../lib/context";
 import { errorResponse, jsonResponse } from "../lib/http";
+import type { JobManager } from "../lib/jobs";
 import { type DetectOmpResult, findOmp } from "../lib/omp-detect";
 import { probeTcp, spawnTracked } from "../lib/process";
 
 import type {
 	DiagnosticsResponse,
+	InstallProgress,
 	LauncherPhase,
 	LauncherStreamEvent,
 	RuntimeStatusResponse,
@@ -29,6 +31,14 @@ import type {
 
 const VERSION = "0.1.0";
 const POLL_HEALTH_MS = 15000;
+const AUTO_INSTALL_COOLDOWN_MS = 60_000;
+const LAST_INSTALL_FILE = "last-install-attempt.json";
+
+interface LastInstallAttempt {
+	attemptedAt: string;
+	exitCode: number | null;
+	message?: string;
+}
 
 type Listener = (event: LauncherStreamEvent) => void;
 
@@ -50,15 +60,40 @@ export class LauncherSupervisor {
 	private lastFoundAt = 0;
 	private readonly listeners = new Set<Listener>();
 
-	constructor(_config: BridgeConfig) {
-		void _config;
+	// Auto-install state
+	private readonly bridgeConfig: BridgeConfig;
+	private jobs: JobManager | null = null;
+	private installing = false;
+	private installProgress: InstallProgress | null = null;
+	private lastInstallExitCode: number | null = null;
+	private lastInstallAt = 0;
+
+	constructor(config: BridgeConfig) {
+		this.bridgeConfig = config;
+		const prev = this.loadLastInstallAttempt();
+		if (prev) {
+			this.lastInstallAt = new Date(prev.attemptedAt).getTime();
+			this.lastInstallExitCode = prev.exitCode;
+		}
 		this.beginHealthLoop();
+	}
+
+	/**
+	 * Wire the supervisor to the JobManager once it exists. Called from
+	 * server.ts after the context is assembled, so auto-install can stream
+	 * logs through the standard job pipeline.
+	 */
+	attachJobs(jobs: JobManager): void {
+		this.jobs = jobs;
 	}
 
 	subscribe(listener: Listener): () => void {
 		this.listeners.add(listener);
 		listener({ type: "status_change", status: this.status, phase: this.phase });
 		listener({ type: "health", healthy: this.healthy });
+		if (this.installProgress) {
+			listener({ type: "install_progress", progress: this.installProgress });
+		}
 		return () => this.listeners.delete(listener);
 	}
 
@@ -72,6 +107,7 @@ export class LauncherSupervisor {
 			metrics: null,
 			version: this.ompVersion ?? VERSION,
 			error: this.lastError,
+			installProgress: this.installProgress,
 		};
 	}
 
@@ -106,6 +142,10 @@ export class LauncherSupervisor {
 	}
 
 	private async probeHealth(): Promise<void> {
+		// Don't probe while an auto-install job is mid-flight — the file
+		// `omp.exe` will materialise underneath us at the end and we'd race.
+		if (this.installing) return;
+
 		const now = Date.now();
 		const cacheValidMs = 120_000;
 		if (this.healthy && this.ompPath && now - this.lastFoundAt < cacheValidMs) {
@@ -119,12 +159,114 @@ export class LauncherSupervisor {
 		if (detect.found) {
 			this.lastFoundAt = now;
 			if (this.status !== "running") this.transition("running", "running_healthy");
+		} else if (this.canAutoInstall(now)) {
+			// First boot on a clean machine — try to install omp from the
+			// bundled Bun sidecar before flashing the red banner.
+			void this.runAutoInstall();
+			return;
 		} else {
 			if (this.status === "running") this.transition("degraded", "error");
 			else if (this.status === "starting") this.transition("error", "error");
+			else if (this.status === "stopped" || this.status === "installing") this.transition("error", "error");
 		}
 		if (this.healthy !== wasHealthy) {
 			this.broadcast({ type: "health", healthy: this.healthy });
+		}
+	}
+
+	private canAutoInstall(now: number): boolean {
+		if (!process.env.OMP_BUNDLED_BUN) return false; // dev mode w/o bundle
+		if (this.installing) return false;
+		// Cooldown after a recent failed attempt so we don't spam install
+		// every health tick when the user is offline.
+		if (this.lastInstallExitCode !== null && this.lastInstallExitCode !== 0) {
+			if (now - this.lastInstallAt < AUTO_INSTALL_COOLDOWN_MS) return false;
+		}
+		return true;
+	}
+
+	private async runAutoInstall(): Promise<void> {
+		const jobs = this.jobs;
+		const bun = process.env.OMP_BUNDLED_BUN;
+		if (!jobs || !bun) return;
+		this.installing = true;
+		this.transition("installing", "installing");
+		this.healthy = true; // suppress red banner during install
+		this.broadcast({ type: "health", healthy: true });
+
+		const job = jobs.create([{ id: "auto-install", label: "Install omp runtime" }]);
+		const target = "@oh-my-pi/pi-coding-agent@latest";
+		jobs.emitLog(job.id, "info", `> ${bun} install -g ${target}`);
+		jobs.setPhase(job.id, "installing", 5, "auto-install");
+		const logTail: string[] = [];
+		const pushTail = (line: string): void => {
+			logTail.push(line);
+			if (logTail.length > 8) logTail.shift();
+			this.publishProgress(job.id, this.installProgress?.percent ?? 10, this.installProgress?.message ?? "Đang tải omp runtime…", logTail);
+		};
+		this.publishProgress(job.id, 10, "Đang tải omp runtime…");
+
+		const child = spawnTracked(bun, ["install", "-g", target], {
+			onStdout(line) {
+				jobs.emitLog(job.id, "info", line, line);
+				pushTail(line);
+			},
+			onStderr(line) {
+				jobs.emitLog(job.id, "warn", line, line);
+				pushTail(line);
+			},
+		});
+
+		const { code } = await child.waitExit();
+		this.lastInstallAt = Date.now();
+		this.lastInstallExitCode = code;
+		this.saveLastInstallAttempt({
+			attemptedAt: new Date(this.lastInstallAt).toISOString(),
+			exitCode: code,
+		});
+		this.installing = false;
+
+		if (code === 0) {
+			jobs.completeStep(job.id, "auto-install", "pass");
+			jobs.setPhase(job.id, "success", 100);
+			jobs.emitLog(job.id, "info", "omp runtime ready");
+			this.publishProgress(job.id, 100, "omp runtime ready", logTail);
+			// Re-probe to pick up new omp.exe
+			this.installProgress = null;
+			await this.probeHealth();
+			return;
+		}
+
+		jobs.fail(job.id, {
+			code: "INSTALL_FAILED",
+			message: `bun install exited with ${code}. Check network or open Installer.`,
+		});
+		this.installProgress = null;
+		this.lastError = "auto-install failed";
+		this.transition("error", "error");
+		this.healthy = false;
+		this.broadcast({ type: "health", healthy: false, error: this.lastError });
+	}
+
+	private publishProgress(jobId: string, percent: number, message: string, logTail?: string[]): void {
+		this.installProgress = { jobId, percent, message, logTail };
+		this.broadcast({ type: "install_progress", progress: this.installProgress });
+	}
+
+	private loadLastInstallAttempt(): LastInstallAttempt | null {
+		try {
+			const raw = readFileSync(join(this.bridgeConfig.stateDir, LAST_INSTALL_FILE), "utf8");
+			return JSON.parse(raw) as LastInstallAttempt;
+		} catch {
+			return null;
+		}
+	}
+
+	private saveLastInstallAttempt(attempt: LastInstallAttempt): void {
+		try {
+			writeFileSync(join(this.bridgeConfig.stateDir, LAST_INSTALL_FILE), JSON.stringify(attempt, null, 2), "utf8");
+		} catch {
+			/* best-effort */
 		}
 	}
 

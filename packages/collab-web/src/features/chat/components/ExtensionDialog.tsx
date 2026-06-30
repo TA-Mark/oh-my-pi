@@ -1,34 +1,48 @@
 /**
  * ExtensionDialog — modal renderer for omp's `extension_ui_request` frames.
  *
- * Four variants:
- *   - select  → keyboard-navigable option list (first option marked "Recommended")
- *   - confirm → yes / no
- *   - input   → single-line text
- *   - editor  → multi-line text with optional prefill
+ * Variants:
+ *   - select         → keyboard-navigable option list (first option marked "Recommended")
+ *   - confirm        → yes / no
+ *   - input          → single-line text
+ *   - editor         → multi-line text with optional prefill
+ *   - model-controls → rich /model surface (tabs: Models / Roles / Thinking / Queue / Toggles)
  *
  * Esc → cancelled response. Timeout is handled by RpcClient itself.
  */
 import { type KeyboardEvent, type ReactNode, useEffect, useRef, useState } from "react";
-import type { DialogResponsePayload } from "../../../lib/chat-client";
+import type { ChatClient, DialogResponsePayload } from "../../../lib/chat-client";
 import type { PendingDialog } from "../../../lib/client";
+import { ModelControlsBody } from "./ModelControlsBody";
 
 interface Props {
 	dialog: PendingDialog;
 	onRespond(payload: DialogResponsePayload): void;
+	client?: ChatClient | null;
 }
 
-export function ExtensionDialog({ dialog, onRespond }: Props): ReactNode {
+export function ExtensionDialog({ dialog, onRespond, client }: Props): ReactNode {
 	const cancel = (): void => onRespond({ cancelled: true });
+	const isWide = dialog.method === "model-controls";
 
 	return (
 		<div className="mc-dialog-overlay" onMouseDown={cancel}>
-			<div className="mc-dialog" role="dialog" aria-modal="true" onMouseDown={e => e.stopPropagation()}>
-				<div className="mc-dialog-title">{dialog.title}</div>
+			<div
+				className={`mc-dialog ${isWide ? "mc-dialog-wide-wrap" : ""}`}
+				role="dialog"
+				aria-modal="true"
+				onMouseDown={e => e.stopPropagation()}
+			>
+				{!isWide && <div className="mc-dialog-title">{dialog.title}</div>}
 				{dialog.method === "select" && <SelectBody dialog={dialog} onRespond={onRespond} />}
 				{dialog.method === "confirm" && <ConfirmBody dialog={dialog} onRespond={onRespond} />}
 				{dialog.method === "input" && <InputBody dialog={dialog} onRespond={onRespond} />}
 				{dialog.method === "editor" && <EditorBody dialog={dialog} onRespond={onRespond} />}
+				{dialog.method === "model-controls" && client ? (
+					<ModelControlsBody client={client} onClose={cancel} />
+				) : dialog.method === "model-controls" ? (
+					<div className="mc-dialog-empty">No active session — start a chat to configure the model.</div>
+				) : null}
 			</div>
 		</div>
 	);

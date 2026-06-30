@@ -168,104 +168,18 @@ export async function interceptSlashCommand(
 
 	switch (parsed.name) {
 
-		// ── Model (no args = TUI-only picker; with args = has handle, pass through) ──
+		// ── Model (no args = rich tabbed dialog; with args = pass through to OMP) ──
 		case "model":
 		case "models": {
 			if (parsed.args) return { intercepted: false }; // has handle for /model <id>
-			if (!client.sendGetAvailableModels) return { intercepted: false };
-			try {
-				const [models, rolesRes] = await Promise.all([
-					client.sendGetAvailableModels(),
-					import("../features/chat/api/chatApi").then(m => m.getModelRoles()).catch(() => ({ roles: {} as Record<string, string> })),
-				]);
-				if (models.length === 0) {
-					showSelect(client, "No models available — paste an API key in Providers first", ["OK"], () => {});
-					return { intercepted: true };
-				}
-
-				const snapshot = client.getSnapshot();
-				const curThinking = snapshot.state?.thinkingLevel ?? "off";
-				const extras = (snapshot as { sessionExtras?: Record<string, unknown> }).sessionExtras ?? {};
-
-				const options: string[] = [];
-				const actionMap = new Map<string, () => void>();
-
-				// ── Roles ──
-				const roleEntries = Object.entries(rolesRes.roles);
-				if (roleEntries.length > 0) {
-					options.push("── Roles ──");
-					for (const [role, modelStr] of roleEntries) {
-						const cleanStr = modelStr.split(":")[0]!;
-						const match = models.find(m => `${m.provider}/${m.id}` === cleanStr || m.id === cleanStr);
-						const label = `[${role.toUpperCase()}] ${match ? `${match.provider}/${match.displayName ?? match.id}` : modelStr}`;
-						options.push(label);
-						if (match) actionMap.set(label, () => client.sendSetModel?.(match.provider, match.id));
-					}
-				}
-
-				// ── All models ──
-				options.push("── Models ──");
-				for (const m of models) {
-					const opt = formatModelOption(m);
-					options.push(opt);
-					actionMap.set(opt, () => {
-						const p = parseModelOption(opt);
-						if (!p) return;
-						const match = models.find(x => x.provider === p.provider && (x.displayName === p.id || x.id === p.id));
-						if (match) client.sendSetModel?.(match.provider, match.id);
-					});
-				}
-
-				// ── Thinking level ──
-				options.push("── Thinking ──");
-				for (const lvl of ["off", "minimal", "low", "medium", "high", "xhigh"]) {
-					const active = curThinking === lvl ? " ●" : "";
-					const label = `Thinking: ${lvl}${active}`;
-					options.push(label);
-					actionMap.set(label, () => client.sendSetThinkingLevel?.(lvl));
-				}
-
-				// ── Queue behaviour ──
-				options.push("── Queue ──");
-				const steer = extras.steeringMode ?? "one-at-a-time";
-				const follow = extras.followUpMode ?? "one-at-a-time";
-				const interrupt = extras.interruptMode ?? "immediate";
-				for (const mode of ["all", "one-at-a-time"] as const) {
-					const activeS = steer === mode ? " ●" : "";
-					const label = `Steering: ${mode}${activeS}`;
-					options.push(label);
-					actionMap.set(label, () => client.sendSetSteeringMode?.(mode));
-				}
-				for (const mode of ["all", "one-at-a-time"] as const) {
-					const activeF = follow === mode ? " ●" : "";
-					const label = `Follow-up: ${mode}${activeF}`;
-					options.push(label);
-					actionMap.set(label, () => client.sendSetFollowUpMode?.(mode));
-				}
-				for (const mode of ["immediate", "wait"] as const) {
-					const activeI = interrupt === mode ? " ●" : "";
-					const label = `Interrupt: ${mode}${activeI}`;
-					options.push(label);
-					actionMap.set(label, () => client.sendSetInterruptMode?.(mode));
-				}
-
-				// ── Toggles ──
-				options.push("── Toggles ──");
-				const autoCompact = extras.autoCompactionEnabled ? "ON" : "OFF";
-				const toggleCompact = `Auto-compaction: ${autoCompact}`;
-				options.push(toggleCompact);
-				actionMap.set(toggleCompact, () => client.sendSetAutoCompaction?.(!extras.autoCompactionEnabled));
-
-				const toggleRetry = "Auto-retry: toggle";
-				options.push(toggleRetry);
-				actionMap.set(toggleRetry, () => client.sendSetAutoRetry?.(true));
-
-				showSelect(client, "Model & Settings", options, (value) => {
-					if (value.startsWith("──")) return;
-					const action = actionMap.get(value);
-					if (action) action();
-				});
-			} catch { return { intercepted: false }; }
+			if (!client.showSyntheticDialog) return { intercepted: false };
+			client.showSyntheticDialog(
+				{ id: nextDialogId(), method: "model-controls", title: "Model & Settings" },
+				() => {
+					// Controls dispatch updates directly via RPC. The dialog
+					// closes itself via Esc/Done; we don't act on the response.
+				},
+			);
 			return { intercepted: true };
 		}
 
@@ -434,9 +348,13 @@ export async function interceptSlashCommand(
 
 		// ── UI navigation (TUI-only) ────────────────────────────────────────
 		case "settings":
+			callbacks.onSidebarTab("settings");
+			return { intercepted: true };
 		case "setup":
+			callbacks.onSidebarTab("controls");
+			return { intercepted: true };
 		case "providers":
-			callbacks.onSidebarTab(parsed.name === "providers" ? "providers" : "controls");
+			callbacks.onSidebarTab("providers");
 			return { intercepted: true };
 
 		case "extensions":

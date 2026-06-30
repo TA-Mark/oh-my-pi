@@ -11,9 +11,7 @@
  * The planner is instructed via system prefix to only read, not write.
  */
 
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
-import { parse as parseYaml } from "./yaml-minimal";
+import { readConfig } from "./omp-config";
 
 export interface PlanModeState {
 	active: boolean;
@@ -55,26 +53,16 @@ export function clearSessionStates(sessionId: string): void {
 }
 
 /**
- * Read modelRoles from ~/.omp/agent/config.yml.
- * Returns the raw role→model-string map.
+ * Read modelRoles from ~/.omp/agent/config.yml via the shared omp-config layer
+ * (single source of truth — same file the omp CLI writes via `omp config set`).
  */
 export function readModelRoles(): Record<string, string> {
-	const home = process.env.HOME ?? process.env.USERPROFILE ?? "";
-	const configPath = join(
-		process.env.PI_CODING_AGENT_DIR ?? join(home, ".omp", "agent"),
-		"config.yml",
-	);
-	try {
-		const raw = readFileSync(configPath, "utf8");
-		const parsed = parseYaml(raw);
-		if (parsed && typeof parsed === "object" && "modelRoles" in parsed) {
-			const roles = (parsed as Record<string, unknown>).modelRoles;
-			if (roles && typeof roles === "object") {
-				return roles as Record<string, string>;
-			}
-		}
-	} catch { /* config not found or malformed */ }
-	return {};
+	const roles = readConfig().modelRoles ?? {};
+	const out: Record<string, string> = {};
+	for (const [k, v] of Object.entries(roles)) {
+		if (typeof v === "string") out[k] = v;
+	}
+	return out;
 }
 
 /**

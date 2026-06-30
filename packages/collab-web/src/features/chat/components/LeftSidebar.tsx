@@ -6,6 +6,7 @@ import type { ChatSession, DataSource } from "../types/chat";
 import { DataSourcesPanel } from "./DataSourcesPanel";
 import { ProviderSettings } from "./ProviderSettings";
 import { SessionList } from "./SessionList";
+import { SettingsPanel } from "./SettingsPanel";
 import { TodosPanel } from "./TodosPanel";
 import { UserControlsPanel } from "./UserControlsPanel";
 
@@ -27,11 +28,13 @@ interface Props {
 	onSessionDelete(id: string): void;
 	onSessionNew(): void;
 	onSourceRefresh(id: string): void;
+	onSessionRestart: ((id: string) => Promise<void>) | null;
 }
 
 const TABS: { id: SidebarTab; label: string }[] = [
 	{ id: "controls", label: "Controls" },
 	{ id: "providers", label: "Providers" },
+	{ id: "settings", label: "Settings" },
 	{ id: "todos", label: "Todos" },
 	{ id: "sessions", label: "Sessions" },
 ];
@@ -51,6 +54,7 @@ export function LeftSidebar(props: Props): ReactNode {
 		onSessionDelete,
 		onSessionNew,
 		onSourceRefresh,
+		onSessionRestart,
 	} = props;
 
 	return (
@@ -76,6 +80,14 @@ export function LeftSidebar(props: Props): ReactNode {
 			<div className="mc-sidebar-content" role="tabpanel">
 				{tab === "controls" && <UserControlsPanel client={client} snapshot={snapshot} />}
 				{tab === "providers" && <ProviderSettings client={client} />}
+				{tab === "settings" && (
+					<SettingsPanel
+						client={client}
+						snapshot={snapshot}
+						activeSessionId={activeSessionId}
+						onSessionRestart={onSessionRestart}
+					/>
+				)}
 				{tab === "todos" && <TodosPanel phases={snapshot?.todoPhases ?? []} />}
 				{tab === "sessions" && (
 					<SessionList

@@ -436,6 +436,66 @@
   cursor: pointer;
 }
 
+/* ---- launcher installer banner (auto-install first boot) ---- */
+.mc-launcher-installing {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 16px;
+  background: oklch(from var(--accent) l c h / 10%);
+  border-bottom: 1px solid var(--accent);
+  font-size: 12px;
+  color: var(--fg);
+  flex: none;
+}
+.mc-launcher-installing-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+}
+.mc-launcher-installing-pct {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-muted);
+  font-weight: 500;
+}
+.mc-launcher-installing-bar {
+  height: 4px;
+  background: oklch(from var(--accent) l c h / 18%);
+  border-radius: 2px;
+  overflow: hidden;
+}
+.mc-launcher-installing-fill {
+  height: 100%;
+  background: var(--accent);
+  transition: width 240ms ease-out;
+}
+.mc-launcher-installing-log {
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+  color: var(--fg-muted);
+  max-height: 64px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.mc-launcher-installing-log-line {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.mc-spinner {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 2px solid oklch(from var(--accent) l c h / 30%);
+  border-top-color: var(--accent);
+  animation: mc-spin 0.7s linear infinite;
+}
+@keyframes mc-spin { to { transform: rotate(360deg); } }
+
 /* ---- chat empty state ---- */
 .mc-empty {
   flex: 1;
@@ -649,6 +709,213 @@
   font: 10px / 1.4 var(--font-mono);
   color: var(--fg-faint);
   text-align: right;
+}
+
+/* ---- wide dialog (model-controls, settings) ---- */
+.mc-dialog-wide-wrap {
+  width: min(720px, calc(100vw - 32px));
+  padding: 0;
+  gap: 0;
+}
+
+.mc-dialog-wide {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 0;
+}
+
+.mc-dialog-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 8px 8px 0;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-inset);
+  border-radius: var(--radius) var(--radius) 0 0;
+}
+
+.mc-dialog-tab {
+  padding: 8px 14px;
+  font: 12px / 1.4 var(--font-sans);
+  font-weight: 500;
+  color: var(--fg-muted);
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+  border-radius: 0;
+}
+.mc-dialog-tab:hover { color: var(--fg); }
+.mc-dialog-tab[data-active="true"] {
+  color: var(--fg);
+  border-bottom-color: var(--accent);
+}
+.mc-dialog-tab-close {
+  margin-left: auto;
+  padding: 4px 10px;
+  font: 18px / 1 var(--font-sans);
+  color: var(--fg-faint);
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+.mc-dialog-tab-close:hover { color: var(--fg); }
+
+.mc-dialog-body {
+  padding: 0 16px;
+  min-height: 280px;
+  max-height: 56vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.mc-dialog-actions {
+  padding: 8px 16px 12px;
+}
+
+.mc-dialog-empty {
+  padding: 24px;
+  text-align: center;
+  font-size: 13px;
+  color: var(--fg-faint);
+}
+
+/* ---- model list (tab Models) ---- */
+.mc-model-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.mc-model-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.mc-model-group-head {
+  font: 600 10px / 1.6 var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--fg-faint);
+  padding: 4px 6px;
+}
+.mc-model-item {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 7px 10px;
+  text-align: left;
+  background: var(--bg-inset);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--fg);
+}
+.mc-model-item:hover { background: var(--bg-overlay); }
+.mc-model-item[data-active="true"] {
+  border-color: var(--accent);
+  background: oklch(from var(--accent) l c h / 12%);
+}
+.mc-model-name { flex: 1; font-weight: 500; }
+.mc-model-meta { font: 11px / 1.4 var(--font-mono); color: var(--fg-faint); }
+.mc-model-dot { color: var(--accent); font-size: 12px; }
+
+/* ---- role grid (tab Roles) ---- */
+.mc-role-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.mc-role-hint {
+  font: 11px / 1.6 var(--font-sans);
+  color: var(--fg-muted);
+  padding: 6px 0;
+}
+.mc-role-hint code { font: 11px / 1 var(--font-mono); padding: 1px 4px; background: var(--bg-inset); border-radius: 3px; }
+.mc-role-row {
+  display: grid;
+  grid-template-columns: 180px 1fr;
+  align-items: center;
+  gap: 12px;
+}
+.mc-role-label {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--fg-muted);
+}
+
+/* ---- queue / thinking grid ---- */
+.mc-queue-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.mc-segmented-wide { width: 100%; }
+
+/* ---- settings panel ---- */
+.mc-settings {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 4px;
+}
+.mc-settings-hint {
+  font-size: 11px;
+  color: var(--fg-faint);
+  line-height: 1.4;
+}
+.mc-settings-hint code {
+  font: 11px / 1 var(--font-mono);
+  padding: 1px 4px;
+  background: var(--bg-inset);
+  border-radius: 3px;
+}
+.mc-settings-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+}
+.mc-settings-section:last-of-type { border-bottom: none; }
+.mc-settings-row {
+  display: grid;
+  grid-template-columns: 110px 1fr;
+  gap: 10px;
+  align-items: center;
+}
+.mc-settings-control { display: flex; flex-direction: column; gap: 2px; }
+.mc-toggle-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+/* ---- toggles ---- */
+.mc-toggle-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.mc-toggle {
+  display: grid;
+  grid-template-columns: 18px 1fr;
+  grid-template-rows: auto auto;
+  gap: 2px 10px;
+  align-items: center;
+  cursor: pointer;
+  font-size: 13px;
+}
+.mc-toggle input { grid-row: 1 / 3; }
+.mc-toggle-hint {
+  grid-column: 2 / 3;
+  font: 11px / 1.4 var(--font-sans);
+  color: var(--fg-faint);
 }
 
 /* ---- status + widget panels ---- */

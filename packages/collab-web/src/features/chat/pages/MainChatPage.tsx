@@ -30,6 +30,7 @@ import {
 	listSessions,
 	refreshDataSource,
 	renameSession as renameSessionApi,
+	stopSession,
 } from "../api/chatApi";
 import { ChatComposer } from "../components/ChatComposer";
 import { ConnectionStatusBar } from "../components/ConnectionStatusBar";
@@ -112,6 +113,20 @@ export function MainChatPage({ onGoToLauncher }: Props): ReactNode {
 			});
 		},
 		[actions],
+	);
+
+	// ---- Restart session (after editing ~/.omp/agent/config.yml so omp re-reads) ----
+	// stop kills the omp child; activateSession respawns it, which re-reads config
+	// fresh on boot. Reuses the same session id + link so transcripts persist on
+	// disk (omp resumes via --resume sessionFile).
+	const handleRestartSession = useCallback(
+		async (sessionId: string) => {
+			const session = ui.sessions.find(s => s.id === sessionId);
+			if (!session) return;
+			await stopSession(sessionId).catch(() => {});
+			activateSession(sessionId, session.link);
+		},
+		[ui.sessions, activateSession],
 	);
 
 	// ---- Reconnect (when WS ended) ----
@@ -315,6 +330,7 @@ export function MainChatPage({ onGoToLauncher }: Props): ReactNode {
 					onSessionDelete={handleDeleteSession}
 					onSessionNew={handleNewSession}
 					onSourceRefresh={handleSourceRefresh}
+					onSessionRestart={handleRestartSession}
 				/>
 
 				{/* Chat area */}
@@ -387,7 +403,7 @@ export function MainChatPage({ onGoToLauncher }: Props): ReactNode {
 							<ChatComposer
 								client={client}
 								snapshot={snapshot}
-								launcherHealthy={healthGate.healthy}
+								launcherHealthy={healthGate.healthy && healthGate.status?.phase !== "installing"}
 								onGoToLauncher={onGoToLauncher}
 								interceptCallbacks={interceptCallbacks}
 							/>
@@ -405,7 +421,7 @@ export function MainChatPage({ onGoToLauncher }: Props): ReactNode {
 
 					{/* Extension UI dialog modal — overlay outside chat-area */}
 					{snapshot?.pendingDialog && (
-						<ExtensionDialog dialog={snapshot.pendingDialog} onRespond={handleDialogRespond} />
+						<ExtensionDialog dialog={snapshot.pendingDialog} onRespond={handleDialogRespond} client={client} />
 					)}
 
 					{/* Session selected but client not yet built */}

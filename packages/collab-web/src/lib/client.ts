@@ -80,7 +80,8 @@ export type PendingDialog =
 	| { id: string; method: "select"; title: string; options: string[]; timeout?: number }
 	| { id: string; method: "confirm"; title: string; message: string; timeout?: number }
 	| { id: string; method: "input"; title: string; placeholder?: string; timeout?: number }
-	| { id: string; method: "editor"; title: string; prefill?: string; promptStyle?: boolean };
+	| { id: string; method: "editor"; title: string; prefill?: string; promptStyle?: boolean }
+	| { id: string; method: "model-controls"; title: string };
 
 export interface StatusEntry {
 	key: string;

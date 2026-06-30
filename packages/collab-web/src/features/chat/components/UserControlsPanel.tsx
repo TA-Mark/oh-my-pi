@@ -12,6 +12,7 @@ import type { ChatClient } from "../../../lib/chat-client";
 import type { GuestSnapshot } from "../../../lib/client";
 import type { AvailableModel } from "../../../lib/rpc-client";
 import { getModelRoles } from "../api/chatApi";
+import { setConfigKey } from "../api/configApi";
 
 interface Props {
 	client: ChatClient | null;
@@ -349,9 +350,30 @@ export function UserControlsPanel({ client, snapshot }: Props): ReactNode {
 				</label>
 			</div>
 
-			<button type="button" className="mc-btn" onClick={() => void refresh()} style={{ marginTop: 10 }}>
-				⟳ Refresh models
-			</button>
+			<div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
+				<button type="button" className="mc-btn" onClick={() => void refresh()}>
+					⟳ Refresh models
+				</button>
+				<button
+					type="button"
+					className="mc-btn"
+					title="Persist current session values to ~/.omp/agent/config.yml (shared with omp CLI)"
+					onClick={async () => {
+						try {
+							const tasks: Array<Promise<unknown>> = [];
+							if (extras.steeringMode) tasks.push(setConfigKey("steeringMode", extras.steeringMode));
+							if (extras.followUpMode) tasks.push(setConfigKey("followUpMode", extras.followUpMode));
+							if (extras.interruptMode) tasks.push(setConfigKey("interruptMode", extras.interruptMode));
+							await Promise.all(tasks);
+							setError(null);
+						} catch (err) {
+							setError(err instanceof Error ? err.message : String(err));
+						}
+					}}
+				>
+					⤓ Save as default
+				</button>
+			</div>
 		</div>
 	);
 }

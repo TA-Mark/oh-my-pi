@@ -84,9 +84,17 @@ export interface ChatError {
 // Connection health (from Launcher)
 // ---------------------------------------------------------------------------
 
+export interface InstallProgress {
+	jobId: string;
+	percent: number;
+	message: string;
+	logTail?: string[];
+}
+
 export interface LauncherHealthStatus {
 	healthy: boolean;
 	phase: string;
 	endpoint: string | null;
 	checkedAt: string;
+	installProgress?: InstallProgress | null;
 }

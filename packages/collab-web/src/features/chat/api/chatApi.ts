@@ -66,6 +66,14 @@ export async function renameSession(id: string, name: string): Promise<void> {
 	await post(`/chat/sessions/${id}/rename`, { name });
 }
 
+export async function stopSession(id: string): Promise<{ ok: boolean }> {
+	return post<{ ok: boolean }>(`/chat/sessions/${id}/stop`);
+}
+
+export async function startSession(id: string): Promise<{ ok: boolean }> {
+	return post<{ ok: boolean }>(`/chat/sessions/${id}/start`);
+}
+
 // ---------------------------------------------------------------------------
 // Data sources
 // ---------------------------------------------------------------------------
@@ -209,6 +217,28 @@ export async function goalModeAction(
 
 export async function getModelRoles(): Promise<{ roles: Record<string, string> }> {
 	return get<{ roles: Record<string, string> }>("/chat/config/roles");
+}
+
+export async function setModelRole(role: string, model: string): Promise<{ ok: boolean; roles: Record<string, string> }> {
+	const res = await fetch(`${BASE}/chat/config/roles/${encodeURIComponent(role)}`, {
+		method: "PUT",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify({ model }),
+	});
+	if (!res.ok) {
+		const err = await res.json().catch(() => ({ code: "UNKNOWN", message: res.statusText }));
+		throw Object.assign(new Error(err.message ?? res.statusText), { code: err.code });
+	}
+	return res.json() as Promise<{ ok: boolean; roles: Record<string, string> }>;
+}
+
+export async function resetModelRole(role: string): Promise<{ ok: boolean; roles: Record<string, string> }> {
+	const res = await fetch(`${BASE}/chat/config/roles/${encodeURIComponent(role)}`, { method: "DELETE" });
+	if (!res.ok) {
+		const err = await res.json().catch(() => ({ code: "UNKNOWN", message: res.statusText }));
+		throw Object.assign(new Error(err.message ?? res.statusText), { code: err.code });
+	}
+	return res.json() as Promise<{ ok: boolean; roles: Record<string, string> }>;
 }
 
 // ---------------------------------------------------------------------------

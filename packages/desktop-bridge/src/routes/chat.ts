@@ -12,6 +12,7 @@
 import { randomBytes } from "node:crypto";
 import type { BridgeContext } from "../lib/context";
 import { errorResponse, jsonResponse } from "../lib/http";
+import { resetKey as resetConfigKey, setKey as setConfigKey } from "../lib/omp-config";
 import { buildGoalContinuation, buildPlanPromptPrefix, clearSessionStates, getGoalState, getPlanState, readModelRoles, setGoalState, setPlanState } from "../lib/plan-mode";
 import { PromptHistory } from "../lib/prompt-history";
 import { PROVIDER_CATALOG, type ProviderType } from "../lib/provider-catalog";
@@ -320,9 +321,34 @@ export async function handleChat(ctx: BridgeContext, req: Request, url: URL): Pr
 	}
 
 	// ─── OMP config (model roles, settings) ─────────────────────────────────
+	// modelRoles persist to ~/.omp/agent/config.yml — same store the omp CLI
+	// reads/writes via `omp config set modelRoles.<role>`.
 	if (p === "/api/v1/chat/config/roles" && req.method === "GET") {
 		const roles = readModelRoles();
 		return jsonResponse({ roles });
+	}
+	const roleMatch = /^\/api\/v1\/chat\/config\/roles\/([^/]+)$/.exec(p);
+	if (roleMatch && req.method === "PUT") {
+		const role = roleMatch[1]!;
+		const body = (await req.json().catch(() => null)) as { model?: unknown } | null;
+		if (!body || typeof body.model !== "string") {
+			return errorResponse("BAD_BODY", "expected JSON { model: 'provider/id' }", 400);
+		}
+		try {
+			await setConfigKey(`modelRoles.${role}`, body.model);
+			return jsonResponse({ ok: true, roles: readModelRoles() });
+		} catch (err) {
+			return errorResponse("CONFIG_WRITE_FAILED", err instanceof Error ? err.message : String(err), 400);
+		}
+	}
+	if (roleMatch && req.method === "DELETE") {
+		const role = roleMatch[1]!;
+		try {
+			await resetConfigKey(`modelRoles.${role}`);
+			return jsonResponse({ ok: true, roles: readModelRoles() });
+		} catch (err) {
+			return errorResponse("CONFIG_WRITE_FAILED", err instanceof Error ? err.message : String(err), 400);
+		}
 	}
 
 	// ─── Plan mode ──────────────────────────────────────────────────────────

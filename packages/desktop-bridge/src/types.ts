@@ -120,7 +120,7 @@ export type InstallerStreamEvent =
 
 // ─── Launcher ───────────────────────────────────────────────────────────────
 
-export type ServiceStatus = "stopped" | "starting" | "running" | "degraded" | "error" | "updating";
+export type ServiceStatus = "stopped" | "starting" | "running" | "degraded" | "error" | "updating" | "installing";
 
 export type LauncherPhase =
 	| "stopped"
@@ -129,7 +129,15 @@ export type LauncherPhase =
 	| "running_degraded"
 	| "error"
 	| "updating"
-	| "stopping";
+	| "stopping"
+	| "installing";
+
+export interface InstallProgress {
+	jobId: string;
+	percent: number;
+	message: string;
+	logTail?: string[];
+}
 
 export interface ResourceMetrics {
 	cpuPct: number;
@@ -146,6 +154,7 @@ export interface RuntimeStatusResponse {
 	metrics: ResourceMetrics | null;
 	version: string;
 	error: string | null;
+	installProgress?: InstallProgress | null;
 }
 
 export type UpdateChannel = "stable" | "beta" | "nightly";
@@ -187,7 +196,8 @@ export type LauncherStreamEvent =
 	| { type: "log"; line: LogLine }
 	| { type: "status_change"; status: ServiceStatus; phase: LauncherPhase }
 	| { type: "metrics"; metrics: ResourceMetrics }
-	| { type: "health"; healthy: boolean; error?: string };
+	| { type: "health"; healthy: boolean; error?: string }
+	| { type: "install_progress"; progress: InstallProgress };
 
 // ─── Chat ───────────────────────────────────────────────────────────────────
 
@@ -220,6 +230,40 @@ export interface RuntimeConfig {
 
 export interface RuntimeConfigResponse extends RuntimeConfig {
 	availableModels: string[];
+}
+
+// ─── OMP shared config (~/.omp/agent/config.yml) ───────────────────────────
+
+export type OmpThemeRef = string;
+export type OmpModelRoleKey = "default" | "smol" | "slow" | "plan" | "commit";
+export type OmpQueueMode = "one-at-a-time" | "all";
+export type OmpInterruptMode = "immediate" | "wait";
+export type OmpDiscoveryMode = "auto" | "manual";
+
+export interface OmpSearxng {
+	endpoint?: string;
+	token?: string;
+	basicUsername?: string;
+	basicPassword?: string;
+}
+
+/**
+ * Shape we read/write to `~/.omp/agent/config.yml`. All fields optional —
+ * missing keys fall through to omp's built-in defaults. Stays in sync with
+ * the public spec at https://omp.sh/docs/settings.
+ */
+export interface OmpConfig {
+	theme?: { dark?: OmpThemeRef; light?: OmpThemeRef };
+	modelRoles?: Partial<Record<OmpModelRoleKey, string>>;
+	steeringMode?: OmpQueueMode;
+	followUpMode?: OmpQueueMode;
+	interruptMode?: OmpInterruptMode;
+	tools?: { discoveryMode?: OmpDiscoveryMode };
+	debug?: { enabled?: boolean };
+	extensions?: string[];
+	skills?: Record<string, boolean>;
+	images?: { autoResize?: boolean };
+	searxng?: OmpSearxng;
 }
 
 // ─── Generic envelope ───────────────────────────────────────────────────────

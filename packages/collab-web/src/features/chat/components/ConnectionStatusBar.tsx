@@ -20,7 +20,10 @@ const PHASE_LABELS: Record<ConnectionPhase, string> = {
 };
 
 export function ConnectionStatusBar({ phase, health, statusEntries, isCompacting, onReconnect, onGoToLauncher }: Props): ReactNode {
-	const isUnhealthy = health !== null && !health.healthy;
+	// "installing" is a benign transient — runtime is being staged on first
+	// boot. Show a calm blue banner with progress instead of the red error.
+	const isInstalling = health?.phase === "installing" || (health?.installProgress != null && !health.installProgress.message.includes("ready"));
+	const isUnhealthy = health !== null && !health.healthy && !isInstalling;
 
 	const modeBanners: string[] = [];
 	if (isCompacting) modeBanners.push("COMPACTING");
@@ -32,11 +35,33 @@ export function ConnectionStatusBar({ phase, health, statusEntries, isCompacting
 
 	return (
 		<>
-			{/* Launcher health warning */}
+			{/* Installer progress (first boot) — blue, non-blocking */}
+			{isInstalling && health?.installProgress && (
+				<div className="mc-launcher-installing">
+					<div className="mc-launcher-installing-head">
+						<span className="mc-spinner" aria-hidden="true" />
+						<span>{health.installProgress.message}</span>
+						<span className="mc-launcher-installing-pct">{Math.round(health.installProgress.percent)}%</span>
+					</div>
+					<div className="mc-launcher-installing-bar">
+						<div className="mc-launcher-installing-fill" style={{ width: `${Math.max(2, Math.min(100, health.installProgress.percent))}%` }} />
+					</div>
+					{health.installProgress.logTail && health.installProgress.logTail.length > 0 && (
+						<div className="mc-launcher-installing-log">
+							{health.installProgress.logTail.slice(-4).map((line, i) => (
+								// biome-ignore lint/suspicious/noArrayIndexKey: log tail is ordered + ephemeral
+								<div key={i} className="mc-launcher-installing-log-line">{line}</div>
+							))}
+						</div>
+					)}
+				</div>
+			)}
+
+			{/* Launcher health warning (only after install failed / unrelated outage) */}
 			{isUnhealthy && (
 				<div className="mc-launcher-warn">
 					⚠ Runtime service is {health!.phase} — chat may be unavailable.
-					<button className="mc-launcher-warn-action" onClick={onGoToLauncher}>
+					<button className="mc-launcher-warn-action" type="button" onClick={onGoToLauncher}>
 						Go to Launcher →
 					</button>
 				</div>
@@ -54,14 +79,19 @@ export function ConnectionStatusBar({ phase, health, statusEntries, isCompacting
 				<span className="mc-conn-dot" data-phase={phase} />
 				<span className="mc-conn-label">{PHASE_LABELS[phase]}</span>
 
-				{health !== null && (
+				{health !== null && !isInstalling && (
 					<span className="mc-conn-health-badge" data-healthy={health.healthy ? "true" : "false"}>
 						{health.healthy ? "Runtime OK" : "Runtime ⚠"}
 					</span>
 				)}
+				{isInstalling && (
+					<span className="mc-conn-health-badge" data-healthy="installing">
+						Installing runtime…
+					</span>
+				)}
 
 				{(phase === "ended" || phase === "reconnecting") && (
-					<button className="mc-conn-reconnect-btn" onClick={onReconnect}>
+					<button className="mc-conn-reconnect-btn" type="button" onClick={onReconnect}>
 						Reconnect
 					</button>
 				)}

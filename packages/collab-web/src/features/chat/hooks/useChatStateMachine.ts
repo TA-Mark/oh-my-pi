@@ -12,7 +12,7 @@ import type { ChatError, ChatSession, DataSource, RuntimeConfig } from "../types
 // State
 // ---------------------------------------------------------------------------
 
-export type SidebarTab = "controls" | "providers" | "todos" | "sources" | "sessions";
+export type SidebarTab = "controls" | "providers" | "todos" | "sources" | "sessions" | "settings";
 
 export interface ChatUiState {
 	sidebarOpen: boolean;
