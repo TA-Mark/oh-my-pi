@@ -11,6 +11,7 @@ import { type ReactNode, useCallback, useEffect, useMemo, useState } from "react
 import type { ChatClient } from "../../../lib/chat-client";
 import type { GuestSnapshot } from "../../../lib/client";
 import type { AvailableModel } from "../../../lib/rpc-client";
+import { getModelRoles } from "../api/chatApi";
 
 interface Props {
 	client: ChatClient | null;
@@ -35,10 +36,25 @@ function fmtContext(model: AvailableModel): string | null {
 	return `${ctx} ctx`;
 }
 
+const ROLE_LABELS: Record<string, string> = {
+	default: "DEFAULT",
+	smol: "SMOL (Fast)",
+	slow: "SLOW (Thinking)",
+	plan: "PLAN (Architect)",
+	commit: "COMMIT",
+	task: "TASK (Subtask)",
+	advisor: "ADVISOR",
+	vision: "VISION",
+	designer: "DESIGNER",
+};
+const DEFAULT_CYCLE_ORDER = ["smol", "default", "slow"];
+
 export function UserControlsPanel({ client, snapshot }: Props): ReactNode {
 	const [models, setModels] = useState<AvailableModel[] | null>(null);
 	const [loading, setLoading] = useState(false);
 	const [error, setError] = useState<string | null>(null);
+	const [roles, setRoles] = useState<Record<string, string>>({});
+	const [activeRole, setActiveRole] = useState<string>("default");
 
 	const state = snapshot?.state;
 	const currentModel = state?.model;
@@ -49,8 +65,12 @@ export function UserControlsPanel({ client, snapshot }: Props): ReactNode {
 		setLoading(true);
 		setError(null);
 		try {
-			const list = await client.sendGetAvailableModels();
+			const [list, rolesRes] = await Promise.all([
+				client.sendGetAvailableModels(),
+				getModelRoles().catch(() => ({ roles: {} })),
+			]);
 			setModels(list);
+			setRoles(rolesRes.roles);
 		} catch (err) {
 			setError(err instanceof Error ? err.message : String(err));
 		} finally {
@@ -61,6 +81,43 @@ export function UserControlsPanel({ client, snapshot }: Props): ReactNode {
 	useEffect(() => {
 		void refresh();
 	}, [refresh]);
+
+	const configuredRoles = useMemo(() => {
+		if (!models) return [] as Array<{ role: string; label: string; modelStr: string; model: AvailableModel | null }>;
+		return Object.entries(roles).map(([role, modelStr]) => {
+			const match = models.find(m =>
+				`${m.provider}/${m.id}` === modelStr.split(":")[0] ||
+				m.id === modelStr.split(":")[0]
+			);
+			return { role, label: ROLE_LABELS[role] ?? role.toUpperCase(), modelStr, model: match ?? null };
+		});
+	}, [roles, models]);
+
+	const handleSetRoleModel = useCallback(
+		(role: string, provider: string, modelId: string) => {
+			client?.sendSetModel?.(provider, modelId);
+			setActiveRole(role);
+		},
+		[client],
+	);
+
+	const handleCycleRole = useCallback(() => {
+		if (!models || configuredRoles.length === 0) return;
+		const cycleOrder = DEFAULT_CYCLE_ORDER.filter(r => roles[r]);
+		if (cycleOrder.length === 0) return;
+		const currentIdx = cycleOrder.indexOf(activeRole);
+		const nextIdx = (currentIdx + 1) % cycleOrder.length;
+		const nextRole = cycleOrder[nextIdx]!;
+		const modelStr = roles[nextRole];
+		if (!modelStr) return;
+		const match = models.find(m =>
+			`${m.provider}/${m.id}` === modelStr.split(":")[0] || m.id === modelStr.split(":")[0]
+		);
+		if (match) {
+			client?.sendSetModel?.(match.provider, match.id);
+			setActiveRole(nextRole);
+		}
+	}, [models, configuredRoles, roles, activeRole, client]);
 
 	const groupedModels = useMemo(() => {
 		if (!models) return [] as Array<{ provider: string; items: AvailableModel[] }>;
@@ -125,6 +182,35 @@ export function UserControlsPanel({ client, snapshot }: Props): ReactNode {
 				<div className="mc-providers-error" role="alert">
 					{error}
 				</div>
+			)}
+
+			{/* Role cycling — mirrors OMP TUI Ctrl+P */}
+			{configuredRoles.length > 0 && (
+				<>
+					<div className="mc-control-row">
+						<span className="mc-control-label">Role</span>
+						<div className="mc-segmented">
+							{configuredRoles.map(r => (
+								<button
+									key={r.role}
+									type="button"
+									className="mc-segmented-btn"
+									data-active={activeRole === r.role ? "true" : undefined}
+									onClick={() => {
+										if (r.model) handleSetRoleModel(r.role, r.model.provider, r.model.id);
+									}}
+									disabled={!r.model}
+									title={r.model ? `${r.model.provider}/${r.model.id}` : `${r.modelStr} (not available)`}
+								>
+									{r.label}
+								</button>
+							))}
+						</div>
+					</div>
+					<div style={{ fontSize: 10, color: "var(--fg-faint)", marginBottom: 6 }}>
+						Configure roles in <code>~/.omp/agent/config.yml</code> → <code>modelRoles</code>
+					</div>
+				</>
 			)}
 
 			{/* Model picker — grouped select */}

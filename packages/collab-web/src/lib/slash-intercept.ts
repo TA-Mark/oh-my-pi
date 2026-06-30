@@ -174,8 +174,45 @@ export async function interceptSlashCommand(
 			if (parsed.args) return { intercepted: false }; // has handle for /model <id>
 			if (!client.sendGetAvailableModels) return { intercepted: false };
 			try {
-				const models = await client.sendGetAvailableModels();
-				selectModel(client, models, "Select model");
+				const [models, rolesRes] = await Promise.all([
+					client.sendGetAvailableModels(),
+					import("../features/chat/api/chatApi").then(m => m.getModelRoles()).catch(() => ({ roles: {} as Record<string, string> })),
+				]);
+				if (models.length === 0) {
+					showSelect(client, "No models available — paste an API key in Providers first", ["OK"], () => {});
+					return { intercepted: true };
+				}
+				const roleEntries = Object.entries(rolesRes.roles);
+				const options: string[] = [];
+				const roleMap = new Map<string, { provider: string; id: string }>();
+				if (roleEntries.length > 0) {
+					for (const [role, modelStr] of roleEntries) {
+						const cleanStr = modelStr.split(":")[0]!;
+						const match = models.find(m => `${m.provider}/${m.id}` === cleanStr || m.id === cleanStr);
+						const label = `[${(role).toUpperCase()}] ${match ? `${match.provider}/${match.displayName ?? match.id}` : modelStr}`;
+						options.push(label);
+						if (match) roleMap.set(label, { provider: match.provider, id: match.id });
+					}
+					options.push("── All models ──");
+				}
+				for (const m of models) {
+					const opt = formatModelOption(m);
+					options.push(opt);
+				}
+				showSelect(client, "Select model (roles at top)", options, (value) => {
+					if (value === "── All models ──") return;
+					const roleMatch = roleMap.get(value);
+					if (roleMatch) {
+						client.sendSetModel?.(roleMatch.provider, roleMatch.id);
+						return;
+					}
+					const parsed = parseModelOption(value);
+					if (!parsed) return;
+					const match = models.find(m =>
+						m.provider === parsed.provider && (m.displayName === parsed.id || m.id === parsed.id)
+					);
+					if (match) client.sendSetModel?.(match.provider, match.id);
+				});
 			} catch { return { intercepted: false }; }
 			return { intercepted: true };
 		}
