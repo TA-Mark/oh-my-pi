@@ -182,36 +182,88 @@ export async function interceptSlashCommand(
 					showSelect(client, "No models available — paste an API key in Providers first", ["OK"], () => {});
 					return { intercepted: true };
 				}
-				const roleEntries = Object.entries(rolesRes.roles);
+
+				const snapshot = client.getSnapshot();
+				const curThinking = snapshot.state?.thinkingLevel ?? "off";
+				const extras = (snapshot as { sessionExtras?: Record<string, unknown> }).sessionExtras ?? {};
+
 				const options: string[] = [];
-				const roleMap = new Map<string, { provider: string; id: string }>();
+				const actionMap = new Map<string, () => void>();
+
+				// ── Roles ──
+				const roleEntries = Object.entries(rolesRes.roles);
 				if (roleEntries.length > 0) {
+					options.push("── Roles ──");
 					for (const [role, modelStr] of roleEntries) {
 						const cleanStr = modelStr.split(":")[0]!;
 						const match = models.find(m => `${m.provider}/${m.id}` === cleanStr || m.id === cleanStr);
-						const label = `[${(role).toUpperCase()}] ${match ? `${match.provider}/${match.displayName ?? match.id}` : modelStr}`;
+						const label = `[${role.toUpperCase()}] ${match ? `${match.provider}/${match.displayName ?? match.id}` : modelStr}`;
 						options.push(label);
-						if (match) roleMap.set(label, { provider: match.provider, id: match.id });
+						if (match) actionMap.set(label, () => client.sendSetModel?.(match.provider, match.id));
 					}
-					options.push("── All models ──");
 				}
+
+				// ── All models ──
+				options.push("── Models ──");
 				for (const m of models) {
 					const opt = formatModelOption(m);
 					options.push(opt);
+					actionMap.set(opt, () => {
+						const p = parseModelOption(opt);
+						if (!p) return;
+						const match = models.find(x => x.provider === p.provider && (x.displayName === p.id || x.id === p.id));
+						if (match) client.sendSetModel?.(match.provider, match.id);
+					});
 				}
-				showSelect(client, "Select model (roles at top)", options, (value) => {
-					if (value === "── All models ──") return;
-					const roleMatch = roleMap.get(value);
-					if (roleMatch) {
-						client.sendSetModel?.(roleMatch.provider, roleMatch.id);
-						return;
-					}
-					const parsed = parseModelOption(value);
-					if (!parsed) return;
-					const match = models.find(m =>
-						m.provider === parsed.provider && (m.displayName === parsed.id || m.id === parsed.id)
-					);
-					if (match) client.sendSetModel?.(match.provider, match.id);
+
+				// ── Thinking level ──
+				options.push("── Thinking ──");
+				for (const lvl of ["off", "minimal", "low", "medium", "high", "xhigh"]) {
+					const active = curThinking === lvl ? " ●" : "";
+					const label = `Thinking: ${lvl}${active}`;
+					options.push(label);
+					actionMap.set(label, () => client.sendSetThinkingLevel?.(lvl));
+				}
+
+				// ── Queue behaviour ──
+				options.push("── Queue ──");
+				const steer = extras.steeringMode ?? "one-at-a-time";
+				const follow = extras.followUpMode ?? "one-at-a-time";
+				const interrupt = extras.interruptMode ?? "immediate";
+				for (const mode of ["all", "one-at-a-time"] as const) {
+					const activeS = steer === mode ? " ●" : "";
+					const label = `Steering: ${mode}${activeS}`;
+					options.push(label);
+					actionMap.set(label, () => client.sendSetSteeringMode?.(mode));
+				}
+				for (const mode of ["all", "one-at-a-time"] as const) {
+					const activeF = follow === mode ? " ●" : "";
+					const label = `Follow-up: ${mode}${activeF}`;
+					options.push(label);
+					actionMap.set(label, () => client.sendSetFollowUpMode?.(mode));
+				}
+				for (const mode of ["immediate", "wait"] as const) {
+					const activeI = interrupt === mode ? " ●" : "";
+					const label = `Interrupt: ${mode}${activeI}`;
+					options.push(label);
+					actionMap.set(label, () => client.sendSetInterruptMode?.(mode));
+				}
+
+				// ── Toggles ──
+				options.push("── Toggles ──");
+				const autoCompact = extras.autoCompactionEnabled ? "ON" : "OFF";
+				const toggleCompact = `Auto-compaction: ${autoCompact}`;
+				options.push(toggleCompact);
+				actionMap.set(toggleCompact, () => client.sendSetAutoCompaction?.(!extras.autoCompactionEnabled));
+
+				const toggleRetry = "Auto-retry: toggle";
+				options.push(toggleRetry);
+				actionMap.set(toggleRetry, () => client.sendSetAutoRetry?.(true));
+
+				showSelect(client, "Model & Settings", options, (value) => {
+					if (value.startsWith("──")) return;
+					const action = actionMap.get(value);
+					if (action) action();
 				});
 			} catch { return { intercepted: false }; }
 			return { intercepted: true };

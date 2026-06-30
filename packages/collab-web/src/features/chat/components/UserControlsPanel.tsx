@@ -82,16 +82,30 @@ export function UserControlsPanel({ client, snapshot }: Props): ReactNode {
 		void refresh();
 	}, [refresh]);
 
-	const configuredRoles = useMemo(() => {
+	const displayRoles = useMemo(() => {
 		if (!models) return [] as Array<{ role: string; label: string; modelStr: string; model: AvailableModel | null }>;
-		return Object.entries(roles).map(([role, modelStr]) => {
-			const match = models.find(m =>
-				`${m.provider}/${m.id}` === modelStr.split(":")[0] ||
-				m.id === modelStr.split(":")[0]
-			);
-			return { role, label: ROLE_LABELS[role] ?? role.toUpperCase(), modelStr, model: match ?? null };
-		});
-	}, [roles, models]);
+		const hasConfig = Object.keys(roles).length > 0;
+		if (hasConfig) {
+			return Object.entries(roles).map(([role, modelStr]) => {
+				const cleanStr = modelStr.split(":")[0]!;
+				const match = models.find(m =>
+					`${m.provider}/${m.id}` === cleanStr || m.id === cleanStr
+				);
+				return { role, label: ROLE_LABELS[role] ?? role.toUpperCase(), modelStr, model: match ?? null };
+			});
+		}
+		if (currentModel) {
+			return DEFAULT_CYCLE_ORDER.map(role => ({
+				role,
+				label: ROLE_LABELS[role] ?? role.toUpperCase(),
+				modelStr: role === "default" ? `${currentModel.provider}/${currentModel.id}` : "",
+				model: role === "default" && models.length > 0
+					? models.find(m => m.provider === currentModel.provider && m.id === currentModel.id) ?? null
+					: null,
+			}));
+		}
+		return [];
+	}, [roles, models, currentModel]);
 
 	const handleSetRoleModel = useCallback(
 		(role: string, provider: string, modelId: string) => {
@@ -102,22 +116,16 @@ export function UserControlsPanel({ client, snapshot }: Props): ReactNode {
 	);
 
 	const handleCycleRole = useCallback(() => {
-		if (!models || configuredRoles.length === 0) return;
-		const cycleOrder = DEFAULT_CYCLE_ORDER.filter(r => roles[r]);
-		if (cycleOrder.length === 0) return;
-		const currentIdx = cycleOrder.indexOf(activeRole);
-		const nextIdx = (currentIdx + 1) % cycleOrder.length;
-		const nextRole = cycleOrder[nextIdx]!;
-		const modelStr = roles[nextRole];
-		if (!modelStr) return;
-		const match = models.find(m =>
-			`${m.provider}/${m.id}` === modelStr.split(":")[0] || m.id === modelStr.split(":")[0]
-		);
-		if (match) {
-			client?.sendSetModel?.(match.provider, match.id);
-			setActiveRole(nextRole);
+		const available = displayRoles.filter(r => r.model);
+		if (available.length === 0) return;
+		const currentIdx = available.findIndex(r => r.role === activeRole);
+		const nextIdx = (currentIdx + 1) % available.length;
+		const next = available[nextIdx]!;
+		if (next.model) {
+			client?.sendSetModel?.(next.model.provider, next.model.id);
+			setActiveRole(next.role);
 		}
-	}, [models, configuredRoles, roles, activeRole, client]);
+	}, [displayRoles, activeRole, client]);
 
 	const groupedModels = useMemo(() => {
 		if (!models) return [] as Array<{ provider: string; items: AvailableModel[] }>;
@@ -185,32 +193,27 @@ export function UserControlsPanel({ client, snapshot }: Props): ReactNode {
 			)}
 
 			{/* Role cycling — mirrors OMP TUI Ctrl+P */}
-			{configuredRoles.length > 0 && (
-				<>
-					<div className="mc-control-row">
-						<span className="mc-control-label">Role</span>
-						<div className="mc-segmented">
-							{configuredRoles.map(r => (
-								<button
-									key={r.role}
-									type="button"
-									className="mc-segmented-btn"
-									data-active={activeRole === r.role ? "true" : undefined}
-									onClick={() => {
-										if (r.model) handleSetRoleModel(r.role, r.model.provider, r.model.id);
-									}}
-									disabled={!r.model}
-									title={r.model ? `${r.model.provider}/${r.model.id}` : `${r.modelStr} (not available)`}
-								>
-									{r.label}
-								</button>
-							))}
-						</div>
+			{displayRoles.length > 0 && (
+				<div className="mc-control-row">
+					<span className="mc-control-label">Role</span>
+					<div className="mc-segmented">
+						{displayRoles.map(r => (
+							<button
+								key={r.role}
+								type="button"
+								className="mc-segmented-btn"
+								data-active={activeRole === r.role ? "true" : undefined}
+								onClick={() => {
+									if (r.model) handleSetRoleModel(r.role, r.model.provider, r.model.id);
+								}}
+								disabled={!r.model}
+								title={r.model ? `${r.model.provider}/${r.model.id}` : r.modelStr ? `${r.modelStr} (not available)` : `Not configured — add modelRoles.${r.role} to config.yml`}
+							>
+								{r.label}
+							</button>
+						))}
 					</div>
-					<div style={{ fontSize: 10, color: "var(--fg-faint)", marginBottom: 6 }}>
-						Configure roles in <code>~/.omp/agent/config.yml</code> → <code>modelRoles</code>
-					</div>
-				</>
+				</div>
 			)}
 
 			{/* Model picker — grouped select */}
