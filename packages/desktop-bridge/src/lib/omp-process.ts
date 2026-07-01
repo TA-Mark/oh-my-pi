@@ -1,11 +1,4 @@
 /**
- * @deprecated (Phase 5A, marked 2026-07-01) — superseded by {@link OmpPtyProcess}.
- *
- * The RPC transport is scheduled for removal in Phase 5B; wire new consumers
- * to `OmpPtyProcess` instead. Rationale, plan, and rollback plan live in
- * `.claude/plans/keen-bouncing-otter.md`.
- *
- * ─── original description ──────────────────────────────────────────────────
  * OmpProcess — wraps a single `omp --mode rpc-ui` child process.
  *
  * Protocol (RFC: packages/coding-agent/src/modes/rpc/rpc-types.ts):
@@ -34,14 +27,6 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { killTree } from "./process";
 
-// A single NDJSON line should never realistically exceed this. If stdout grows
-// past it without a newline, the stream is corrupt or flooding — drop the buffer
-// to protect the bridge from OOM rather than accumulating without bound.
-const MAX_STDOUT_LINE_BYTES = 32 * 1024 * 1024; // 32 MiB
-// stderr isn't line-structured the same way; cap lower and truncate the unfinished
-// tail rather than dropping everything, so partial diagnostics still surface.
-const MAX_STDERR_BYTES = 4 * 1024 * 1024; // 4 MiB
-
 export interface OmpSpawnOpts {
 	/** Workspace cwd for the agent. Defaults to process.cwd(). */
 	cwd?: string;
@@ -69,7 +54,6 @@ export class OmpProcess {
 	private child: ChildProcessWithoutNullStreams | null = null;
 	private bufStdout = "";
 	private bufStderr = "";
-	private stdoutOverflows = 0;
 	private readonly frameListeners = new Set<FrameListener>();
 	private readonly logListeners = new Set<LogListener>();
 	private readonly exitListeners = new Set<ExitListener>();
@@ -107,33 +91,19 @@ export class OmpProcess {
 		child.stderr.on("data", (b: Buffer) => this.consumeStderr(b));
 		child.on("exit", (code, signal) => {
 			this.flush();
-			this.notifyExit(code, signal);
+			this.exitedWith = { code, signal };
+			this.child = null;
+			for (const l of this.exitListeners) {
+				try {
+					l(code, signal);
+				} catch {
+					/* ignore */
+				}
+			}
 		});
 		child.on("error", err => {
 			for (const l of this.logListeners) l(`spawn error: ${err.message}`, "stderr");
-			// A spawn failure ("error") may fire without a matching "exit" (the child
-			// never started). Surface it as an exit so the session manager can run its
-			// respawn/backoff logic instead of leaving the session wedged.
-			this.notifyExit(null, null);
 		});
-	}
-
-	/**
-	 * Mark the process as exited and notify listeners exactly once. Guards against
-	 * the "error" + "exit" double-fire: whichever lands first wins, the second is
-	 * a no-op (exitedWith is already set).
-	 */
-	private notifyExit(code: number | null, signal: NodeJS.Signals | null): void {
-		if (this.exitedWith !== null) return;
-		this.exitedWith = { code, signal };
-		this.child = null;
-		for (const l of this.exitListeners) {
-			try {
-				l(code, signal);
-			} catch {
-				/* ignore */
-			}
-		}
 	}
 
 	send(frame: unknown): boolean {
@@ -176,22 +146,6 @@ export class OmpProcess {
 			this.handleStdoutLine(line);
 			idx = this.bufStdout.indexOf("\n");
 		}
-		// No newline yet and the buffer has blown past the cap: the stream is
-		// corrupt or flooding. Drop it to protect the bridge from OOM. The
-		// remainder of the in-flight line is lost (it would fail to parse anyway).
-		if (this.bufStdout.length > MAX_STDOUT_LINE_BYTES) {
-			this.stdoutOverflows++;
-			for (const l of this.logListeners) {
-				l(`stdout line exceeded ${MAX_STDOUT_LINE_BYTES} bytes without newline — dropping buffer`, "stderr");
-			}
-			this.bufStdout = "";
-			// Repeated overflow means the child is wedged emitting garbage; kill it
-			// so the session manager's exit handler can decide whether to respawn.
-			if (this.stdoutOverflows >= 3) {
-				for (const l of this.logListeners) l("stdout overflowed repeatedly — terminating omp child", "stderr");
-				void this.stop();
-			}
-		}
 	}
 
 	private consumeStderr(chunk: Buffer): void {
@@ -202,11 +156,6 @@ export class OmpProcess {
 			this.bufStderr = this.bufStderr.slice(idx + 1);
 			for (const l of this.logListeners) l(line, "stderr");
 			idx = this.bufStderr.indexOf("\n");
-		}
-		// Cap the unfinished tail so a newline-less stderr flood can't grow without
-		// bound. Keep the most recent slice — the latest diagnostics matter most.
-		if (this.bufStderr.length > MAX_STDERR_BYTES) {
-			this.bufStderr = this.bufStderr.slice(this.bufStderr.length - MAX_STDERR_BYTES);
 		}
 	}
 

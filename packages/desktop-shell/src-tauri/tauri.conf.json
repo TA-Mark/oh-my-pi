@@ -35,8 +35,8 @@
 	"bundle": {
 		"active": true,
 		"targets": ["nsis", "msi", "deb", "appimage", "dmg"],
-		"externalBin": ["binaries/bun"],
-		"resources": ["resources/native/*", "resources/bridge/*"],
+		"externalBin": ["binaries/omp-bridge", "binaries/bun"],
+		"resources": ["resources/native/*"],
 		"icon": [
 			"icons/32x32.png",
 			"icons/128x128.png",

@@ -38,11 +38,7 @@ const CACHE_DIR = join(SHELL_DIR, ".dep-cache");
 
 // Pin known-good versions so builds are reproducible across machines.
 const BUN_VERSION = "1.3.14";
-// Must match the workspace catalog version in root package.json (currently
-// 16.1.20). The compiled bridge exe embeds a version sentinel
-// (`__piNativesV<n>`) and refuses to load a .node with a different one.
-// Bump both together when upgrading pi-natives.
-const PI_NATIVES_NPM_VERSION = "16.1.20";
+const PI_NATIVES_NPM_VERSION = "16.2.2";
 
 interface PlatformAsset {
 	bun: { url: string; archiveExePath: string };

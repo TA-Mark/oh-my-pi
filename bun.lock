@@ -124,7 +124,6 @@
       "version": "15.11.7",
       "dependencies": {
         "@oh-my-pi/pi-wire": "catalog:",
-        "ghostty-web": "catalog:",
         "lucide-react": "catalog:",
         "marked": "catalog:",
         "react": "catalog:",
@@ -141,10 +140,6 @@
       "version": "0.1.0",
       "bin": {
         "omp-desktop-bridge": "./src/server.ts",
-      },
-      "dependencies": {
-        "@oh-my-pi/pi-natives": "catalog:",
-        "@oh-my-pi/pi-wire": "catalog:",
       },
       "devDependencies": {
         "@types/bun": "catalog:",

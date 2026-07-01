@@ -13,15 +13,7 @@ import { randomBytes } from "node:crypto";
 import type { BridgeContext } from "../lib/context";
 import { errorResponse, jsonResponse } from "../lib/http";
 import { resetKey as resetConfigKey, setKey as setConfigKey } from "../lib/omp-config";
-import {
-	buildGoalContinuation,
-	buildPlanPromptPrefix,
-	getGoalState,
-	getPlanState,
-	readModelRoles,
-	setGoalState,
-	setPlanState,
-} from "../lib/plan-mode";
+import { buildGoalContinuation, buildPlanPromptPrefix, clearSessionStates, getGoalState, getPlanState, readModelRoles, setGoalState, setPlanState } from "../lib/plan-mode";
 import { PromptHistory } from "../lib/prompt-history";
 import { PROVIDER_CATALOG, type ProviderType } from "../lib/provider-catalog";
 import { getKernel } from "../lib/python-kernel";
@@ -202,112 +194,6 @@ export async function handleChat(ctx: BridgeContext, req: Request, url: URL): Pr
 	if (stopMatch && req.method === "POST") {
 		const ok = await ctx.omp.stop(stopMatch[1]!);
 		return jsonResponse({ ok });
-	}
-
-	// ─── PTY (TUI) supervisor — Phase 0+ ─────────────────────────────────────
-	// Parallel surface to /start above for the PTY-backed omp TUI. We keep
-	// both alive during the panel-by-panel migration; the React client picks
-	// which transport to use per feature flag.
-	const startPtyMatch = /^\/api\/v1\/chat\/sessions\/([^/]+)\/start-pty$/.exec(p);
-	if (startPtyMatch && req.method === "POST") {
-		const id = startPtyMatch[1]!;
-		const found = sessions.get().sessions.find(x => x.id === id);
-		if (!found) return errorResponse("SESSION_NOT_FOUND", "no such session", 404);
-		// Reuse existing rpc-era binding (`SessionBindingStore`) when available so
-		// a session created under RPC can resume under PTY without losing transcript.
-		const binding = ctx.ompPty.bindings.get(id);
-		const body = (await req.json().catch(() => ({}))) as { cols?: number; rows?: number };
-		const cols = Number.isInteger(body.cols) && body.cols! > 0 ? body.cols : undefined;
-		const rows = Number.isInteger(body.rows) && body.rows! > 0 ? body.rows : undefined;
-		const extraArgs = binding ? ["--resume", binding.sessionFile] : undefined;
-		const envFromKeys = ctx.apiKeys.all();
-		try {
-			const snap = await ctx.ompPty.start(id, {
-				cwd: ctx.config.installDir,
-				...(extraArgs ? { extraArgs } : {}),
-				...(Object.keys(envFromKeys).length > 0 ? { env: envFromKeys } : {}),
-				...(cols ? { cols } : {}),
-				...(rows ? { rows } : {}),
-			});
-			return jsonResponse({
-				ok: true,
-				session: snap,
-				resumed: binding ? binding.sessionFile : null,
-				relay: ctx.relay.url,
-			});
-		} catch (err) {
-			return errorResponse("OMP_PTY_SPAWN_FAILED", err instanceof Error ? err.message : String(err), 502);
-		}
-	}
-
-	const stopPtyMatch = /^\/api\/v1\/chat\/sessions\/([^/]+)\/stop-pty$/.exec(p);
-	if (stopPtyMatch && req.method === "POST") {
-		const ok = await ctx.ompPty.stop(stopPtyMatch[1]!);
-		return jsonResponse({ ok });
-	}
-
-	const statePtyMatch = /^\/api\/v1\/chat\/sessions\/([^/]+)\/state-pty$/.exec(p);
-	if (statePtyMatch && req.method === "GET") {
-		const snap = ctx.ompPty.get(statePtyMatch[1]!);
-		if (!snap) return errorResponse("SESSION_NOT_STARTED", "pty session not running", 404);
-		return jsonResponse(snap);
-	}
-
-	// Collab link — read-only view link scraped from the TUI's `/collab start`
-	// output. Manager fires the command automatically shortly after the PTY
-	// boots (Phase 0.3); the link becomes available once OMP prints it. React
-	// polls until `ready: true`, then hands the link to its GuestClient.
-	const collabLinkMatch = /^\/api\/v1\/chat\/sessions\/([^/]+)\/collab-link$/.exec(p);
-	if (collabLinkMatch && req.method === "GET") {
-		const id = collabLinkMatch[1]!;
-		if (!ctx.ompPty.get(id)) {
-			return errorResponse("SESSION_NOT_STARTED", "pty session not running", 404);
-		}
-		const link = ctx.ompPty.getCollabLink(id);
-		return jsonResponse({ link, ready: link !== null });
-	}
-
-	// Input synthesis: REST companion to the PTY WebSocket. Lets the React
-	// composer/dialogs push keystrokes without subscribing to the byte stream
-	// (subscribing also works; this is just more ergonomic for one-shots).
-	const inputMatch = /^\/api\/v1\/chat\/sessions\/([^/]+)\/input$/.exec(p);
-	if (inputMatch && req.method === "POST") {
-		const id = inputMatch[1]!;
-		const body = (await req.json().catch(() => ({}))) as {
-			kind?: "text" | "keys" | "slash" | "resize";
-			data?: string;
-			cols?: number;
-			rows?: number;
-			args?: string;
-		};
-		const kind = body.kind ?? "text";
-		if (kind === "resize") {
-			const cols = Number(body.cols);
-			const rows = Number(body.rows);
-			if (!Number.isInteger(cols) || !Number.isInteger(rows) || cols <= 0 || rows <= 0) {
-				return errorResponse("BAD_REQUEST", "cols and rows must be positive integers", 400);
-			}
-			const ok = ctx.ompPty.resize(id, cols, rows);
-			if (!ok) return errorResponse("SESSION_NOT_STARTED", "pty session not running", 404);
-			return jsonResponse({ ok: true });
-		}
-		let payload: string;
-		if (kind === "slash") {
-			const name = typeof body.data === "string" ? body.data.trim() : "";
-			if (!name) return errorResponse("BAD_REQUEST", "slash command name required in data", 400);
-			const args = typeof body.args === "string" && body.args.length > 0 ? ` ${body.args}` : "";
-			payload = `/${name}${args}\r`;
-		} else if (kind === "keys" || kind === "text") {
-			if (typeof body.data !== "string") {
-				return errorResponse("BAD_REQUEST", "data must be a string", 400);
-			}
-			payload = body.data;
-		} else {
-			return errorResponse("BAD_REQUEST", `unknown kind: ${String(kind)}`, 400);
-		}
-		const ok = ctx.ompPty.write(id, payload);
-		if (!ok) return errorResponse("SESSION_NOT_STARTED", "pty session not running", 404);
-		return jsonResponse({ ok: true, bytes: payload.length });
 	}
 
 	const stateMatch = /^\/api\/v1\/chat\/sessions\/([^/]+)\/state$/.exec(p);
@@ -536,10 +422,7 @@ export async function handleChat(ctx: BridgeContext, req: Request, url: URL): Pr
 
 		if (body.action === "pause") {
 			const state = getGoalState(sessionId);
-			if (state) {
-				state.paused = true;
-				setGoalState(sessionId, state);
-			}
+			if (state) { state.paused = true; setGoalState(sessionId, state); }
 			return jsonResponse({ ok: true, state: getGoalState(sessionId) });
 		}
 

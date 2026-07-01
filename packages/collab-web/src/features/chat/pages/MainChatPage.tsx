@@ -1,40 +1,27 @@
 /**
  * MainChatPage — Desktop WebUI wrapper Main Chat orchestration.
  *
- * Multi-session Phase 1 layout:
- *   ┌──────────────────────────────────────────────────────┐
- *   │ mc-header: logo + session title + actions            │
- *   ├──────────────────────────────────────────────────────┤
- *   │ SessionTabBar (Tab1) (Tab2) [Tab3*] [+]              │
- *   ├────────────┬─────────────────────────────────────────┤
- *   │            │ ConnectionStatusBar                     │
- *   │ LeftSidebar│                                         │
- *   │            │ ┌─────────────────────────────────────┐ │
- *   │ Controls   │ │ TerminalView (ghostty-web + PTY WS)│ │
- *   │ Providers  │ │                                     │ │
- *   │ Settings   │ │  the actual OMP TUI — 100% CLI      │ │
- *   │ Sessions   │ │  fidelity, all slash commands work  │ │
- *   │ Todos      │ └─────────────────────────────────────┘ │
- *   │            │ StatusWidgets (aboveEditor)             │
- *   │            │ ChatComposer (synths keystrokes → PTY)  │
- *   │            │ StatusWidgets (belowEditor)             │
- *   └────────────┴─────────────────────────────────────────┘
- *
- * Transport (Phase 1 swap):
- *   Each open tab owns a {@link PtyChatClient} kept in a ref-managed Map.
- *   Switching tabs re-points `activeClient` state (which drives
- *   useSyncExternalStore) but does NOT tear down the sibling clients — their
- *   collab GuestClients stay connected, snapshots stay warm. Closing a tab
- *   disposes its client and calls `stop-pty` so the omp child terminates.
+ * Layout:
+ *   ┌─────────────────────────────────────────────┐
+ *   │ mc-header: logo + session title + actions   │
+ *   ├────────────┬────────────────────────────────┤
+ *   │            │ ConnectionStatusBar             │
+ *   │ LeftSidebar│ (launcher health + WS phase)   │
+ *   │            ├────────────────────────────────┤
+ *   │ Controls   │ Transcript (streaming)          │
+ *   │ Sessions   │   tool run timeline             │
+ *   │ Sources    ├────────────────────────────────┤
+ *   │            │ ChatComposer (send/stop/regen)  │
+ *   └────────────┴────────────────────────────────┘
  *
  * Gated by Launcher health: warns when runtime is unhealthy.
  * Never imports oh-my-pi core logic.
  */
 
-import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { type ReactNode, useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { Transcript } from "../../../components/transcript/Transcript";
 import type { ChatClient, DialogResponsePayload } from "../../../lib/chat-client";
-import { PtyChatClient } from "../../../lib/pty-chat-client";
+import { RpcClient } from "../../../lib/rpc-client";
 import type { InterceptCallbacks } from "../../../lib/slash-intercept";
 import {
 	createSession,
@@ -43,8 +30,7 @@ import {
 	listSessions,
 	refreshDataSource,
 	renameSession as renameSessionApi,
-	startPtySession,
-	stopPtySession,
+	stopSession,
 } from "../api/chatApi";
 import { ChatComposer } from "../components/ChatComposer";
 import { ConnectionStatusBar } from "../components/ConnectionStatusBar";
@@ -52,9 +38,7 @@ import { ExtensionDialog } from "../components/ExtensionDialog";
 import { LeftSidebar } from "../components/LeftSidebar";
 import { LogsDrawer } from "../components/LogsDrawer";
 import { SessionHeaderActions } from "../components/SessionHeaderActions";
-import { SessionTabBar } from "../components/SessionTabBar";
 import { StatusWidgetPanel } from "../components/StatusWidgetPanel";
-import { TerminalView } from "../components/TerminalView";
 import { useChatStateMachine } from "../hooks/useChatStateMachine";
 import { useLauncherHealthGate } from "../hooks/useLauncherHealthGate";
 import "../components/chat.css";
@@ -64,21 +48,13 @@ interface Props {
 	onGoToLauncher(): void;
 }
 
-async function ensureBridgePtyStarted(id: string): Promise<boolean> {
-	try {
-		await startPtySession(id);
-		return true;
-	} catch {
-		return false;
-	}
-}
+const BRIDGE_HTTP = "http://127.0.0.1:8787/api/v1";
+const BRIDGE_WS = "ws://127.0.0.1:8787/api/v1";
 
-const TRANSCRIPT_STORAGE_KEY = "omp.desktop.transcriptOpen";
-
-function loadTranscriptOpen(): boolean {
-	if (typeof localStorage === "undefined") return false;
+async function startOmpForSession(id: string): Promise<boolean> {
 	try {
-		return localStorage.getItem(TRANSCRIPT_STORAGE_KEY) === "1";
+		const res = await fetch(`${BRIDGE_HTTP}/chat/sessions/${id}/start`, { method: "POST" });
+		return res.ok;
 	} catch {
 		return false;
 	}
@@ -87,19 +63,6 @@ function loadTranscriptOpen(): boolean {
 export function MainChatPage({ onGoToLauncher }: Props): ReactNode {
 	const [ui, actions] = useChatStateMachine();
 	const [logsOpen, setLogsOpen] = useState(false);
-	// Transcript mirror pane (Phase 2). Right-side read-only view of
-	// snapshot.entries — same component the collab web guest renders — so users
-	// who miss the rich tool cards can see them alongside the raw terminal.
-	// State persists to localStorage so the toggle survives reloads.
-	const [transcriptOpen, setTranscriptOpen] = useState<boolean>(loadTranscriptOpen);
-	useEffect(() => {
-		if (typeof localStorage === "undefined") return;
-		try {
-			localStorage.setItem(TRANSCRIPT_STORAGE_KEY, transcriptOpen ? "1" : "0");
-		} catch {
-			/* quota / private mode — non-critical */
-		}
-	}, [transcriptOpen]);
 
 	// ---- Launcher health gate ----
 	// Bounce back to Launcher if omp goes missing under us (uninstall, PATH
@@ -107,109 +70,60 @@ export function MainChatPage({ onGoToLauncher }: Props): ReactNode {
 	// failed probe means there is no agent to talk to.
 	const healthGate = useLauncherHealthGate(onGoToLauncher);
 
-	// ---- Per-session PtyChatClient pool ----
-	// A ref, not state, so mutating the map never triggers a full re-render.
-	// The `activeClient` state below drives useSyncExternalStore for the
-	// currently-focused tab; every other client stays warm in the map.
-	const clientsRef = useRef<Map<string, PtyChatClient>>(new Map());
-	// Typed as ChatClient (the interface with all-optional mutation methods)
-	// so consumers can safely `client?.sendSetModel?.(...)` even though the
-	// current PtyChatClient implementation only fills a subset — Phase 3 will
-	// grow that subset via input synthesis.
-	const [activeClient, setActiveClient] = useState<ChatClient | null>(null);
-	// Bump when a new client is inserted so useEffect consumers can rebind.
-	const [_clientEpoch, setClientEpoch] = useState(0);
+	// ---- ChatClient (RpcClient backed by the desktop bridge) ----
+	// Stored in state, not a ref, so useSyncExternalStore re-subscribes when the
+	// client instance changes (e.g. user switches session). A ref would silently
+	// keep the stale subscription and the UI would freeze on "Connecting…".
+	const [client, setClient] = useState<ChatClient | null>(null);
 
-	// Same subscribe/getSnapshot dance as before, now pointed at the active
-	// tab's PtyChatClient. useSyncExternalStore automatically re-subscribes
-	// when `activeClient` identity flips.
-	const getClientSnapshot = useCallback(() => activeClient?.getSnapshot() ?? null, [activeClient]);
-	const subscribeClient = useCallback((cb: () => void) => activeClient?.subscribe(cb) ?? (() => {}), [activeClient]);
+	const getClientSnapshot = useCallback(() => client?.getSnapshot() ?? null, [client]);
+
+	const subscribeClient = useCallback((cb: () => void) => client?.subscribe(cb) ?? (() => {}), [client]);
+
 	const snapshot = useSyncExternalStore(subscribeClient, getClientSnapshot);
 
-	// ---- Ensure a client exists for `id` and return it ----
-	const ensureClient = useCallback((id: string): PtyChatClient => {
-		const map = clientsRef.current;
-		const existing = map.get(id);
-		if (existing) return existing;
-		const client = new PtyChatClient({ sessionId: id, displayName: "desktop" });
-		map.set(id, client);
-		setClientEpoch(n => n + 1);
-		return client;
-	}, []);
-
-	// ---- Activate session (or tab): boot PTY if needed, connect client ----
+	// ---- Activate session: ensure omp child is spawned, then connect WS ----
 	const activateSession = useCallback(
 		(id: string, link: string) => {
+			setClient(prev => {
+				prev?.close();
+				return null;
+			});
 			actions.sessionActivated(id, link);
-			const client = ensureClient(id);
-			setActiveClient(client);
-			void ensureBridgePtyStarted(id).then(ok => {
+			void startOmpForSession(id).then(ok => {
 				if (!ok) {
 					actions.setError({
 						code: "OMP_SPAWN_FAILED",
-						message:
-							"Could not start omp PTY child via desktop bridge. Check that the bridge is running on :8787.",
+						message: "Could not start omp child via desktop bridge. Check that the bridge is running on :8787.",
 						recoverable: true,
 					});
 					return;
 				}
-				// connect() is idempotent — safe to call every activate. Starts the
-				// collab-link polling loop if the client hasn't attached its
-				// GuestClient yet.
-				client.connect();
+				try {
+					const next = new RpcClient({ sessionId: id, wsBase: BRIDGE_WS });
+					setClient(next);
+					next.connect();
+				} catch (err) {
+					actions.setError({
+						code: "SESSION_CONNECT_FAILED",
+						message: `Cannot connect to session: ${err instanceof Error ? err.message : String(err)}`,
+						recoverable: false,
+					});
+				}
 			});
 		},
-		[actions, ensureClient],
-	);
-
-	// ---- Close tab: dispose client, stop bridge PTY, activate neighbor ----
-	const handleCloseTab = useCallback(
-		async (id: string) => {
-			const map = clientsRef.current;
-			const client = map.get(id);
-			map.delete(id);
-			setClientEpoch(n => n + 1);
-			client?.close();
-			// Reducer picks the neighbor id and clears activeSessionLink; we still
-			// need to spin up its client if it hasn't been touched yet.
-			const wasActive = ui.activeSessionId === id;
-			actions.tabClosed(id);
-			// Fire-and-forget: kill the omp child. Bridge tolerates missing
-			// sessions, and we don't want to block tab-close on network.
-			void stopPtySession(id).catch(() => {});
-			if (wasActive) {
-				// Find neighbor manually (state.openSessionIds hasn't updated yet in
-				// this closure). Mirror pickNeighbor semantics: right-then-left.
-				const remaining = ui.openSessionIds.filter(sid => sid !== id);
-				const idx = ui.openSessionIds.indexOf(id);
-				const neighborId = remaining[Math.min(idx, remaining.length - 1)] ?? null;
-				const neighbor = neighborId ? ui.sessions.find(s => s.id === neighborId) : null;
-				if (neighbor) {
-					activateSession(neighbor.id, neighbor.link);
-				} else {
-					setActiveClient(null);
-				}
-			}
-		},
-		[actions, activateSession, ui.activeSessionId, ui.openSessionIds, ui.sessions],
+		[actions],
 	);
 
 	// ---- Restart session (after editing ~/.omp/agent/config.yml so omp re-reads) ----
-	// stop kills the omp child; activateSession respawns it, which re-reads
-	// config fresh on boot. Reuses the same session id + link so transcripts
-	// persist on disk (omp resumes via --resume sessionFile).
+	// stop kills the omp child; activateSession respawns it, which re-reads config
+	// fresh on boot. Reuses the same session id + link so transcripts persist on
+	// disk (omp resumes via --resume sessionFile).
 	const handleRestartSession = useCallback(
 		async (sessionId: string) => {
 			const session = ui.sessions.find(s => s.id === sessionId);
 			if (!session) return;
-			await stopPtySession(sessionId).catch(() => {});
-			// Reset client so it re-polls for the new collab link (relayed room
-			// changes across restarts — bridge's resetCollabState clears the
-			// scraped link on stop).
-			const client = clientsRef.current.get(sessionId);
-			client?.close();
-			clientsRef.current.delete(sessionId);
+			await stopSession(sessionId).catch(() => {});
 			activateSession(sessionId, session.link);
 		},
 		[ui.sessions, activateSession],
@@ -219,10 +133,10 @@ export function MainChatPage({ onGoToLauncher }: Props): ReactNode {
 	const handleReconnect = useCallback(() => {
 		if (ui.activeSessionId && ui.activeSessionLink) {
 			activateSession(ui.activeSessionId, ui.activeSessionLink);
-		} else {
-			activeClient?.connect();
+		} else if (client) {
+			client.connect();
 		}
-	}, [activeClient, ui.activeSessionId, ui.activeSessionLink, activateSession]);
+	}, [client, ui.activeSessionId, ui.activeSessionLink, activateSession]);
 
 	// ---- Create new session ----
 	const handleNewSession = useCallback(async () => {
@@ -239,7 +153,7 @@ export function MainChatPage({ onGoToLauncher }: Props): ReactNode {
 				messageCount: 0,
 				isActive: false,
 			});
-			// Auto-activate + open the new session as a tab.
+			// Auto-activate new session
 			activateSession(s.id, s.link);
 		} catch (err) {
 			actions.setError({
@@ -252,30 +166,17 @@ export function MainChatPage({ onGoToLauncher }: Props): ReactNode {
 		}
 	}, [actions, activateSession]);
 
-	// ---- Delete session (destructive — also closes its tab and stops PTY) ----
+	// ---- Delete session ----
 	const handleDeleteSession = useCallback(
 		async (id: string) => {
 			try {
-				const client = clientsRef.current.get(id);
-				clientsRef.current.delete(id);
-				setClientEpoch(n => n + 1);
-				client?.close();
 				await deleteSession(id);
 				actions.sessionDeleted(id);
-				// If we deleted the active tab, mirror the tab-close neighbor logic.
-				if (ui.activeSessionId === id) {
-					const remaining = ui.openSessionIds.filter(sid => sid !== id);
-					const idx = ui.openSessionIds.indexOf(id);
-					const neighborId = remaining[Math.min(idx, remaining.length - 1)] ?? null;
-					const neighbor = neighborId ? ui.sessions.find(s => s.id === neighborId) : null;
-					if (neighbor) activateSession(neighbor.id, neighbor.link);
-					else setActiveClient(null);
-				}
 			} catch {
 				// silently ignore
 			}
 		},
-		[actions, activateSession, ui.activeSessionId, ui.openSessionIds, ui.sessions],
+		[actions],
 	);
 
 	// ---- Rename session ----
@@ -288,6 +189,10 @@ export function MainChatPage({ onGoToLauncher }: Props): ReactNode {
 		},
 		[actions, ui.activeSessionId],
 	);
+
+	// Runtime config (model + thinking) is now driven directly by RpcClient
+	// inside UserControlsPanel — the REST runtime-config stub is no longer the
+	// source of truth.
 
 	// ---- Data source refresh ----
 	const handleSourceRefresh = useCallback(
@@ -304,38 +209,24 @@ export function MainChatPage({ onGoToLauncher }: Props): ReactNode {
 	);
 
 	// ---- Load initial data on mount ----
-	// Guard with a ref so this runs exactly once — the deps array satisfies
-	// biome's useExhaustiveDependencies, but the ref prevents re-fetch when
-	// the callbacks change (which happens every render since actions come from
-	// useCallback closures over state).
-	const didBootstrapRef = useRef(false);
 	useEffect(() => {
-		if (didBootstrapRef.current) return;
-		didBootstrapRef.current = true;
+		// Sessions
 		listSessions()
-			.then(res => {
-				actions.sessionsLoaded(res.sessions);
-				// Rehydrate the persisted active tab. Inactive open tabs stay in
-				// state but don't spin up a client until the user focuses them —
-				// cold-start stays cheap even with many restored tabs.
-				const activeId = ui.activeSessionId;
-				const activeSession = activeId ? res.sessions.find(s => s.id === activeId) : null;
-				if (activeSession) activateSession(activeSession.id, activeSession.link);
-			})
+			.then(res => actions.sessionsLoaded(res.sessions))
 			.catch(() => {});
+
+		// Data sources
 		listDataSources()
 			.then(res => actions.dataSourcesLoaded(res.sources))
 			.catch(() => {});
-	}, [actions, activateSession, ui.activeSessionId]);
+	}, [actions]);
 
 	// ---- Cleanup on unmount ----
 	useEffect(() => {
-		const map = clientsRef.current;
 		return () => {
-			for (const client of map.values()) client.close();
-			map.clear();
+			client?.close();
 		};
-	}, []);
+	}, [client]);
 
 	// ---- Sync messageCount into session list when entries change ----
 	const entryCount = snapshot?.entries.length ?? 0;
@@ -367,9 +258,9 @@ export function MainChatPage({ onGoToLauncher }: Props): ReactNode {
 	// ---- Dialog responder + title display ----
 	const handleDialogRespond = useCallback(
 		(payload: DialogResponsePayload) => {
-			activeClient?.respondToDialog?.(payload);
+			client?.respondToDialog?.(payload);
 		},
-		[activeClient],
+		[client],
 	);
 
 	const displayTitle = snapshot?.titleOverride ?? activeSession?.name ?? "oh-my-pi Desktop";
@@ -391,12 +282,8 @@ export function MainChatPage({ onGoToLauncher }: Props): ReactNode {
 
 					{/* Session title (may be overridden by extension setTitle) +
 					    inline actions (rename / compact / export / stats) */}
-					{ui.activeSessionLink && activeClient ? (
-						<SessionHeaderActions
-							client={activeClient}
-							currentName={displayTitle}
-							onRenamed={handleSessionRenamed}
-						/>
+					{ui.activeSessionLink && client ? (
+						<SessionHeaderActions client={client} currentName={displayTitle} onRenamed={handleSessionRenamed} />
 					) : (
 						<span className="mc-session-title">{displayTitle}</span>
 					)}
@@ -418,15 +305,6 @@ export function MainChatPage({ onGoToLauncher }: Props): ReactNode {
 					<button
 						type="button"
 						className="mc-header-iconbtn"
-						onClick={() => setTranscriptOpen(v => !v)}
-						title="Toggle transcript mirror pane"
-						aria-pressed={transcriptOpen}
-					>
-						{transcriptOpen ? "◨ Transcript" : "◧ Transcript"}
-					</button>
-					<button
-						type="button"
-						className="mc-header-iconbtn"
 						onClick={() => setLogsOpen(v => !v)}
 						title="Toggle log drawer"
 					>
@@ -434,20 +312,6 @@ export function MainChatPage({ onGoToLauncher }: Props): ReactNode {
 					</button>
 				</div>
 			</header>
-
-			{/* ---- Session tab bar ---- */}
-			<SessionTabBar
-				sessions={ui.sessions}
-				openIds={ui.openSessionIds}
-				activeId={ui.activeSessionId}
-				onActivate={id => {
-					const s = ui.sessions.find(x => x.id === id);
-					if (s) activateSession(s.id, s.link);
-				}}
-				onClose={id => void handleCloseTab(id)}
-				onNew={() => void handleNewSession()}
-				newDisabled={ui.sessionLoading}
-			/>
 
 			{/* ---- Body: Sidebar + Chat area ---- */}
 			<div className="mc-body">
@@ -459,7 +323,7 @@ export function MainChatPage({ onGoToLauncher }: Props): ReactNode {
 					activeSessionId={ui.activeSessionId}
 					sessionLoading={ui.sessionLoading}
 					dataSources={ui.dataSources}
-					client={activeClient}
+					client={client}
 					snapshot={snapshot}
 					onTabChange={actions.setSidebarTab}
 					onSessionActivate={activateSession}
@@ -519,59 +383,36 @@ export function MainChatPage({ onGoToLauncher }: Props): ReactNode {
 						</div>
 					)}
 
-					{/* Terminal + Composer — only when session is active */}
-					{ui.activeSessionId && activeClient && (
+					{/* Transcript + Composer — only when session is selected */}
+					{ui.activeSessionLink && snapshot && client && (
 						<>
-							{/* Split view: terminal on the left, optional transcript mirror
-							    on the right. Transcript renders from snapshot.entries — the
-							    same GuestSnapshot the collab web guest consumes — so users
-							    who want to see tool cards / markdown alongside the raw TUI
-							    can toggle it without spawning a second session. Transcript
-							    is a read-only view; every interaction still routes through
-							    the terminal or the composer below. */}
-							<div className="mc-terminal-split" data-transcript-open={transcriptOpen ? "true" : "false"}>
-								{/* TerminalView key'd by session id so React unmounts +
-								    remounts on tab switch; keeps ghostty-web instance per
-								    session cheap (we only pay for the active one, at the
-								    cost of a redraw on switch — bridge's rolling tail makes
-								    this instant). */}
-								<TerminalView key={ui.activeSessionId} sessionId={ui.activeSessionId} />
-								{transcriptOpen && snapshot && (
-									<aside className="mc-transcript-pane" aria-label="Session transcript (mirror)">
-										<Transcript
-											entries={snapshot.entries}
-											stream={snapshot.stream}
-											streamDone={snapshot.streamDone}
-											activeTools={snapshot.activeTools}
-											working={snapshot.working}
-										/>
-									</aside>
-								)}
-							</div>
+							<Transcript
+								entries={snapshot.entries}
+								stream={snapshot.stream}
+								streamDone={snapshot.streamDone}
+								activeTools={snapshot.activeTools}
+								working={snapshot.working}
+							/>
 
-							{snapshot && (
-								<>
-									<StatusWidgetPanel
-										statusEntries={snapshot.statusEntries}
-										widgets={snapshot.widgets}
-										placement="aboveEditor"
-									/>
+							<StatusWidgetPanel
+								statusEntries={snapshot.statusEntries}
+								widgets={snapshot.widgets}
+								placement="aboveEditor"
+							/>
 
-									<ChatComposer
-										client={activeClient}
-										snapshot={snapshot}
-										launcherHealthy={healthGate.healthy && healthGate.status?.phase !== "installing"}
-										onGoToLauncher={onGoToLauncher}
-										interceptCallbacks={interceptCallbacks}
-									/>
+							<ChatComposer
+								client={client}
+								snapshot={snapshot}
+								launcherHealthy={healthGate.healthy && healthGate.status?.phase !== "installing"}
+								onGoToLauncher={onGoToLauncher}
+								interceptCallbacks={interceptCallbacks}
+							/>
 
-									<StatusWidgetPanel
-										statusEntries={snapshot.statusEntries}
-										widgets={snapshot.widgets}
-										placement="belowEditor"
-									/>
-								</>
-							)}
+							<StatusWidgetPanel
+								statusEntries={snapshot.statusEntries}
+								widgets={snapshot.widgets}
+								placement="belowEditor"
+							/>
 						</>
 					)}
 
@@ -580,11 +421,14 @@ export function MainChatPage({ onGoToLauncher }: Props): ReactNode {
 
 					{/* Extension UI dialog modal — overlay outside chat-area */}
 					{snapshot?.pendingDialog && (
-						<ExtensionDialog
-							dialog={snapshot.pendingDialog}
-							onRespond={handleDialogRespond}
-							client={activeClient}
-						/>
+						<ExtensionDialog dialog={snapshot.pendingDialog} onRespond={handleDialogRespond} client={client} />
+					)}
+
+					{/* Session selected but client not yet built */}
+					{ui.activeSessionLink && (!snapshot || !client) && (
+						<div className="mc-empty">
+							<span className="mc-empty-title">Connecting…</span>
+						</div>
 					)}
 				</div>
 			</div>
