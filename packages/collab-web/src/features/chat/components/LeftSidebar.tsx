@@ -3,11 +3,15 @@ import type { ChatClient } from "../../../lib/chat-client";
 import type { GuestSnapshot } from "../../../lib/client";
 import type { SidebarTab } from "../hooks/useChatStateMachine";
 import type { ChatSession, DataSource } from "../types/chat";
-import { DataSourcesPanel } from "./DataSourcesPanel";
+import { DiffViewerPanel } from "./DiffViewerPanel";
+import { FileBrowserPanel } from "./FileBrowserPanel";
+import { McpManagerPanel } from "./McpManagerPanel";
 import { ProviderSettings } from "./ProviderSettings";
 import { SessionList } from "./SessionList";
 import { SettingsPanel } from "./SettingsPanel";
 import { TodosPanel } from "./TodosPanel";
+import { ToolInspectorPanel } from "./ToolInspectorPanel";
+import { UsagePanel } from "./UsagePanel";
 import { UserControlsPanel } from "./UserControlsPanel";
 
 interface Props {
@@ -37,6 +41,11 @@ const TABS: { id: SidebarTab; label: string }[] = [
 	{ id: "settings", label: "Settings" },
 	{ id: "todos", label: "Todos" },
 	{ id: "sessions", label: "Sessions" },
+	{ id: "tools", label: "Tools" },
+	{ id: "mcp", label: "MCP" },
+	{ id: "files", label: "Files" },
+	{ id: "usage", label: "Usage" },
+	{ id: "diff", label: "Diff" },
 ];
 
 export function LeftSidebar(props: Props): ReactNode {
@@ -99,6 +108,11 @@ export function LeftSidebar(props: Props): ReactNode {
 						onNew={onSessionNew}
 					/>
 				)}
+				{tab === "tools" && <ToolInspectorPanel snapshot={snapshot} />}
+				{tab === "mcp" && <McpManagerPanel />}
+				{tab === "files" && <FileBrowserPanel activeSessionId={activeSessionId} />}
+				{tab === "usage" && <UsagePanel />}
+				{tab === "diff" && <DiffViewerPanel activeSessionId={activeSessionId} />}
 				{/* Sources tab removed — no OMP RPC backend; use /mcp in chat instead */}
 			</div>
 		</aside>

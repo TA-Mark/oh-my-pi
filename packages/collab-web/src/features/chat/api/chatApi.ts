@@ -75,6 +75,30 @@ export async function startSession(id: string): Promise<{ ok: boolean }> {
 }
 
 // ---------------------------------------------------------------------------
+// PTY (TUI) session lifecycle — Phase 0+ transport
+// ---------------------------------------------------------------------------
+// Parallel surface to start/stopSession above. Bridge keeps both supervisors
+// alive during the panel-by-panel migration; the desktop wrapper picks PTY.
+
+export interface PtyStartResponse {
+	ok: boolean;
+	session: unknown;
+	resumed: string | null;
+	relay: string;
+}
+
+export async function startPtySession(id: string, cols?: number, rows?: number): Promise<PtyStartResponse> {
+	const body: Record<string, number> = {};
+	if (cols) body.cols = cols;
+	if (rows) body.rows = rows;
+	return post<PtyStartResponse>(`/chat/sessions/${id}/start-pty`, body);
+}
+
+export async function stopPtySession(id: string): Promise<{ ok: boolean }> {
+	return post<{ ok: boolean }>(`/chat/sessions/${id}/stop-pty`);
+}
+
+// ---------------------------------------------------------------------------
 // Data sources
 // ---------------------------------------------------------------------------
 
@@ -166,10 +190,10 @@ export async function execBridgeBash(
 	command: string,
 	hidden?: boolean,
 ): Promise<{ output: string; exitCode: number | null; cancelled: boolean }> {
-	return post<{ output: string; exitCode: number | null; cancelled: boolean }>(
-		`/chat/sessions/${sessionId}/bash`,
-		{ command, hidden },
-	);
+	return post<{ output: string; exitCode: number | null; cancelled: boolean }>(`/chat/sessions/${sessionId}/bash`, {
+		command,
+		hidden,
+	});
 }
 
 // ---------------------------------------------------------------------------
@@ -181,10 +205,10 @@ export async function execBridgePython(
 	code: string,
 	hidden?: boolean,
 ): Promise<{ output: string; error: string; exitCode: number | null }> {
-	return post<{ output: string; error: string; exitCode: number | null }>(
-		`/chat/sessions/${sessionId}/python`,
-		{ code, hidden },
-	);
+	return post<{ output: string; error: string; exitCode: number | null }>(`/chat/sessions/${sessionId}/python`, {
+		code,
+		hidden,
+	});
 }
 
 // ---------------------------------------------------------------------------
@@ -219,7 +243,10 @@ export async function getModelRoles(): Promise<{ roles: Record<string, string> }
 	return get<{ roles: Record<string, string> }>("/chat/config/roles");
 }
 
-export async function setModelRole(role: string, model: string): Promise<{ ok: boolean; roles: Record<string, string> }> {
+export async function setModelRole(
+	role: string,
+	model: string,
+): Promise<{ ok: boolean; roles: Record<string, string> }> {
 	const res = await fetch(`${BASE}/chat/config/roles/${encodeURIComponent(role)}`, {
 		method: "PUT",
 		headers: { "Content-Type": "application/json" },

@@ -38,6 +38,10 @@
 		"fix": "biome check --write --unsafe .",
 		"fmt": "biome format --write ."
 	},
+	"dependencies": {
+		"@oh-my-pi/pi-natives": "catalog:",
+		"@oh-my-pi/pi-wire": "catalog:"
+	},
 	"devDependencies": {
 		"@types/bun": "catalog:"
 	},

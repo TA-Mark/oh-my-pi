@@ -1,4 +1,17 @@
 /**
+ * @deprecated (Phase 5A, marked 2026-07-01) — replaced by {@link PtyChatClient}.
+ *
+ * The desktop wrapper now spawns `omp` TUI through a PTY and consumes its
+ * collab broadcast for state; the bridge's `--mode rpc-ui` supervisor and
+ * this NDJSON client are only kept as a rollback path. Phase 5B (see
+ * `.claude/plans/keen-bouncing-otter.md`) removes both after ≥ 1 week of
+ * stable operation on the new transport.
+ *
+ * Do NOT wire this into new UI. Anything reaching for RpcClient today should
+ * check whether an equivalent already exists on PtyChatClient (`sendSetModel`,
+ * `sendCompact`, `sendLogin`, …) — Phase 3 filled in the synth matrix.
+ *
+ * ─── original description ──────────────────────────────────────────────────
  * RpcClient — talks to a per-session omp child via the desktop bridge's
  * NDJSON-over-WebSocket proxy at `ws://<bridge>/api/v1/chat/sessions/{id}/rpc`.
  *
@@ -134,6 +147,17 @@ export type InterruptMode = "immediate" | "wait";
 
 const MAX_NOTICES = 50;
 
+// Stop auto-reconnecting after this many consecutive failures (~75s of backoff).
+// Past this we surface an "ended" phase so the UI shows a manual Reconnect button
+// instead of looping forever against a bridge that may be down for good.
+const MAX_RECONNECT_ATTEMPTS = 8;
+
+// A blocking modal (select/confirm/input) belongs to a specific omp turn. If the
+// gap before reconnect exceeds this, the dialog is likely stale (the agent moved
+// on or was respawned) — drop it so the user isn't stuck answering a dead prompt.
+// Short blips keep it, avoiding a flicker on a momentary network hiccup.
+const DIALOG_STALE_AFTER_MS = 5000;
+
 const STATE_REFRESH_COMMANDS = new Set([
 	"set_model",
 	"set_thinking_level",
@@ -152,11 +176,15 @@ const STATE_REFRESH_COMMANDS = new Set([
 // ─── Bridge envelope shape (matches packages/desktop-bridge/src/lib/omp-manager.ts) ──
 
 interface BridgeEnvelope {
-	type: "frame" | "log" | "exit";
+	type: "frame" | "log" | "exit" | "respawning";
 	frame?: unknown;
 	line?: string;
 	stream?: "stdout" | "stderr";
 	code?: number | null;
+	/** Monotonic per-session seq assigned by the bridge — drives reconnect dedup. */
+	seq?: number;
+	/** Respawn attempt number (only on `respawning` envelopes). */
+	attempt?: number;
 	ts: string;
 }
 
@@ -169,6 +197,8 @@ type RpcSpecificFrame =
 	| { type: "subagent_progress"; payload: SubagentProgressPayload }
 	| { type: "subagent_event"; payload: { agentId: string; [key: string]: unknown } }
 	| { type: "available_commands_update"; commands: SlashCommandInfo[] }
+	// Emitted by omp's notifyConfigChanged (rpc-mode.ts) when model/thinking change.
+	| { type: "config_update"; model?: SessionState["model"]; thinkingLevel?: string }
 	| ExtensionUiRequest
 	| { type: "response"; id?: string; command: string; success: boolean; data?: unknown; error?: string };
 
@@ -194,6 +224,12 @@ export class RpcClient {
 	#closing = false;
 	#reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 	#reconnectAttempt = 0;
+	#heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+	#pongWatchdog: ReturnType<typeof setTimeout> | null = null;
+	/** Highest envelope seq seen from the bridge; sent as `?since` on reconnect. */
+	#lastSeenSeq = 0;
+	/** Epoch ms of the last socket close; gates how long stale dialogs survive a reconnect. */
+	#lastDisconnectAt = 0;
 
 	// ─── Snapshot fields (private mirror; published via getSnapshot) ─────────
 	#phase: ConnectionPhase = "connecting";
@@ -320,7 +356,7 @@ export class RpcClient {
 			ws.addEventListener("open", () => {
 				ws.send(JSON.stringify({ command, hidden }));
 			});
-			ws.addEventListener("message", (evt) => {
+			ws.addEventListener("message", evt => {
 				try {
 					const frame = JSON.parse(typeof evt.data === "string" ? evt.data : "") as Record<string, unknown>;
 					if (frame.type === "chunk" && typeof frame.data === "string") {
@@ -331,7 +367,9 @@ export class RpcClient {
 							cancelled: frame.cancelled === true,
 						});
 					}
-				} catch { /* ignore malformed */ }
+				} catch {
+					/* ignore malformed */
+				}
 			});
 			ws.addEventListener("error", () => reject(new Error("Shell WS error")));
 			ws.addEventListener("close", () => resolve({ exitCode: null, cancelled: false }));
@@ -490,6 +528,7 @@ export class RpcClient {
 
 	close(): void {
 		this.#closing = true;
+		this.#stopHeartbeat();
 		if (this.#reconnectTimer) {
 			clearTimeout(this.#reconnectTimer);
 			this.#reconnectTimer = null;
@@ -517,16 +556,36 @@ export class RpcClient {
 			pending.reject(new Error("WS reconnected before response arrived"));
 		}
 		this.#pendingResponses.clear();
-		// Extension UI state belongs to the previous omp process; drop it so
-		// stale modals/widgets don't linger after reconnect.
-		this.#clearDialog();
-		this.#statusEntries.clear();
-		this.#widgets.clear();
-		this.#titleOverride = null;
-		this.#todoPhases = [];
-		this.#sessionExtras = {};
-		this.#logs = [];
-		const url = `${this.#wsBase}/chat/sessions/${this.#sessionId}/rpc`;
+
+		const isReconnect = this.#lastSeenSeq > 0;
+		if (isReconnect) {
+			// Reconnect path: the bridge replays only frames newer than lastSeenSeq
+			// (?since=), so it will NOT re-send the widgets/status/title/logs that
+			// produced the current UI. Clearing them here would blank the screen for
+			// good. Keep them — they belong to the same omp child (or a --resume of
+			// it) and fresh frames overwrite as they arrive.
+			//
+			// A blocking dialog is the exception: if the outage was brief the modal is
+			// probably still valid, but after a long gap the omp child may have moved
+			// on (or been respawned), leaving a stale modal the user can't clear. Drop
+			// it past a short grace window.
+			const outage = this.#lastDisconnectAt > 0 ? Date.now() - this.#lastDisconnectAt : 0;
+			if (this.#pendingDialog && outage > DIALOG_STALE_AFTER_MS) this.#clearDialog();
+		} else {
+			// First connect: nothing to preserve.
+			this.#clearDialog();
+			this.#statusEntries.clear();
+			this.#widgets.clear();
+			this.#titleOverride = null;
+			this.#todoPhases = [];
+			this.#sessionExtras = {};
+			this.#logs = [];
+		}
+		// On reconnect, ask the bridge to replay only envelopes we haven't seen
+		// (seq > lastSeenSeq) instead of the whole buffer — no double-render.
+		// First connect (lastSeenSeq===0) omits the param → full replay.
+		const base = `${this.#wsBase}/chat/sessions/${this.#sessionId}/rpc`;
+		const url = isReconnect ? `${base}?since=${this.#lastSeenSeq}` : base;
 		try {
 			this.#ws = new WebSocket(url);
 		} catch (err) {
@@ -538,6 +597,7 @@ export class RpcClient {
 		this.#ws.addEventListener("open", () => {
 			this.#reconnectAttempt = 0;
 			this.#setPhase("live");
+			this.#startHeartbeat();
 			// Ask omp for current state so we have an initial SessionState to render.
 			this.#send({ id: this.#nextReqId(), type: "get_state" });
 			// Subscribe to subagent lifecycle + progress events so the AgentsPanel
@@ -555,16 +615,30 @@ export class RpcClient {
 			} catch {
 				return;
 			}
+			// Heartbeat pong: clears the watchdog armed by #startHeartbeat. It's not
+			// a BridgeEnvelope (no frame/log/exit), so handle and return before the
+			// reducer to avoid log noise.
+			if ((env as { type?: string }).type === "pong") {
+				if (this.#pongWatchdog) {
+					clearTimeout(this.#pongWatchdog);
+					this.#pongWatchdog = null;
+				}
+				return;
+			}
 			this.#applyEnvelope(env);
 		});
 
 		this.#ws.addEventListener("close", evt => {
 			this.#ws = null;
+			this.#stopHeartbeat();
 			if (this.#closing) return;
 			if (evt.code === 4404) {
 				this.#setPhase("ended", "session not started — call /start first");
 				return;
 			}
+			// Remember when the socket dropped so #openSocket can decide whether to
+			// preserve a blocking dialog (short blip) or discard it (long outage).
+			this.#lastDisconnectAt = Date.now();
 			this.#setPhase("reconnecting", `socket closed (${evt.code})`);
 			this.#scheduleReconnect();
 		});
@@ -576,9 +650,49 @@ export class RpcClient {
 
 	#scheduleReconnect(): void {
 		if (this.#closing) return;
+		if (this.#reconnectAttempt >= MAX_RECONNECT_ATTEMPTS) {
+			// Give up auto-reconnecting; the UI's Reconnect button (→ activateSession)
+			// does a full reset with --resume if the user wants to try again.
+			this.#setPhase("ended", `Connection lost — could not reconnect after ${MAX_RECONNECT_ATTEMPTS} attempts`);
+			return;
+		}
 		const delay = Math.min(1000 * 2 ** this.#reconnectAttempt, 15000);
 		this.#reconnectAttempt++;
 		this.#reconnectTimer = setTimeout(() => this.#openSocket(), delay);
+	}
+
+	// App-level heartbeat. Browsers can't send protocol-level WS pings, so we
+	// emit {type:"ping"} every 15s and expect a {type:"pong"} back. If no pong
+	// arrives within 10s we treat the socket as dead and force a close — the
+	// close handler then drives the normal reconnect path. 15s ping < the
+	// bridge's 120s idleTimeout, so a live socket is never reaped for idleness.
+	#startHeartbeat(): void {
+		this.#stopHeartbeat();
+		this.#heartbeatTimer = setInterval(() => {
+			if (this.#ws?.readyState !== WebSocket.OPEN) return;
+			this.#send({ type: "ping" });
+			if (this.#pongWatchdog) clearTimeout(this.#pongWatchdog);
+			this.#pongWatchdog = setTimeout(() => {
+				// No pong in time — the connection is dead even if readyState
+				// still reads OPEN. Force-close; onclose schedules the reconnect.
+				try {
+					this.#ws?.close(4000, "heartbeat timeout");
+				} catch {
+					/* already closed */
+				}
+			}, 10000);
+		}, 15000);
+	}
+
+	#stopHeartbeat(): void {
+		if (this.#heartbeatTimer) {
+			clearInterval(this.#heartbeatTimer);
+			this.#heartbeatTimer = null;
+		}
+		if (this.#pongWatchdog) {
+			clearTimeout(this.#pongWatchdog);
+			this.#pongWatchdog = null;
+		}
 	}
 
 	#send(frame: unknown): void {
@@ -611,8 +725,21 @@ export class RpcClient {
 	// ─── Envelope reducer ────────────────────────────────────────────────────
 
 	#applyEnvelope(env: BridgeEnvelope): void {
+		// Track the highest seq we've applied so a reconnect can ask the bridge to
+		// replay only newer envelopes (?since=), avoiding duplicate frames.
+		if (typeof env.seq === "number" && env.seq > this.#lastSeenSeq) this.#lastSeenSeq = env.seq;
 		if (env.type === "exit") {
 			this.#setPhase("ended", `omp exited (code=${env.code ?? "null"})`);
+			return;
+		}
+		if (env.type === "respawning") {
+			// The omp child crashed; the bridge is restarting it with --resume. The
+			// WS to the bridge stayed up, so surface "reconnecting" and let the
+			// bridge-injected get_state rehydrate once the new child is live.
+			this.#working = false;
+			this.#stream = null;
+			this.#setPhase("reconnecting", env.line ?? "restarting agent…");
+			if (env.line) this.#pushNotice({ level: "warning", message: env.line });
 			return;
 		}
 		if (env.type === "log") {
@@ -624,6 +751,10 @@ export class RpcClient {
 			return;
 		}
 		if (env.type !== "frame" || !env.frame) return;
+		// A frame from a freshly-respawned child means it's live again. The WS never
+		// dropped, so no open handler fires to clear the "reconnecting" phase — do it
+		// here when real frames resume flowing.
+		if (this.#phase === "reconnecting") this.#setPhase("live");
 		this.#applyFrame(env.frame as RpcFrame);
 	}
 

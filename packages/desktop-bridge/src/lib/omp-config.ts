@@ -20,28 +20,13 @@ import { parse as parseYaml, stringify as stringifyYaml, type YamlValue } from "
  * Top-level keys that map directly to scalar values. Used by setKey to decide
  * whether the dot-path navigates into a nested map.
  */
-const SCALAR_KEYS = new Set([
-	"steeringMode",
-	"followUpMode",
-	"interruptMode",
-]);
+const SCALAR_KEYS = new Set(["steeringMode", "followUpMode", "interruptMode"]);
 
-const NESTED_KEYS = new Set([
-	"theme",
-	"modelRoles",
-	"tools",
-	"debug",
-	"images",
-	"searxng",
-]);
+const NESTED_KEYS = new Set(["theme", "modelRoles", "tools", "debug", "images", "searxng"]);
 
-const ARRAY_KEYS = new Set([
-	"extensions",
-]);
+const ARRAY_KEYS = new Set(["extensions"]);
 
-const NESTED_MAP_KEYS = new Set([
-	"skills",
-]);
+const NESTED_MAP_KEYS = new Set(["skills"]);
 
 export function configDir(): string {
 	const explicit = process.env.PI_CODING_AGENT_DIR;
@@ -117,7 +102,13 @@ function projectConfig(raw: Record<string, YamlValue>): OmpConfig {
 	const out: OmpConfig = {};
 	if (isObject(raw.theme)) out.theme = filterStrings(raw.theme, ["dark", "light"]);
 	if (isObject(raw.modelRoles)) {
-		out.modelRoles = filterStrings(raw.modelRoles, ["default", "smol", "slow", "plan", "commit"]) as OmpConfig["modelRoles"];
+		out.modelRoles = filterStrings(raw.modelRoles, [
+			"default",
+			"smol",
+			"slow",
+			"plan",
+			"commit",
+		]) as OmpConfig["modelRoles"];
 	}
 	if (typeof raw.steeringMode === "string") out.steeringMode = raw.steeringMode as OmpConfig["steeringMode"];
 	if (typeof raw.followUpMode === "string") out.followUpMode = raw.followUpMode as OmpConfig["followUpMode"];
@@ -150,7 +141,10 @@ function projectConfig(raw: Record<string, YamlValue>): OmpConfig {
 	return out;
 }
 
-function filterStrings<K extends string>(src: Record<string, YamlValue>, keys: readonly K[]): Partial<Record<K, string>> {
+function filterStrings<K extends string>(
+	src: Record<string, YamlValue>,
+	keys: readonly K[],
+): Partial<Record<K, string>> {
 	const out: Partial<Record<K, string>> = {};
 	for (const k of keys) {
 		const v = src[k];
@@ -168,7 +162,7 @@ function resolvePath(raw: Record<string, YamlValue>, path: string): YamlValue | 
 	let cur: YamlValue = raw;
 	for (const part of parts) {
 		if (!isObject(cur)) return null;
-		const next = cur[part];
+		const next: YamlValue | undefined = cur[part];
 		if (next === undefined) return null;
 		cur = next;
 	}
@@ -284,4 +278,3 @@ async function runExclusive<T>(fn: () => Promise<T>): Promise<T> {
 		release();
 	}
 }
-

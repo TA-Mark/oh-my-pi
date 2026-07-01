@@ -38,6 +38,7 @@
 	},
 	"dependencies": {
 		"@oh-my-pi/pi-wire": "catalog:",
+		"ghostty-web": "catalog:",
 		"lucide-react": "catalog:",
 		"marked": "catalog:",
 		"react": "catalog:",

@@ -1,10 +1,14 @@
 //! Spawn + health-probe the desktop-bridge child process.
 //!
 //! Two spawn strategies, tried in order:
-//!   1. **Sidecar** — Tauri-bundled binary at `binaries/omp-bridge` (production).
-//!      Produced by `bun run prep-sidecar` before each Tauri build.
-//!   2. **Bun script** — `bun run packages/desktop-bridge/src/server.ts` from
-//!      whatever copy of the monorepo we can locate (dev).
+//!   1. **Bundled JS via bundled Bun** — `bun run resources/bridge/omp-bridge.js`
+//!      (production). Produced by `bun run prep-sidecar` before each Tauri
+//!      build. We do NOT use `bun build --compile` for the bridge because
+//!      the resulting standalone exe cannot see napi (`.node`) exports for
+//!      the pi-natives addon at runtime (works fine when required by a plain
+//!      `bun` runtime). See prep-sidecar.ts for context.
+//!   2. **Bun source (dev)** — `bun run packages/desktop-bridge/src/server.ts`
+//!      from whatever copy of the monorepo we can locate.
 //!
 //! Either way we hold the child handle and kill it on app exit.
 
@@ -13,8 +17,6 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Manager};
-use tauri_plugin_shell::process::CommandChild;
-use tauri_plugin_shell::ShellExt;
 use tokio::process::{Child, Command};
 
 /// Filename of the precompiled native addon staged into resources/native/.
@@ -57,7 +59,14 @@ fn resolve_bundled_bun(_app: &AppHandle) -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
     let dir = exe.parent()?;
     let ext = if cfg!(windows) { ".exe" } else { "" };
-    let candidate = dir.join(format!("bun-{}{}", TARGET_TRIPLE, ext));
+    // Tauri strips the target-triple suffix in the final bundle, but keeps it
+    // during `cargo run` from src-tauri. Try the stripped form first (release
+    // installer layout), then the triple-suffixed form (dev with prep-deps).
+    let stripped = dir.join(format!("bun{ext}"));
+    if stripped.exists() {
+        return Some(stripped);
+    }
+    let candidate = dir.join(format!("bun-{TARGET_TRIPLE}{ext}"));
     if candidate.exists() {
         Some(candidate)
     } else {
@@ -66,16 +75,12 @@ fn resolve_bundled_bun(_app: &AppHandle) -> Option<PathBuf> {
 }
 
 pub enum BridgeProcess {
-    Sidecar(CommandChild),
     Plain(Child),
 }
 
 impl BridgeProcess {
     pub async fn kill(self) -> Result<()> {
         match self {
-            Self::Sidecar(child) => {
-                let _ = child.kill();
-            }
             Self::Plain(mut child) => {
                 let _ = child.start_kill();
                 let _ = tokio::time::timeout(Duration::from_secs(2), child.wait()).await;
@@ -106,51 +111,21 @@ pub async fn spawn_and_wait(
 ) -> Result<BridgeProcess> {
     let deps = BundledDeps::resolve(app);
     eprintln!("[desktop-shell] bundled deps:");
-    eprintln!("  bun:   {}", deps.bun_path.as_deref().map(Path::display).map(|d| d.to_string()).unwrap_or_else(|| "(missing)".into()));
-    eprintln!("  native:{}", deps.native_node.as_deref().map(Path::display).map(|d| d.to_string()).unwrap_or_else(|| "(missing)".into()));
+    eprintln!(
+        "  bun:   {}",
+        deps.bun_path.as_deref().map(Path::display).map(|d| d.to_string()).unwrap_or_else(|| "(missing)".into())
+    );
+    eprintln!(
+        "  native:{}",
+        deps.native_node.as_deref().map(Path::display).map(|d| d.to_string()).unwrap_or_else(|| "(missing)".into())
+    );
 
-    // Try sidecar first; if missing (dev w/o prep-sidecar), fall back to bun.
-    match spawn_sidecar(app, install_dir.as_deref(), port, &deps) {
-        Ok(child) => {
-            wait_for_health(port, health_timeout).await?;
-            return Ok(BridgeProcess::Sidecar(child));
-        }
-        Err(err) => {
-            eprintln!("[desktop-shell] sidecar unavailable, falling back to bun: {err}");
-        }
-    }
-
-    let child = spawn_bun_script(install_dir.as_deref(), port, &deps)?;
+    let child = spawn_bun_script(app, install_dir.as_deref(), port, &deps)?;
     wait_for_health(port, health_timeout).await?;
     Ok(BridgeProcess::Plain(child))
 }
 
-fn spawn_sidecar(
-    app: &AppHandle,
-    install_dir: Option<&std::path::Path>,
-    port: u16,
-    deps: &BundledDeps,
-) -> Result<CommandChild> {
-    let shell = app.shell();
-    let mut cmd = shell
-        .sidecar("omp-bridge")
-        .context("sidecar `omp-bridge` not configured / not bundled")?
-        .args(["--port", &port.to_string()]);
-    if let Some(dir) = install_dir {
-        cmd = cmd.env("OMP_DESKTOP_DIR", dir.display().to_string());
-    }
-    cmd = cmd.env("OMP_BRIDGE_PORT", port.to_string());
-    if let Some(p) = deps.bun_path.as_ref() {
-        cmd = cmd.env("OMP_BUNDLED_BUN", p.display().to_string());
-    }
-    if let Some(p) = deps.native_node.as_ref() {
-        cmd = cmd.env("OMP_BUNDLED_NATIVE", p.display().to_string());
-    }
-    let (_rx, child) = cmd.spawn().context("failed to spawn sidecar")?;
-    Ok(child)
-}
-
-fn spawn_bun_script(install_dir: Option<&std::path::Path>, port: u16, deps: &BundledDeps) -> Result<Child> {
+fn spawn_bun_script(app: &AppHandle, install_dir: Option<&std::path::Path>, port: u16, deps: &BundledDeps) -> Result<Child> {
     // Prefer the bundled Bun (lets dev mode work even without system Bun once
     // prep-deps has run); fall back to $BUN_BIN, then `bun` on PATH.
     let bun = deps
@@ -159,8 +134,8 @@ fn spawn_bun_script(install_dir: Option<&std::path::Path>, port: u16, deps: &Bun
         .map(|p| p.display().to_string())
         .or_else(|| std::env::var("BUN_BIN").ok())
         .unwrap_or_else(|| "bun".to_string());
-    let entry = locate_bridge_entry(install_dir)
-        .context("could not locate packages/desktop-bridge/src/server.ts")?;
+    let entry = locate_bridge_entry(app, install_dir)
+        .context("could not locate bridge entry (resources/bridge/omp-bridge.js or packages/desktop-bridge/src/server.ts)")?;
 
     let mut cmd = Command::new(&bun);
     cmd.arg("run").arg(&entry).arg("--port").arg(port.to_string());
@@ -188,7 +163,7 @@ fn spawn_bun_script(install_dir: Option<&std::path::Path>, port: u16, deps: &Bun
         .with_context(|| format!("failed to spawn `{bun} run {}`", entry.display()))
 }
 
-fn locate_bridge_entry(install_dir: Option<&std::path::Path>) -> Option<PathBuf> {
+fn locate_bridge_entry(app: &AppHandle, install_dir: Option<&std::path::Path>) -> Option<PathBuf> {
     if let Ok(env_path) = std::env::var("OMP_BRIDGE_ENTRY") {
         let p = PathBuf::from(env_path);
         if p.exists() {
@@ -196,6 +171,13 @@ fn locate_bridge_entry(install_dir: Option<&std::path::Path>) -> Option<PathBuf>
         }
     }
     let mut candidates: Vec<PathBuf> = Vec::new();
+    // Production: bundled JS staged by prep-sidecar.ts + shipped as a Tauri
+    // resource. Tauri stages resources into `resource_dir()/resources/`; the
+    // bundle sits at `resources/bridge/omp-bridge.js`.
+    if let Ok(resource_dir) = app.path().resource_dir() {
+        candidates.push(resource_dir.join("resources").join("bridge").join("omp-bridge.js"));
+    }
+    // Dev / manual layouts: look for the raw TS source.
     if let Some(dir) = install_dir {
         candidates.push(dir.join("packages").join("desktop-bridge").join("src").join("server.ts"));
     }
