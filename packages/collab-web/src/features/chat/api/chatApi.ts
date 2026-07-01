@@ -212,6 +212,19 @@ export async function goalModeAction(
 }
 
 // ---------------------------------------------------------------------------
+// Loop mode (bridge-managed)
+// ---------------------------------------------------------------------------
+
+export async function loopModeAction(
+	sessionId: string,
+	action: string,
+	args?: string,
+	prompt?: string,
+): Promise<{ ok?: boolean; state?: unknown }> {
+	return post<{ ok?: boolean; state?: unknown }>(`/chat/sessions/${sessionId}/loop`, { action, args, prompt });
+}
+
+// ---------------------------------------------------------------------------
 // OMP config
 // ---------------------------------------------------------------------------
 

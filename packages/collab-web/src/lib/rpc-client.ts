@@ -169,6 +169,7 @@ type RpcSpecificFrame =
 	| { type: "subagent_progress"; payload: SubagentProgressPayload }
 	| { type: "subagent_event"; payload: { agentId: string; [key: string]: unknown } }
 	| { type: "available_commands_update"; commands: SlashCommandInfo[] }
+	| { type: "config_update"; model?: SessionState["model"]; thinkingLevel?: SessionState["thinkingLevel"] }
 	| ExtensionUiRequest
 	| { type: "response"; id?: string; command: string; success: boolean; data?: unknown; error?: string };
 
@@ -320,7 +321,7 @@ export class RpcClient {
 			ws.addEventListener("open", () => {
 				ws.send(JSON.stringify({ command, hidden }));
 			});
-			ws.addEventListener("message", (evt) => {
+			ws.addEventListener("message", evt => {
 				try {
 					const frame = JSON.parse(typeof evt.data === "string" ? evt.data : "") as Record<string, unknown>;
 					if (frame.type === "chunk" && typeof frame.data === "string") {
@@ -331,7 +332,9 @@ export class RpcClient {
 							cancelled: frame.cancelled === true,
 						});
 					}
-				} catch { /* ignore malformed */ }
+				} catch {
+					/* ignore malformed */
+				}
 			});
 			ws.addEventListener("error", () => reject(new Error("Shell WS error")));
 			ws.addEventListener("close", () => resolve({ exitCode: null, cancelled: false }));
@@ -595,8 +598,15 @@ export class RpcClient {
 	 * Send a request frame and resolve when the matching `response` arrives.
 	 * The response is routed by reqId in the central frame handler — so this
 	 * works for any command that returns a `data` payload (get_*, set_* with data).
+	 *
+	 * Fails fast when the socket is not OPEN — otherwise #send would drop the
+	 * frame silently and the caller would wait the full timeout for a response
+	 * that can never come.
 	 */
 	#request(command: string, body: object, timeoutMs = 10000): Promise<unknown> {
+		if (this.#ws?.readyState !== WebSocket.OPEN) {
+			return Promise.reject(new Error(`RPC ${command} failed: not connected (phase=${this.#phase})`));
+		}
 		const id = this.#nextReqId();
 		return new Promise((resolve, reject) => {
 			const timer = setTimeout(() => {
@@ -759,12 +769,11 @@ export class RpcClient {
 				return;
 			}
 			case "config_update": {
-				const update = frame as unknown as { model?: SessionState["model"]; thinkingLevel?: string };
 				if (this.#state) {
 					this.#state = {
 						...this.#state,
-						...(update.model !== undefined ? { model: update.model } : {}),
-						...(update.thinkingLevel !== undefined ? { thinkingLevel: update.thinkingLevel } : {}),
+						...(frame.model !== undefined ? { model: frame.model } : {}),
+						...(frame.thinkingLevel !== undefined ? { thinkingLevel: frame.thinkingLevel } : {}),
 					};
 					this.#publish();
 				}

@@ -2,65 +2,64 @@
 
 ## General Principles
 
-* Trả lời bằng tiếng Việt.
-* Ưu tiên tính đúng đắn hơn tốc độ.
-* Không suy đoán khi chưa có bằng chứng.
-* Luôn đọc code liên quan trước khi sửa.
-* Hiểu nguyên nhân gốc rễ trước khi đưa ra giải pháp.
-* Khi thiếu thông tin, tiếp tục điều tra thay vì đoán.
+* Prioritize correctness over speed.
+* Never speculate without evidence.
+* Always read related code before modifying.
+* Understand the root cause before proposing a solution.
+* When information is missing, keep investigating instead of guessing.
 
 ---
 
 ## Debugging Workflow
 
-Khi gặp lỗi:
+When encountering a bug:
 
-1. Tái hiện lỗi.
-2. Xác định chính xác nơi lỗi xuất hiện.
-3. Truy vết dữ liệu từ nguồn đến điểm lỗi.
-4. Xác định root cause.
-5. Đề xuất nhiều phương án sửa.
-6. Chọn phương án ít rủi ro nhất.
-7. Kiểm tra tác động phụ.
-8. Đề xuất test xác nhận.
+1. Reproduce the issue.
+2. Locate exactly where the bug appears.
+3. Trace the data flow from source to failure point.
+4. Identify the root cause.
+5. Propose multiple fix options.
+6. Choose the lowest-risk option.
+7. Check for side effects.
+8. Propose verification tests.
 
-Không được sửa code chỉ để che dấu triệu chứng.
+Never modify code just to mask symptoms.
 
-Luôn phân biệt:
+Always distinguish:
 
-* Symptom (triệu chứng)
-* Root Cause (nguyên nhân gốc)
+* Symptom
+* Root cause
 
 ---
 
 ## Code Modification Rules
 
-Trước khi sửa:
+Before modifying:
 
-* Đọc file hiện tại.
-* Đọc code liên quan.
-* Hiểu luồng thực thi.
+* Read the current file.
+* Read related code.
+* Understand the execution flow.
 
-Ưu tiên:
+Prioritize:
 
-* Sửa ít nhất có thể.
-* Không refactor lớn nếu không cần.
-* Giữ nguyên coding style hiện có.
-* Không tạo abstraction mới nếu chưa có nhu cầu thực tế.
+* Minimum necessary change.
+* No large refactors unless required.
+* Preserve existing coding style.
+* Do not introduce new abstractions without a real need.
 
 ---
 
 ## Architecture Analysis
 
-Trước thay đổi lớn:
+Before large changes, identify:
 
-* Xác định module liên quan.
-* Xác định dependency.
-* Xác định ảnh hưởng tới API.
-* Xác định ảnh hưởng tới database.
-* Xác định backward compatibility.
+* Affected modules.
+* Dependencies.
+* API impact.
+* Database impact.
+* Backward compatibility.
 
-Luôn mô tả:
+Always describe:
 
 * Current state
 * Proposed state
@@ -70,21 +69,21 @@ Luôn mô tả:
 
 ## Reasoning Process
 
-Trước khi kết luận:
+Before concluding:
 
-* Kiểm tra giả định.
-* Tìm bằng chứng trong code.
-* Tìm edge cases.
-* Tìm race conditions.
-* Tìm null/undefined paths.
-* Tìm memory leaks.
-* Tìm performance bottlenecks.
+* Verify assumptions.
+* Find evidence in code.
+* Look for edge cases.
+* Check for race conditions.
+* Check null/undefined paths.
+* Check for memory leaks.
+* Check for performance bottlenecks.
 
 ---
 
 ## Security Checklist
 
-Luôn kiểm tra:
+Always check:
 
 * SQL Injection
 * Command Injection
@@ -95,9 +94,9 @@ Luôn kiểm tra:
 * Authorization
 * Secret Exposure
 
-Không hardcode:
+Never hardcode:
 
-* API Keys
+* API keys
 * Passwords
 * Tokens
 
@@ -105,14 +104,14 @@ Không hardcode:
 
 ## Testing Mindset
 
-Sau mỗi thay đổi:
+After every change, ask:
 
-* Điều gì có thể hỏng?
-* Test case nào cần thêm?
-* Edge case nào chưa được xử lý?
-* Có regression nào không?
+* What could break?
+* Which test cases need to be added?
+* Which edge cases are unhandled?
+* Are there any regressions?
 
-Ưu tiên:
+Prioritize:
 
 * Unit test
 * Integration test
@@ -122,12 +121,80 @@ Sau mỗi thay đổi:
 
 ## Memory Loading
 
-Khi bắt đầu:
+At session start:
 
-1. Đọc CLAUDE.md của project nếu có.
-2. Đọc tất cả file trong memory/.
-3. Đọc README.md.
-4. Đọc package.json hoặc cấu hình build.
-5. Hiểu kiến trúc trước khi code.
+1. Read project CLAUDE.md if present.
+2. Read all files in memory/.
+3. Read README.md.
+4. Read package.json or build configuration.
+5. Understand the architecture before writing code.
 
-Không bắt đầu sửa code trước khi hoàn thành các bước trên.
+Do not start modifying code before completing these steps.
+
+<!-- CODEGRAPH_START -->
+## CodeGraph
+
+In repositories indexed by CodeGraph (a `.codegraph/` directory exists at the repo root), reach for it BEFORE grep/find or reading files when you need to understand or locate code:
+
+- **MCP tool** (when available): `codegraph_explore` answers most code questions in one call — the relevant symbols' verbatim source plus the call paths between them, including dynamic-dispatch hops grep can't follow. Name a file or symbol in the query to read its current line-numbered source. If it's listed but deferred, load it by name via tool search.
+- **Shell** (always works): `codegraph explore "<symbol names or question>"` prints the same output.
+
+If there is no `.codegraph/` directory, skip CodeGraph entirely — indexing is the user's decision.
+
+
+# CodeGraph Usage Rules
+
+Before using grep, glob, find, or reading many files:
+
+1. Use codegraph_context to understand the feature.
+2. Use codegraph_search to find symbols.
+3. Use codegraph_callers to discover dependencies.
+4. Use codegraph_callees to trace execution flow.
+5. Use codegraph_impact before modifying public APIs.
+6. Only read source files after CodeGraph identifies the relevant locations.
+
+Prefer CodeGraph results over repository-wide grep searches whenever possible.
+
+<!-- CODEGRAPH_END -->
+
+# Repository Analysis Workflow
+
+When analyzing an unfamiliar codebase:
+
+1. Start with CodeGraph.
+2. Use codegraph_context before reading files.
+3. Use codegraph_search to locate symbols.
+4. Use codegraph_callers and codegraph_callees to understand dependencies.
+5. Use codegraph_impact before modifying public interfaces.
+6. Read source files only after CodeGraph identifies the relevant locations.
+
+Do not perform repository-wide grep searches unless CodeGraph cannot answer the question.
+
+For architecture questions:
+
+* Use CodeGraph first.
+* Build a dependency map.
+* Then inspect implementation details.
+
+For bug fixing:
+
+* Trace execution path with CodeGraph.
+* Identify callers and callees.
+* Read only the files involved in the execution path.
+
+For refactoring:
+
+* Run impact analysis first.
+* List affected components.
+* Then perform code changes.
+
+
+## Mandatory Context Policy
+
+Compact aggressively.
+
+Trigger compaction whenever context exceeds 50%.
+
+Do not wait for automatic compaction.
+
+Use /compact and continue from the generated summary.

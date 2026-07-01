@@ -13,6 +13,8 @@ interface Props {
 	client: ChatClient | null;
 	currentName: string;
 	onRenamed(name: string): void;
+	/** WS phase — used to gate RPC-dependent actions (Branches). */
+	phase?: string;
 }
 
 function fmtTokens(n: number | undefined): string {
@@ -29,7 +31,7 @@ function fmtCost(n: number | undefined): string {
 	return `$${n.toFixed(4)}`;
 }
 
-export function SessionHeaderActions({ client, currentName, onRenamed }: Props): ReactNode {
+export function SessionHeaderActions({ client, currentName, onRenamed, phase }: Props): ReactNode {
 	const [stats, setStats] = useState<SessionStats | null>(null);
 	const [editing, setEditing] = useState(false);
 	const [draft, setDraft] = useState(currentName);
@@ -119,6 +121,10 @@ export function SessionHeaderActions({ client, currentName, onRenamed }: Props):
 
 	const handleOpenBranches = useCallback(async () => {
 		if (!client?.sendGetBranchMessages) return;
+		if (phase !== "live") {
+			setError(`Cannot load branches — not connected (${phase ?? "unknown"})`);
+			return;
+		}
 		setBranchOpen(true);
 		try {
 			const list = await client.sendGetBranchMessages();
@@ -127,7 +133,7 @@ export function SessionHeaderActions({ client, currentName, onRenamed }: Props):
 			setBranches([]);
 			setError(err instanceof Error ? err.message : String(err));
 		}
-	}, [client]);
+	}, [client, phase]);
 
 	const handlePickBranch = useCallback(
 		(entryId: string) => {
@@ -186,8 +192,12 @@ export function SessionHeaderActions({ client, currentName, onRenamed }: Props):
 					type="button"
 					className="mc-header-iconbtn"
 					onClick={handleOpenBranches}
-					disabled={!client?.sendGetBranchMessages}
-					title="View alternative branches at this point"
+					disabled={!client?.sendGetBranchMessages || phase !== "live"}
+					title={
+						phase !== "live"
+							? `Not connected (${phase ?? "unknown"})`
+							: "View alternative branches at this point"
+					}
 				>
 					⑂ Branches
 				</button>
@@ -213,7 +223,11 @@ export function SessionHeaderActions({ client, currentName, onRenamed }: Props):
 
 			{branchOpen && (
 				<div className="mc-dialog-overlay" onMouseDown={() => setBranchOpen(false)}>
-					<div className="mc-dialog" onMouseDown={e => e.stopPropagation()} style={{ maxWidth: 600, maxHeight: "70vh" }}>
+					<div
+						className="mc-dialog"
+						onMouseDown={e => e.stopPropagation()}
+						style={{ maxWidth: 600, maxHeight: "70vh" }}
+					>
 						<div className="mc-dialog-title">Session Tree — Branch Points</div>
 						{branches === null && <div className="mc-providers-hint">Loading…</div>}
 						{branches?.length === 0 && (
@@ -222,7 +236,12 @@ export function SessionHeaderActions({ client, currentName, onRenamed }: Props):
 							</div>
 						)}
 						{branches && branches.length > 0 && (
-							<div className="mc-dialog-options" role="listbox" tabIndex={-1} style={{ maxHeight: "50vh", overflow: "auto" }}>
+							<div
+								className="mc-dialog-options"
+								role="listbox"
+								tabIndex={-1}
+								style={{ maxHeight: "50vh", overflow: "auto" }}
+							>
 								{branches.map((b, i) => {
 									const preview = b.text.length > 100 ? `${b.text.slice(0, 97)}…` : b.text;
 									const isLast = i === branches.length - 1;
@@ -235,17 +254,34 @@ export function SessionHeaderActions({ client, currentName, onRenamed }: Props):
 											title={`Branch from: ${b.entryId}`}
 											style={{ textAlign: "left", display: "flex", gap: 8, alignItems: "flex-start" }}
 										>
-											<span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--fg-faint)", whiteSpace: "nowrap", minWidth: 20 }}>
+											<span
+												style={{
+													fontFamily: "var(--font-mono)",
+													fontSize: 10,
+													color: "var(--fg-faint)",
+													whiteSpace: "nowrap",
+													minWidth: 20,
+												}}
+											>
 												{isLast ? "●" : "├"}
 											</span>
-											<span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--fg-faint)", whiteSpace: "nowrap" }}>
+											<span
+												style={{
+													fontFamily: "var(--font-mono)",
+													fontSize: 10,
+													color: "var(--fg-faint)",
+													whiteSpace: "nowrap",
+												}}
+											>
 												{b.entryId.slice(0, 8)}
 											</span>
 											<span className="mc-dialog-option-label" style={{ flex: 1 }}>
 												{preview || "(empty)"}
 											</span>
 											{isLast && (
-												<span style={{ fontSize: 9, color: "var(--accent)", whiteSpace: "nowrap" }}>← current</span>
+												<span style={{ fontSize: 9, color: "var(--accent)", whiteSpace: "nowrap" }}>
+													← current
+												</span>
 											)}
 										</button>
 									);

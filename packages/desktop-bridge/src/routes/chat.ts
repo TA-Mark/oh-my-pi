@@ -12,8 +12,17 @@
 import { randomBytes } from "node:crypto";
 import type { BridgeContext } from "../lib/context";
 import { errorResponse, jsonResponse } from "../lib/http";
+import { getLoopState, startLoop, stopLoop } from "../lib/loop-mode";
 import { resetKey as resetConfigKey, setKey as setConfigKey } from "../lib/omp-config";
-import { buildGoalContinuation, buildPlanPromptPrefix, clearSessionStates, getGoalState, getPlanState, readModelRoles, setGoalState, setPlanState } from "../lib/plan-mode";
+import {
+	buildGoalContinuation,
+	buildPlanPromptPrefix,
+	getGoalState,
+	getPlanState,
+	readModelRoles,
+	setGoalState,
+	setPlanState,
+} from "../lib/plan-mode";
 import { PromptHistory } from "../lib/prompt-history";
 import { PROVIDER_CATALOG, type ProviderType } from "../lib/provider-catalog";
 import { getKernel } from "../lib/python-kernel";
@@ -422,7 +431,10 @@ export async function handleChat(ctx: BridgeContext, req: Request, url: URL): Pr
 
 		if (body.action === "pause") {
 			const state = getGoalState(sessionId);
-			if (state) { state.paused = true; setGoalState(sessionId, state); }
+			if (state) {
+				state.paused = true;
+				setGoalState(sessionId, state);
+			}
 			return jsonResponse({ ok: true, state: getGoalState(sessionId) });
 		}
 
@@ -443,6 +455,32 @@ export async function handleChat(ctx: BridgeContext, req: Request, url: URL): Pr
 		}
 
 		return errorResponse("BAD_REQUEST", "action must be set|show|pause|resume|drop", 400);
+	}
+
+	// ─── Loop mode ──────────────────────────────────────────────────────────
+	const loopMatch = /^\/api\/v1\/chat\/sessions\/([^/]+)\/loop$/.exec(p);
+	if (loopMatch && req.method === "POST") {
+		const sessionId = loopMatch[1]!;
+		const body = (await req.json().catch(() => ({}))) as { action: string; args?: string; prompt?: string };
+
+		if (body.action === "start") {
+			const result = startLoop(sessionId, body.args ?? "", body.prompt, ctx.omp);
+			if (!result.ok) {
+				return errorResponse("BAD_REQUEST", result.error, 400);
+			}
+			return jsonResponse({ ok: true, state: getLoopState(sessionId) });
+		}
+
+		if (body.action === "stop") {
+			stopLoop(sessionId);
+			return jsonResponse({ ok: true });
+		}
+
+		if (body.action === "status") {
+			return jsonResponse({ state: getLoopState(sessionId) });
+		}
+
+		return errorResponse("BAD_REQUEST", "action must be start|stop|status", 400);
 	}
 
 	// ─── Prompt history ─────────────────────────────────────────────────────

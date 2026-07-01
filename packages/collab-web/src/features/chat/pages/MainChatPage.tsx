@@ -283,7 +283,12 @@ export function MainChatPage({ onGoToLauncher }: Props): ReactNode {
 					{/* Session title (may be overridden by extension setTitle) +
 					    inline actions (rename / compact / export / stats) */}
 					{ui.activeSessionLink && client ? (
-						<SessionHeaderActions client={client} currentName={displayTitle} onRenamed={handleSessionRenamed} />
+						<SessionHeaderActions
+							client={client}
+							currentName={displayTitle}
+							onRenamed={handleSessionRenamed}
+							phase={connPhase}
+						/>
 					) : (
 						<span className="mc-session-title">{displayTitle}</span>
 					)}
