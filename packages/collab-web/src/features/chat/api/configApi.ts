@@ -20,6 +20,7 @@ export interface OmpConfig {
 	skills?: Record<string, boolean>;
 	images?: { autoResize?: boolean };
 	searxng?: { endpoint?: string; token?: string; basicUsername?: string; basicPassword?: string };
+	memory?: { backend?: string };
 }
 
 export type ConfigValue = string | number | boolean | null | string[] | Record<string, string | boolean>;

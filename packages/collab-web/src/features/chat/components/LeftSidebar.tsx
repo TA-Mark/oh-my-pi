@@ -4,6 +4,7 @@ import type { GuestSnapshot } from "../../../lib/client";
 import type { SidebarTab } from "../hooks/useChatStateMachine";
 import type { ChatSession, DataSource } from "../types/chat";
 import { DataSourcesPanel } from "./DataSourcesPanel";
+import { MemoryPanel } from "./MemoryPanel";
 import { ProviderSettings } from "./ProviderSettings";
 import { SessionList } from "./SessionList";
 import { SettingsPanel } from "./SettingsPanel";
@@ -35,6 +36,7 @@ const TABS: { id: SidebarTab; label: string }[] = [
 	{ id: "controls", label: "Controls" },
 	{ id: "providers", label: "Providers" },
 	{ id: "settings", label: "Settings" },
+	{ id: "memory", label: "Memory" },
 	{ id: "todos", label: "Todos" },
 	{ id: "sessions", label: "Sessions" },
 ];
@@ -88,6 +90,7 @@ export function LeftSidebar(props: Props): ReactNode {
 						onSessionRestart={onSessionRestart}
 					/>
 				)}
+				{tab === "memory" && <MemoryPanel client={client} activeSessionId={activeSessionId} />}
 				{tab === "todos" && <TodosPanel phases={snapshot?.todoPhases ?? []} />}
 				{tab === "sessions" && (
 					<SessionList

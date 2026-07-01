@@ -33,6 +33,7 @@ const NESTED_KEYS = new Set([
 	"debug",
 	"images",
 	"searxng",
+	"memory",
 ]);
 
 const ARRAY_KEYS = new Set([
@@ -168,7 +169,7 @@ function resolvePath(raw: Record<string, YamlValue>, path: string): YamlValue | 
 	let cur: YamlValue = raw;
 	for (const part of parts) {
 		if (!isObject(cur)) return null;
-		const next = cur[part];
+		const next: YamlValue | undefined = cur[part];
 		if (next === undefined) return null;
 		cur = next;
 	}

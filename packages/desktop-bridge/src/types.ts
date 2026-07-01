@@ -264,6 +264,7 @@ export interface OmpConfig {
 	skills?: Record<string, boolean>;
 	images?: { autoResize?: boolean };
 	searxng?: OmpSearxng;
+	memory?: { backend?: string };
 }
 
 // ─── Generic envelope ───────────────────────────────────────────────────────

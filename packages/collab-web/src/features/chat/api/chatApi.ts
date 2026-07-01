@@ -266,3 +266,14 @@ export async function getPromptHistory(query?: string): Promise<{ entries: strin
 export async function savePromptHistory(text: string): Promise<void> {
 	await post("/chat/history", { text });
 }
+
+// ---------------------------------------------------------------------------
+// Memory
+// ---------------------------------------------------------------------------
+
+export async function memoryAction(
+	sessionId: string,
+	action: "view" | "clear" | "enqueue" | "stats" | "diagnose",
+): Promise<{ ok: boolean }> {
+	return post<{ ok: boolean }>(`/chat/sessions/${sessionId}/memory`, { action });
+}

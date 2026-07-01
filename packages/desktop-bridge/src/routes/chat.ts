@@ -13,7 +13,7 @@ import { randomBytes } from "node:crypto";
 import type { BridgeContext } from "../lib/context";
 import { errorResponse, jsonResponse } from "../lib/http";
 import { getLoopState, startLoop, stopLoop } from "../lib/loop-mode";
-import { resetKey as resetConfigKey, setKey as setConfigKey } from "../lib/omp-config";
+import { getKey as getConfigKey, resetKey as resetConfigKey, setKey as setConfigKey } from "../lib/omp-config";
 import {
 	buildGoalContinuation,
 	buildPlanPromptPrefix,
@@ -491,6 +491,29 @@ export async function handleChat(ctx: BridgeContext, req: Request, url: URL): Pr
 	if (p === "/api/v1/chat/history" && req.method === "POST") {
 		const body = (await req.json().catch(() => ({}))) as { text?: string };
 		if (body.text) history.push(body.text);
+		return jsonResponse({ ok: true });
+	}
+
+	// ─── Memory config read ─────────────────────────────────────────────────
+	if (p === "/api/v1/chat/memory" && req.method === "GET") {
+		const backend = getConfigKey("memory.backend");
+		return jsonResponse({ backend: typeof backend === "string" ? backend : null });
+	}
+
+	// ─── Memory session actions ──────────────────────────────────────────────
+	const memoryMatch = /^\/api\/v1\/chat\/sessions\/([^/]+)\/memory$/.exec(p);
+	if (memoryMatch && req.method === "POST") {
+		const sessionId = memoryMatch[1]!;
+		const body = (await req.json().catch(() => ({}))) as { action?: string };
+		const allowed = ["view", "clear", "reset", "enqueue", "rebuild", "stats", "diagnose", "mm"];
+		if (!body.action || !allowed.includes(body.action)) {
+			return errorResponse("BAD_REQUEST", `action must be one of: ${allowed.join(", ")}`, 400);
+		}
+		ctx.omp.send(sessionId, {
+			id: `bridge-memory-${Date.now()}`,
+			type: "prompt",
+			message: `/memory ${body.action}`,
+		});
 		return jsonResponse({ ok: true });
 	}
 
