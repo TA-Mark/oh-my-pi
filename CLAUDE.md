@@ -157,37 +157,6 @@ Prefer CodeGraph results over repository-wide grep searches whenever possible.
 
 <!-- CODEGRAPH_END -->
 
-# Repository Analysis Workflow
-
-When analyzing an unfamiliar codebase:
-
-1. Start with CodeGraph.
-2. Use codegraph_context before reading files.
-3. Use codegraph_search to locate symbols.
-4. Use codegraph_callers and codegraph_callees to understand dependencies.
-5. Use codegraph_impact before modifying public interfaces.
-6. Read source files only after CodeGraph identifies the relevant locations.
-
-Do not perform repository-wide grep searches unless CodeGraph cannot answer the question.
-
-For architecture questions:
-
-* Use CodeGraph first.
-* Build a dependency map.
-* Then inspect implementation details.
-
-For bug fixing:
-
-* Trace execution path with CodeGraph.
-* Identify callers and callees.
-* Read only the files involved in the execution path.
-
-For refactoring:
-
-* Run impact analysis first.
-* List affected components.
-* Then perform code changes.
-
 
 ## Mandatory Context Policy
 

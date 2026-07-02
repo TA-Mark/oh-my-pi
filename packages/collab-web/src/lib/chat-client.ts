@@ -59,6 +59,9 @@ export interface ChatClient {
 	sendHandoff?(customInstructions?: string): void;
 	sendGetBranchMessages?(): Promise<Array<{ entryId: string; text: string }>>;
 	sendBranch?(entryId: string): void;
+	/** Plan-mode state is owned by the desktop bridge (no wire event); slash-intercept
+	 *  mirrors the result into sessionExtras so the UI banner reacts without polling. */
+	setLocalPlanMode?(active: boolean, objective: string | null): void;
 	showSyntheticDialog?(dialog: import("./client").PendingDialog, onRespond: (payload: DialogResponse) => void): void;
 	connect(): void;
 	close(): void;

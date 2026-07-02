@@ -21,6 +21,18 @@ export interface OmpConfig {
 	images?: { autoResize?: boolean };
 	searxng?: { endpoint?: string; token?: string; basicUsername?: string; basicPassword?: string };
 	memory?: { backend?: string };
+	compaction?: {
+		enabled?: boolean;
+		strategy?: "soft" | "remote" | "snapcompact";
+		thresholdPercent?: number;
+		thresholdTokens?: number;
+		keepRecentTokens?: number;
+		autoContinue?: boolean;
+		idleEnabled?: boolean;
+		idleThresholdTokens?: number;
+		idleTimeoutSeconds?: number;
+		reserveTokens?: number;
+	};
 }
 
 export type ConfigValue = string | number | boolean | null | string[] | Record<string, string | boolean>;

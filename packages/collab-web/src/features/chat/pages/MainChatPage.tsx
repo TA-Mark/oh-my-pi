@@ -248,8 +248,9 @@ export function MainChatPage({ onGoToLauncher }: Props): ReactNode {
 			onNewSession: () => void handleNewSession(),
 			onSidebarTab: (tab: string) => actions.setSidebarTab(tab as import("../hooks/useChatStateMachine").SidebarTab),
 			activeSessionId: () => ui.activeSessionId,
+			onPlanModeChange: (active: boolean, objective: string | null) => client?.setLocalPlanMode?.(active, objective),
 		}),
-		[handleNewSession, actions, ui.activeSessionId],
+		[handleNewSession, actions, ui.activeSessionId, client],
 	);
 
 	// ---- Connection phase from snapshot ----
@@ -288,6 +289,7 @@ export function MainChatPage({ onGoToLauncher }: Props): ReactNode {
 							currentName={displayTitle}
 							onRenamed={handleSessionRenamed}
 							phase={connPhase}
+							isCompacting={snapshot?.sessionExtras?.isCompacting}
 						/>
 					) : (
 						<span className="mc-session-title">{displayTitle}</span>
@@ -361,6 +363,7 @@ export function MainChatPage({ onGoToLauncher }: Props): ReactNode {
 						health={healthGate.status}
 						statusEntries={snapshot?.statusEntries}
 						isCompacting={snapshot?.sessionExtras?.isCompacting}
+						planModeActive={snapshot?.sessionExtras?.planModeActive}
 						onReconnect={handleReconnect}
 						onGoToLauncher={onGoToLauncher}
 					/>

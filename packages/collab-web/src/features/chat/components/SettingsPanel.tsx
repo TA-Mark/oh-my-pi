@@ -103,6 +103,9 @@ export function SettingsPanel({ client, snapshot, activeSessionId, onSessionRest
 				}
 				return false;
 			}
+			case "compaction.enabled":
+				client.sendSetAutoCompaction?.(value as boolean);
+				return true;
 			default:
 				return false;
 		}
@@ -233,10 +236,47 @@ export function SettingsPanel({ client, snapshot, activeSessionId, onSessionRest
 					/>
 				</Row>
 				<Row label="Auto-compaction">
-					<Toggle checked={extras.autoCompactionEnabled ?? false} onChange={v => client?.sendSetAutoCompaction?.(v)} />
+					<Toggle
+						checked={extras.autoCompactionEnabled ?? config.compaction?.enabled ?? false}
+						onChange={v => update("compaction.enabled", v)}
+					/>
 				</Row>
 				<Row label="Auto-retry">
 					<Toggle checked={false} onChange={v => client?.sendSetAutoRetry?.(v)} />
+				</Row>
+			</Section>
+
+			<Section title="Compaction">
+				<Row label="Strategy">
+					<Segmented
+						value={config.compaction?.strategy ?? "snapcompact"}
+						options={["soft", "remote", "snapcompact"]}
+						onChange={v => update("compaction.strategy", v)}
+					/>
+				</Row>
+				<Row label="Threshold %">
+					<NumberInput value={config.compaction?.thresholdPercent} onCommit={v => update("compaction.thresholdPercent", v)} onReset={() => reset("compaction.thresholdPercent")} />
+				</Row>
+				<Row label="Threshold tokens">
+					<NumberInput value={config.compaction?.thresholdTokens} onCommit={v => update("compaction.thresholdTokens", v)} onReset={() => reset("compaction.thresholdTokens")} />
+				</Row>
+				<Row label="Keep recent tokens">
+					<NumberInput value={config.compaction?.keepRecentTokens} onCommit={v => update("compaction.keepRecentTokens", v)} onReset={() => reset("compaction.keepRecentTokens")} />
+				</Row>
+				<Row label="Auto-continue">
+					<Toggle checked={config.compaction?.autoContinue ?? false} onChange={v => update("compaction.autoContinue", v)} />
+				</Row>
+				<Row label="Idle compaction">
+					<Toggle checked={config.compaction?.idleEnabled ?? false} onChange={v => update("compaction.idleEnabled", v)} />
+				</Row>
+				<Row label="Idle threshold tokens">
+					<NumberInput value={config.compaction?.idleThresholdTokens} onCommit={v => update("compaction.idleThresholdTokens", v)} onReset={() => reset("compaction.idleThresholdTokens")} />
+				</Row>
+				<Row label="Idle timeout (sec)">
+					<NumberInput value={config.compaction?.idleTimeoutSeconds} onCommit={v => update("compaction.idleTimeoutSeconds", v)} onReset={() => reset("compaction.idleTimeoutSeconds")} />
+				</Row>
+				<Row label="Reserve tokens">
+					<NumberInput value={config.compaction?.reserveTokens} onCommit={v => update("compaction.reserveTokens", v)} onReset={() => reset("compaction.reserveTokens")} />
 				</Row>
 			</Section>
 
@@ -357,6 +397,32 @@ function TextInput({ value, onCommit, placeholder, type }: { value: string; onCo
 				}
 			}}
 			spellCheck={false}
+		/>
+	);
+}
+
+function NumberInput({ value, onCommit, onReset, placeholder }: { value: number | undefined; onCommit(v: number | undefined): void; onReset?(): void; placeholder?: string }): ReactNode {
+	const [draft, setDraft] = useState(value !== undefined ? String(value) : "");
+	useEffect(() => { setDraft(value !== undefined ? String(value) : ""); }, [value]);
+	const commit = (): void => {
+		if (draft.trim() === "") {
+			if (value !== undefined) onReset?.();
+			return;
+		}
+		const n = Number(draft);
+		if (Number.isNaN(n)) return;
+		if (n !== value) onCommit(n);
+	};
+	return (
+		<input
+			className="mc-dialog-input"
+			type="number"
+			value={draft}
+			placeholder={placeholder ?? ""}
+			onChange={e => setDraft(e.target.value)}
+			onBlur={commit}
+			onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); commit(); } }}
+			style={{ width: 90 }}
 		/>
 	);
 }

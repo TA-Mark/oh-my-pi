@@ -60,6 +60,9 @@ export interface SessionExtras {
 	interruptMode?: "immediate" | "wait";
 	autoCompactionEnabled?: boolean;
 	isCompacting?: boolean;
+	/** Bridge-owned plan-mode flag; mirrored here so the UI banner can react without a get_state round-trip. */
+	planModeActive?: boolean;
+	planModeObjective?: string | null;
 }
 
 export type TodoStatus = "pending" | "in_progress" | "completed" | "abandoned";

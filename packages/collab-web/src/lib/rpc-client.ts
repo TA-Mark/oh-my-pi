@@ -446,6 +446,21 @@ export class RpcClient {
 		this.#send({ id: this.#nextReqId(), type: "set_interrupt_mode", mode });
 	}
 
+	/**
+	 * Local-only mirror of plan-mode state. The bridge owns the actual lifecycle
+	 * (model swap + prompt-prefix injection via /api/v1/chat/sessions/:id/plan);
+	 * the UI calls this after `planModeAction()` resolves so the banner and
+	 * settings reflect the flip immediately, without a get_state round-trip.
+	 */
+	setLocalPlanMode(active: boolean, objective: string | null): void {
+		this.#sessionExtras = {
+			...this.#sessionExtras,
+			planModeActive: active,
+			planModeObjective: objective,
+		};
+		this.#publish();
+	}
+
 	/** Get branch siblings — alternative messages at branch points. */
 	async sendGetBranchMessages(): Promise<Array<{ entryId: string; text: string }>> {
 		const data = (await this.#request("get_branch_messages", { type: "get_branch_messages" })) as {
@@ -781,6 +796,16 @@ export class RpcClient {
 			}
 			case "extension_ui_request": {
 				this.#handleExtensionUiRequest(frame);
+				return;
+			}
+			case "auto_compaction_start": {
+				this.#sessionExtras = { ...this.#sessionExtras, isCompacting: true };
+				this.#publish();
+				return;
+			}
+			case "auto_compaction_end": {
+				this.#sessionExtras = { ...this.#sessionExtras, isCompacting: false };
+				this.#publish();
 				return;
 			}
 			case "response": {

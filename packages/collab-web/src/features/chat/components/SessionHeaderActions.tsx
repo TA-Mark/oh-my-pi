@@ -15,6 +15,7 @@ interface Props {
 	onRenamed(name: string): void;
 	/** WS phase — used to gate RPC-dependent actions (Branches). */
 	phase?: string;
+	isCompacting?: boolean;
 }
 
 function fmtTokens(n: number | undefined): string {
@@ -31,7 +32,7 @@ function fmtCost(n: number | undefined): string {
 	return `$${n.toFixed(4)}`;
 }
 
-export function SessionHeaderActions({ client, currentName, onRenamed, phase }: Props): ReactNode {
+export function SessionHeaderActions({ client, currentName, onRenamed, phase, isCompacting }: Props): ReactNode {
 	const [stats, setStats] = useState<SessionStats | null>(null);
 	const [editing, setEditing] = useState(false);
 	const [draft, setDraft] = useState(currentName);
@@ -40,6 +41,8 @@ export function SessionHeaderActions({ client, currentName, onRenamed, phase }: 
 	const [error, setError] = useState<string | null>(null);
 	const [branches, setBranches] = useState<Array<{ entryId: string; text: string }> | null>(null);
 	const [branchOpen, setBranchOpen] = useState(false);
+	const [compactOpen, setCompactOpen] = useState(false);
+	const [compactInstructions, setCompactInstructions] = useState("");
 	const inputRef = useRef<HTMLInputElement | null>(null);
 
 	// Periodic stats poll while a session is live (and the user hasn't hidden
@@ -102,8 +105,14 @@ export function SessionHeaderActions({ client, currentName, onRenamed, phase }: 
 	};
 
 	const handleCompact = useCallback(() => {
-		client?.sendCompact?.();
-	}, [client]);
+		setCompactOpen(true);
+	}, []);
+
+	const handleConfirmCompact = useCallback(() => {
+		client?.sendCompact?.(compactInstructions.trim() || undefined);
+		setCompactOpen(false);
+		setCompactInstructions("");
+	}, [client, compactInstructions]);
 
 	const handleExport = useCallback(async () => {
 		if (!client?.sendExportHtml) return;
@@ -205,10 +214,10 @@ export function SessionHeaderActions({ client, currentName, onRenamed, phase }: 
 					type="button"
 					className="mc-header-iconbtn"
 					onClick={handleCompact}
-					disabled={!client?.sendCompact}
-					title="Compact this session — summarize older context"
+					disabled={!client?.sendCompact || isCompacting}
+					title={isCompacting ? "Compaction in progress…" : "Compact this session — summarize older context"}
 				>
-					⊟ Compact
+					{isCompacting ? "⊟ Compacting…" : "⊟ Compact"}
 				</button>
 				<button
 					type="button"
@@ -294,6 +303,40 @@ export function SessionHeaderActions({ client, currentName, onRenamed, phase }: 
 						<div className="mc-dialog-actions">
 							<button type="button" className="mc-btn" onClick={() => setBranchOpen(false)}>
 								Close
+							</button>
+						</div>
+					</div>
+				</div>
+			)}
+
+			{compactOpen && (
+				<div className="mc-dialog-overlay" onMouseDown={() => setCompactOpen(false)}>
+					<div
+						className="mc-dialog"
+						onMouseDown={e => e.stopPropagation()}
+						style={{ maxWidth: 480 }}
+					>
+						<div className="mc-dialog-title">Compact Session</div>
+						<div className="mc-dialog-hint" style={{ marginBottom: 8 }}>
+							Summarize older context to free up space. Custom instructions are optional.
+						</div>
+						<textarea
+							className="mc-input-textarea"
+							rows={4}
+							placeholder="Focus the summary on…"
+							value={compactInstructions}
+							onChange={e => setCompactInstructions(e.target.value)}
+							style={{ width: "100%", resize: "vertical", boxSizing: "border-box" }}
+						/>
+						<div className="mc-dialog-hint" style={{ fontSize: 10, color: "var(--fg-faint)", margin: "6px 0" }}>
+							Compact mode can be configured in Settings → Compaction → Strategy
+						</div>
+						<div className="mc-dialog-actions">
+							<button type="button" className="mc-btn" onClick={() => setCompactOpen(false)}>
+								Cancel
+							</button>
+							<button type="button" className="mc-btn mc-btn--primary" onClick={handleConfirmCompact}>
+								Compact
 							</button>
 						</div>
 					</div>

@@ -31,6 +31,8 @@ export interface InterceptCallbacks {
 	onNewSession(): void;
 	onSidebarTab(tab: string): void;
 	activeSessionId?(): string | null;
+	/** Plan-mode has no wire event; slash-intercept mirrors the bridge result into the UI. */
+	onPlanModeChange?(active: boolean, objective: string | null): void;
 }
 
 export interface InterceptResult {
@@ -327,10 +329,12 @@ export async function interceptSlashCommand(
 				const { planModeAction } = await import("../features/chat/api/chatApi");
 				if (parsed.args) {
 					await planModeAction(sessionId, "start", parsed.args);
+					callbacks.onPlanModeChange?.(true, parsed.args);
 				} else {
 					const res = (await planModeAction(sessionId, "status")) as { active?: boolean };
 					if (res.active) {
 						await planModeAction(sessionId, "exit");
+						callbacks.onPlanModeChange?.(false, null);
 						showSelect(client, "Plan Mode", ["Plan mode exited.\n\nOK"], () => {});
 					} else {
 						showSelect(

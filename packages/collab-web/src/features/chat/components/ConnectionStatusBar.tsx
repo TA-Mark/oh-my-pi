@@ -7,6 +7,7 @@ interface Props {
 	health: LauncherHealthStatus | null;
 	statusEntries?: readonly StatusEntry[];
 	isCompacting?: boolean;
+	planModeActive?: boolean;
 	onReconnect(): void;
 	onGoToLauncher(): void;
 }
@@ -19,13 +20,14 @@ const PHASE_LABELS: Record<ConnectionPhase, string> = {
 	ended: "Session ended",
 };
 
-export function ConnectionStatusBar({ phase, health, statusEntries, isCompacting, onReconnect, onGoToLauncher }: Props): ReactNode {
+export function ConnectionStatusBar({ phase, health, statusEntries, isCompacting, planModeActive, onReconnect, onGoToLauncher }: Props): ReactNode {
 	// "installing" is a benign transient — runtime is being staged on first
 	// boot. Show a calm blue banner with progress instead of the red error.
 	const isInstalling = health?.phase === "installing" || (health?.installProgress != null && !health.installProgress.message.includes("ready"));
 	const isUnhealthy = health !== null && !health.healthy && !isInstalling;
 
 	const modeBanners: string[] = [];
+	if (planModeActive) modeBanners.push("PLAN MODE");
 	if (isCompacting) modeBanners.push("COMPACTING");
 	if (statusEntries) {
 		for (const entry of statusEntries) {

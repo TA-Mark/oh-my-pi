@@ -367,19 +367,78 @@ export async function handleChat(ctx: BridgeContext, req: Request, url: URL): Pr
 		const body = (await req.json().catch(() => ({}))) as { action: string; objective?: string };
 
 		if (body.action === "start" && body.objective) {
-			const state = getPlanState(sessionId);
-			const planPrefix = buildPlanPromptPrefix(body.objective);
+			// 1) Capture current model via get_state request/response (id-echo correlator).
+			//    The response envelope shape { id, command:"get_state", success, data.model:{provider,id} }
+			//    is confirmed by the RpcClient parser at rpc-client.ts (get_state case).
+			const reqId = `bridge-plan-getstate-${Date.now()}`;
+			const originalModel = await new Promise<{ provider: string; id: string } | null>(resolve => {
+				let settled = false;
+				const timer = setTimeout(() => {
+					if (settled) return;
+					settled = true;
+					unsub();
+					resolve(null);
+				}, 3000);
+				const unsub = ctx.omp.subscribe(sessionId, env => {
+					if (settled) return;
+					if (env.type !== "frame") return;
+					const f = env.frame as { id?: string; command?: string; success?: boolean; data?: { model?: { provider?: unknown; id?: unknown } } } | null;
+					if (!f || f.id !== reqId) return;
+					if (f.success !== true || !f.data) {
+						settled = true;
+						clearTimeout(timer);
+						unsub();
+						resolve(null);
+						return;
+					}
+					const m = f.data.model;
+					settled = true;
+					clearTimeout(timer);
+					unsub();
+					if (m && typeof m.provider === "string" && typeof m.id === "string") {
+						resolve({ provider: m.provider, id: m.id });
+					} else {
+						resolve(null);
+					}
+				}, false);
+				ctx.omp.send(sessionId, { id: reqId, type: "get_state" });
+			});
+
+			// 2) Resolve plan-role model from config ("provider/id" spec).
+			const roles = readModelRoles();
+			const planSpec = roles.plan;
+			let planModel: { provider: string; id: string } | null = null;
+			if (planSpec && planSpec.includes("/")) {
+				const sep = planSpec.indexOf("/");
+				planModel = { provider: planSpec.slice(0, sep), id: planSpec.slice(sep + 1) };
+			}
+
+			// 3) Persist state (originalModel now real, not the null-propagation bug).
 			setPlanState(sessionId, {
 				active: true,
-				originalModel: state.originalModel,
-				planModel: state.planModel,
+				originalModel,
+				planModel,
 				objective: body.objective,
 			});
+
+			// 4) Switch model if a plan role is configured. Skip silently otherwise —
+			//    the prefix prompt still constrains behavior read-only.
+			if (planModel) {
+				ctx.omp.send(sessionId, {
+					id: `bridge-plan-setmodel-${Date.now()}`,
+					type: "set_model",
+					provider: planModel.provider,
+					modelId: planModel.id,
+				});
+			}
+
+			// 5) Send the plan-mode system prefix as a user prompt.
 			ctx.omp.send(sessionId, {
 				id: `bridge-plan-${Date.now()}`,
 				type: "prompt",
-				message: planPrefix,
+				message: buildPlanPromptPrefix(body.objective),
 			});
+
 			return jsonResponse({ ok: true, state: getPlanState(sessionId) });
 		}
 
