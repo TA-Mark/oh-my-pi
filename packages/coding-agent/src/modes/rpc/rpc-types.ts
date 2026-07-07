@@ -72,6 +72,7 @@ export type RpcCommand =
 	// Session
 	| { id?: string; type: "get_session_stats" }
 	| { id?: string; type: "export_html"; outputPath?: string }
+	| { id?: string; type: "list_sessions" }
 	| { id?: string; type: "switch_session"; sessionPath: string }
 	| { id?: string; type: "branch"; entryId: string }
 	| { id?: string; type: "get_branch_messages" }
@@ -111,6 +112,18 @@ export interface RpcSessionState {
 	dumpTools?: Array<{ name: string; description: string; parameters: unknown; examples?: readonly ToolExample[] }>;
 	/** Current context window usage. */
 	contextUsage?: ContextUsage;
+}
+
+/** Compact session descriptor for the `list_sessions` picker (subset of {@link SessionInfo}). */
+export interface RpcSessionSummary {
+	path: string;
+	id: string;
+	title?: string;
+	messageCount: number;
+	created: string;
+	modified: string;
+	/** True when this is the session currently loaded in the RPC process. */
+	active: boolean;
 }
 
 export interface RpcAvailableSlashCommand {
@@ -264,6 +277,7 @@ export type RpcResponse =
 	// Session
 	| { id?: string; type: "response"; command: "get_session_stats"; success: true; data: SessionStats }
 	| { id?: string; type: "response"; command: "export_html"; success: true; data: { path: string } }
+	| { id?: string; type: "response"; command: "list_sessions"; success: true; data: { sessions: RpcSessionSummary[] } }
 	| { id?: string; type: "response"; command: "switch_session"; success: true; data: { cancelled: boolean } }
 	| { id?: string; type: "response"; command: "branch"; success: true; data: { text: string; cancelled: boolean } }
 	| {

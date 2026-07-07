@@ -4,7 +4,7 @@ import type { AuthPrompt } from "./components/AuthDialog";
 import type { ComposerInjection } from "./components/Composer";
 import type { Toast } from "./components/Toasts";
 import { WelcomeScreen } from "./components/WelcomeScreen";
-import { appendStderr, appendUserMessage, initialViewModel, reduce, type ViewModel } from "./lib/reducer";
+import { appendStderr, appendUserMessage, initialViewModel, reduce, seedMessages, type ViewModel } from "./lib/reducer";
 import { DesktopRpcClient, type EngineStatus } from "./lib/rpc-client";
 import type {
 	EngineEvent,
@@ -12,6 +12,8 @@ import type {
 	ExtensionUIResponse,
 	LoginProvider,
 	ModelInfo,
+	SessionMessage,
+	SessionSummary,
 	SubagentSnapshot,
 	ThinkingLevel,
 } from "./lib/rpc-protocol";
@@ -21,6 +23,7 @@ type Action =
 	| { kind: "event"; event: EngineEvent }
 	| { kind: "user"; text: string }
 	| { kind: "stderr"; line: string }
+	| { kind: "seed"; messages: SessionMessage[] }
 	| { kind: "reset" };
 
 function rootReducer(state: ViewModel, action: Action): ViewModel {
@@ -31,6 +34,8 @@ function rootReducer(state: ViewModel, action: Action): ViewModel {
 			return appendUserMessage(state, action.text);
 		case "stderr":
 			return appendStderr(state, action.line);
+		case "seed":
+			return seedMessages(action.messages);
 		case "reset":
 			return initialViewModel;
 	}
@@ -58,6 +63,9 @@ export function App() {
 	const [dialogQueue, setDialogQueue] = useState<ExtensionUIRequest[]>([]);
 	const [toasts, setToasts] = useState<Toast[]>([]);
 	const [loginProviders, setLoginProviders] = useState<LoginProvider[]>([]);
+	const [sessions, setSessions] = useState<SessionSummary[]>([]);
+	const [historyOpen, setHistoryOpen] = useState(false);
+	const [historyLoading, setHistoryLoading] = useState(false);
 	const [injection, setInjection] = useState<ComposerInjection | undefined>();
 	const [authPrompt, setAuthPrompt] = useState<AuthPrompt | null>(null);
 	const clientRef = useRef<DesktopRpcClient | null>(null);
@@ -100,6 +108,19 @@ export function App() {
 		}
 	}, []);
 
+	const refreshSessions = useCallback(async () => {
+		const client = clientRef.current;
+		if (!client) return;
+		setHistoryLoading(true);
+		try {
+			setSessions(await client.listSessions());
+		} catch {
+			// transient; ignore
+		} finally {
+			setHistoryLoading(false);
+		}
+	}, []);
+
 	const dismissToast = useCallback((id: string) => {
 		setToasts(list => list.filter(toast => toast.id !== id));
 	}, []);
@@ -128,7 +149,11 @@ export function App() {
 				case "open_url":
 					// Surface a persistent, actionable dialog (URL + open/copy) so login is
 					// usable and debuggable even if the auto-open below fails silently.
-					setAuthPrompt({ provider: loginProviderRef.current, url: request.url, instructions: request.instructions });
+					setAuthPrompt({
+						provider: loginProviderRef.current,
+						url: request.url,
+						instructions: request.instructions,
+					});
 					void openExternalUrl(request.url).catch(() => {});
 					return;
 				case "set_editor_text":
@@ -206,6 +231,8 @@ export function App() {
 		setDialogQueue([]);
 		setToasts([]);
 		setLoginProviders([]);
+		setSessions([]);
+		setHistoryOpen(false);
 		setInjection(undefined);
 		setAuthPrompt(null);
 		loginProviderRef.current = undefined;
@@ -252,10 +279,10 @@ export function App() {
 			.then(() => {
 				dispatch({ kind: "reset" });
 				setSubagents([]);
-				return refreshState();
+				return Promise.all([refreshState(), historyOpen ? refreshSessions() : Promise.resolve()]);
 			})
 			.catch(err => reportError("new session failed", err));
-	}, [refreshState, reportError]);
+	}, [refreshState, refreshSessions, historyOpen, reportError]);
 
 	const onRenameSession = useCallback(
 		(name: string) => {
@@ -265,6 +292,35 @@ export function App() {
 				.catch(err => reportError("rename failed", err));
 		},
 		[refreshState, reportError],
+	);
+
+	const onToggleHistory = useCallback(() => {
+		setHistoryOpen(open => {
+			const next = !open;
+			if (next) void refreshSessions();
+			return next;
+		});
+	}, [refreshSessions]);
+
+	const onSelectSession = useCallback(
+		(session: SessionSummary) => {
+			const client = clientRef.current;
+			if (!client || session.active) return;
+			void (async () => {
+				try {
+					const { cancelled } = await client.switchSession(session.path);
+					if (cancelled) return;
+					const messages = await client.getMessages();
+					dispatch({ kind: "seed", messages });
+					setSubagents([]);
+					setHistoryOpen(false);
+					await Promise.all([refreshState(), refreshSessions()]);
+				} catch (err) {
+					reportError("switch session failed", err);
+				}
+			})();
+		},
+		[refreshState, refreshSessions, reportError],
 	);
 
 	const refreshAuth = useCallback(async () => {
@@ -313,7 +369,9 @@ export function App() {
 
 	const onAuthOpen = useCallback(
 		(url: string) => {
-			void openExternalUrl(url).catch(() => addToast("Could not open the browser — copy the link instead.", "warning"));
+			void openExternalUrl(url).catch(() =>
+				addToast("Could not open the browser — copy the link instead.", "warning"),
+			);
 		},
 		[addToast],
 	);
@@ -337,6 +395,9 @@ export function App() {
 			session={session}
 			subagents={subagents}
 			loginProviders={loginProviders}
+			sessions={sessions}
+			historyOpen={historyOpen}
+			historyLoading={historyLoading}
 			dialog={dialogQueue.find(d => DIALOG_METHODS.has(d.method)) ?? null}
 			toasts={toasts}
 			injection={injection}
@@ -348,6 +409,8 @@ export function App() {
 			onSelectThinking={onSelectThinking}
 			onNewSession={onNewSession}
 			onRenameSession={onRenameSession}
+			onToggleHistory={onToggleHistory}
+			onSelectSession={onSelectSession}
 			onLogin={onLogin}
 			onLogout={onLogout}
 			onAuthOpen={onAuthOpen}

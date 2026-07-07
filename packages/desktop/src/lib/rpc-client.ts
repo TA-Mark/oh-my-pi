@@ -14,10 +14,12 @@ import {
 	type ModelInfo,
 	type RpcCommand,
 	type RpcResponse,
-	type SessionState,
 	SESSION_EVENT_TYPES,
-	type SubagentSnapshot,
+	type SessionMessage,
+	type SessionState,
+	type SessionSummary,
 	SUBAGENT_FRAME_TYPES,
+	type SubagentSnapshot,
 	type ThinkingLevel,
 } from "./rpc-protocol";
 import { onEngineExit, onRpcFrame, onRpcStderr, sendRpcLine, startEngine, stopEngine } from "./tauri-bridge";
@@ -173,6 +175,24 @@ export class DesktopRpcClient {
 
 	async setSessionName(name: string): Promise<void> {
 		await this.#send({ type: "set_session_name", name });
+	}
+
+	/** List sessions for the current workspace (newest first, `active` flags the loaded one). */
+	async listSessions(): Promise<SessionSummary[]> {
+		const response = await this.#send({ type: "list_sessions" });
+		return this.#data<{ sessions?: SessionSummary[] }>(response).sessions ?? [];
+	}
+
+	/** Switch to a different session file. Returns `cancelled: true` if an extension blocked it. */
+	async switchSession(sessionPath: string): Promise<{ cancelled: boolean }> {
+		const response = await this.#send({ type: "switch_session", sessionPath });
+		return this.#data<{ cancelled: boolean }>(response);
+	}
+
+	/** Fetch the full persisted message history of the loaded session (for transcript re-seed). */
+	async getMessages(): Promise<SessionMessage[]> {
+		const response = await this.#send({ type: "get_messages" });
+		return this.#data<{ messages?: SessionMessage[] }>(response).messages ?? [];
 	}
 
 	// ── Internal ──────────────────────────────────────────────────────────────

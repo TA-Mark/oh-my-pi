@@ -35,12 +35,13 @@ next to the app binary at runtime. `bun --cwd=packages/desktop run bundle` produ
 installer. Verified on Windows (MSI + NSIS, sidecar embedded); macOS DMG + signing/notary
 and a multi-platform release workflow are wired in CI. See [`docs/packaging.md`](docs/packaging.md).
 
-Known gap: switching to a *past* session needs a session path, and the RPC layer
-has no "list sessions" command yet — session history/switch is deferred (would
-need a small additive engine command; track in `docs/core-touchpoints.md`).
+Session history/switch is implemented via a left **History drawer**: an additive
+`list_sessions` RPC command (paired with the pre-existing `switch_session` + `get_messages`)
+lists the workspace's sessions, and picking one switches the engine and re-seeds the
+transcript from its persisted messages (see `docs/core-touchpoints.md`).
 
 All five roadmap phases are implemented. Remaining optional work: auto-update, macOS
-build/signing verification on a mac host, session history/switch, and the currently-ignored
+build/signing verification on a mac host, and the currently-ignored
 `setStatus`/`setWidget`/`setTitle` extension-UI methods.
 
 ## Architecture (short)

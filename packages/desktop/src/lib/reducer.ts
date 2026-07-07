@@ -3,7 +3,7 @@
  * layer renders. Handles streaming assistant text, tool lifecycle (args →
  * partial → result, fed to the reused collab-web ToolView), and notices.
  */
-import type { EngineEvent, EngineMessage } from "./rpc-protocol";
+import type { ContentPart, EngineEvent, EngineMessage, SessionMessage } from "./rpc-protocol";
 
 export type ChatRole = "user" | "assistant" | "tool" | "system";
 
@@ -57,9 +57,7 @@ function resultText(result: unknown): string {
 	if (typeof result === "string") return result;
 	if (isRecord(result) && Array.isArray(result.content)) {
 		return result.content
-			.flatMap(part =>
-				isRecord(part) && part.type === "text" && typeof part.text === "string" ? [part.text] : [],
-			)
+			.flatMap(part => (isRecord(part) && part.type === "text" && typeof part.text === "string" ? [part.text] : []))
 			.join("");
 	}
 	return "";
@@ -169,4 +167,75 @@ export function appendUserMessage(state: ViewModel, text: string): ViewModel {
 
 export function appendStderr(state: ViewModel, line: string): ViewModel {
 	return { ...state, stderr: [...state.stderr, line].slice(-200) };
+}
+
+/** Concatenate the text parts of a persisted message's content. */
+function partsText(content: ContentPart[] | string | undefined): string {
+	if (typeof content === "string") return content;
+	if (!Array.isArray(content)) return "";
+	return content.flatMap(part => (part.type === "text" ? [String(part.text ?? "")] : [])).join("");
+}
+
+/**
+ * Rebuild the transcript from a session's persisted messages (from `get_messages`).
+ * Assistant messages carry inline `toolCall` parts (args); a later `toolResult`
+ * message fills the matching card's result — the same pairing the streaming path
+ * does via `toolCallId`.
+ */
+export function seedMessages(messages: SessionMessage[]): ViewModel {
+	const out: ChatMessage[] = [];
+	const toolIndex = new Map<string, number>();
+
+	for (const message of messages) {
+		if (message.role === "user") {
+			const text = partsText(message.content);
+			if (text) out.push({ id: newId("u"), role: "user", text });
+			continue;
+		}
+		if (message.role === "assistant") {
+			const view = assistantView({
+				role: "assistant",
+				content: (message.content as EngineMessage["content"]) ?? "",
+				errorMessage: message.errorMessage,
+				stopReason: message.stopReason,
+			});
+			if (view.text || view.error) {
+				out.push({ id: newId("a"), role: "assistant", text: view.text, error: view.error });
+			}
+			if (Array.isArray(message.content)) {
+				for (const part of message.content) {
+					if (part.type !== "toolCall" || typeof part.id !== "string") continue;
+					toolIndex.set(part.id, out.length);
+					out.push({
+						id: `t_${part.id}`,
+						role: "tool",
+						text: "",
+						toolName: typeof part.name === "string" ? part.name : "tool",
+						toolArgs: part.arguments,
+						toolIntent: typeof part.intent === "string" ? part.intent : undefined,
+						toolRunning: false,
+					});
+				}
+			}
+			continue;
+		}
+		if (message.role === "toolResult" && typeof message.toolCallId === "string") {
+			const at = toolIndex.get(message.toolCallId);
+			const result = finalResult({ content: message.content, details: message.details }, message.isError);
+			if (at !== undefined && out[at]) {
+				out[at] = { ...out[at], toolResult: result, toolName: message.toolName ?? out[at].toolName };
+			} else {
+				out.push({
+					id: `t_${message.toolCallId}`,
+					role: "tool",
+					text: "",
+					toolName: message.toolName ?? "tool",
+					toolResult: result,
+					toolRunning: false,
+				});
+			}
+		}
+	}
+
+	return { ...initialViewModel, messages: out };
 }

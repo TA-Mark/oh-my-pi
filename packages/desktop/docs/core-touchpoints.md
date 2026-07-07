@@ -19,3 +19,20 @@ The desktop Accounts UI needs sign-out, so we added a small, additive command:
 Additive only (new union arm + new case); no existing behavior changed. If upstream adds
 its own logout command, drop this in favor of theirs during the next sync. Verified by the
 runtime probe in `scripts/smoke-rpc.ts` (logout step).
+
+## `packages/coding-agent/src/modes/rpc/` — `list_sessions` RPC command
+
+The RPC layer shipped `switch_session` (takes a `sessionPath`) but had no way to *enumerate*
+sessions, so the desktop couldn't build a history/switch UI. `SessionManager.list(cwd)`
+already exists (used by ACP/TUI); we exposed it over RPC:
+
+- `rpc-types.ts`: `RpcCommand` gains `{ type: "list_sessions" }`; new `RpcSessionSummary`
+  interface (path/id/title/messageCount/created/modified/active); `RpcResponse` gains the
+  matching `command: "list_sessions"` success variant `{ sessions: RpcSessionSummary[] }`.
+- `rpc-mode.ts`: a `case "list_sessions"` calls `SessionManager.list(session.sessionManager.getCwd())`
+  and flags the entry whose `path === session.sessionFile` as `active`.
+
+Additive only (new union arm + new case + one interface). No existing behavior changed. The
+desktop pairs this with the pre-existing `switch_session` + `get_messages` to switch sessions
+and re-seed the transcript. If upstream adds its own list command, drop this during sync.
+Verified by the runtime probe in `scripts/smoke-rpc.ts` (list_sessions step).

@@ -8,6 +8,7 @@
 //   6. get_subagents → { subagents: [...] } (Phase 3)
 //   7. get_login_providers → { providers: [...] } (Phase 4)
 //   8. logout (fake provider) → success (desktop-added core command; core-touchpoints.md)
+//   9. list_sessions → { sessions: [...] } (session history/switch; core-touchpoints.md)
 // Exits non-zero on any drift. Keep in sync with src/lib/rpc-protocol.ts.
 import * as path from "node:path";
 
@@ -102,6 +103,13 @@ try {
 			} else if (frame.id === "s7") {
 				if (frame.success !== true) fail(`logout failed: ${line}`);
 				console.log("OK: logout accepted");
+				send({ type: "list_sessions", id: "s8" });
+			} else if (frame.id === "s8") {
+				if (frame.success !== true || !isRecord(frame.data)) fail(`list_sessions failed: ${line}`);
+				if (!Array.isArray((frame.data as Record<string, unknown>).sessions)) {
+					fail("list_sessions.data.sessions is not an array");
+				}
+				console.log("OK: list_sessions contract holds (sessions array)");
 				clearTimeout(timeout);
 				child.kill();
 				process.exit(0);

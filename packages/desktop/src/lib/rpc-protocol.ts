@@ -29,6 +29,9 @@ export type RpcCommand =
 	| { id?: string; type: "set_session_name"; name: string }
 	| { id?: string; type: "get_subagents" }
 	| { id?: string; type: "set_subagent_subscription"; level: "off" | "progress" | "events" }
+	| { id?: string; type: "list_sessions" }
+	| { id?: string; type: "switch_session"; sessionPath: string }
+	| { id?: string; type: "get_messages" }
 	| { id?: string; type: "get_login_providers" }
 	| { id?: string; type: "login"; providerId: string }
 	| { id?: string; type: "logout"; providerId: string };
@@ -67,6 +70,37 @@ export interface SessionState {
 	messageCount: number;
 }
 
+/** Session descriptor from `list_sessions` (mirrors engine `RpcSessionSummary`). */
+export interface SessionSummary {
+	path: string;
+	id: string;
+	title?: string;
+	messageCount: number;
+	/** ISO-8601 timestamps. */
+	created: string;
+	modified: string;
+	/** True when this is the session currently loaded in the engine. */
+	active: boolean;
+}
+
+/**
+ * A persisted session message from `get_messages` (subset of engine `AgentMessage`).
+ * Used to re-seed the transcript after switching sessions. `toolResult`/`toolCall`
+ * shapes mirror pi-ai `ToolResultMessage` / `ToolCall`.
+ */
+export interface SessionMessage {
+	role: "user" | "assistant" | "developer" | "toolResult";
+	content?: ContentPart[] | string;
+	/** assistant turn failure. */
+	errorMessage?: string;
+	stopReason?: string;
+	/** role === "toolResult" fields. */
+	toolCallId?: string;
+	toolName?: string;
+	details?: unknown;
+	isError?: boolean;
+}
+
 /** Lightweight model descriptor for header display (subset of pi-ai `Model`). */
 export interface ModelInfo {
 	provider: string;
@@ -96,8 +130,22 @@ export const SUBAGENT_FRAME_TYPES = ["subagent_lifecycle", "subagent_progress", 
 export type ExtensionUIRequest =
 	| { type: "extension_ui_request"; id: string; method: "select"; title: string; options: string[]; timeout?: number }
 	| { type: "extension_ui_request"; id: string; method: "confirm"; title: string; message: string; timeout?: number }
-	| { type: "extension_ui_request"; id: string; method: "input"; title: string; placeholder?: string; timeout?: number }
-	| { type: "extension_ui_request"; id: string; method: "editor"; title: string; prefill?: string; promptStyle?: boolean }
+	| {
+			type: "extension_ui_request";
+			id: string;
+			method: "input";
+			title: string;
+			placeholder?: string;
+			timeout?: number;
+	  }
+	| {
+			type: "extension_ui_request";
+			id: string;
+			method: "editor";
+			title: string;
+			prefill?: string;
+			promptStyle?: boolean;
+	  }
 	| { type: "extension_ui_request"; id: string; method: "cancel"; targetId: string }
 	| {
 			type: "extension_ui_request";

@@ -6,6 +6,7 @@ import type {
 	ExtensionUIResponse,
 	LoginProvider,
 	ModelInfo,
+	SessionSummary,
 	SubagentSnapshot,
 	ThinkingLevel,
 } from "../lib/rpc-protocol";
@@ -14,6 +15,7 @@ import { Composer, type ComposerInjection } from "./Composer";
 import { DialogHost } from "./DialogHost";
 import { LoginMenu } from "./LoginMenu";
 import { ModelPicker } from "./ModelPicker";
+import { SessionHistory } from "./SessionHistory";
 import { SubagentPanel } from "./SubagentPanel";
 import { ThinkingPicker } from "./ThinkingPicker";
 import { type Toast, Toasts } from "./Toasts";
@@ -35,6 +37,9 @@ interface AppShellProps {
 	session: SessionInfo;
 	subagents: SubagentSnapshot[];
 	loginProviders: LoginProvider[];
+	sessions: SessionSummary[];
+	historyOpen: boolean;
+	historyLoading: boolean;
 	dialog: ExtensionUIRequest | null;
 	toasts: Toast[];
 	injection?: ComposerInjection;
@@ -46,6 +51,8 @@ interface AppShellProps {
 	onSelectThinking: (level: ThinkingLevel) => void;
 	onNewSession: () => void;
 	onRenameSession: (name: string) => void;
+	onToggleHistory: () => void;
+	onSelectSession: (session: SessionSummary) => void;
 	onLogin: (providerId: string) => void;
 	onLogout: (providerId: string) => void;
 	onAuthOpen: (url: string) => void;
@@ -114,6 +121,9 @@ export function AppShell(props: AppShellProps) {
 		session,
 		subagents,
 		loginProviders,
+		sessions,
+		historyOpen,
+		historyLoading,
 		dialog,
 		toasts,
 		injection,
@@ -125,6 +135,8 @@ export function AppShell(props: AppShellProps) {
 		onSelectThinking,
 		onNewSession,
 		onRenameSession,
+		onToggleHistory,
+		onSelectSession,
 		onLogin,
 		onLogout,
 		onAuthOpen,
@@ -148,6 +160,14 @@ export function AppShell(props: AppShellProps) {
 					<ModelPicker current={session.model} models={models} disabled={disabled} onSelect={onSelectModel} />
 					<ThinkingPicker current={session.thinkingLevel} disabled={disabled} onSelect={onSelectThinking} />
 					<LoginMenu providers={loginProviders} disabled={disabled} onLogin={onLogin} onLogout={onLogout} />
+					<button
+						type="button"
+						className={`btn btn-ghost${historyOpen ? " btn-active" : ""}`}
+						disabled={disabled}
+						onClick={onToggleHistory}
+					>
+						History
+					</button>
 					<button type="button" className="btn btn-ghost" disabled={disabled} onClick={onNewSession}>
 						New
 					</button>
@@ -161,8 +181,17 @@ export function AppShell(props: AppShellProps) {
 			{statusDetail && status === "error" ? <div className="error-banner">{statusDetail}</div> : null}
 
 			<main className="app-main">
-				<SubagentPanel subagents={subagents} />
-				<Transcript messages={vm.messages} />
+				<SessionHistory
+					open={historyOpen}
+					sessions={sessions}
+					loading={historyLoading}
+					onSelect={onSelectSession}
+					onClose={onToggleHistory}
+				/>
+				<div className="app-content">
+					<SubagentPanel subagents={subagents} />
+					<Transcript messages={vm.messages} />
+				</div>
 			</main>
 
 			{status === "error" && vm.stderr.length > 0 ? (
@@ -173,7 +202,13 @@ export function AppShell(props: AppShellProps) {
 			) : null}
 
 			<footer className="app-footer">
-				<Composer disabled={disabled} streaming={vm.streaming} injection={injection} onSend={onSend} onAbort={onAbort} />
+				<Composer
+					disabled={disabled}
+					streaming={vm.streaming}
+					injection={injection}
+					onSend={onSend}
+					onAbort={onAbort}
+				/>
 			</footer>
 
 			<DialogHost request={dialog} onRespond={onDialogRespond} />
