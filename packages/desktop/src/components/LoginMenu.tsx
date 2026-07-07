@@ -5,9 +5,10 @@ interface LoginMenuProps {
 	providers: LoginProvider[];
 	disabled?: boolean;
 	onLogin: (providerId: string) => void;
+	onLogout: (providerId: string) => void;
 }
 
-export function LoginMenu({ providers, disabled, onLogin }: LoginMenuProps) {
+export function LoginMenu({ providers, disabled, onLogin, onLogout }: LoginMenuProps) {
 	const [open, setOpen] = useState(false);
 	if (providers.length === 0) return null;
 	const signedIn = providers.filter(p => p.authenticated).length;
@@ -23,21 +24,35 @@ export function LoginMenu({ providers, disabled, onLogin }: LoginMenuProps) {
 					<div className="picker-panel">
 						<div className="picker-list">
 							{providers.map(provider => (
-								<button
-									key={provider.id}
-									type="button"
-									className="picker-item"
-									disabled={!provider.available}
-									onClick={() => {
-										onLogin(provider.id);
-										setOpen(false);
-									}}
-								>
-									<span className="picker-item-id">{provider.name}</span>
-									<span className="picker-item-provider">
-										{provider.authenticated ? "✓ signed in" : provider.available ? "sign in" : "unavailable"}
-									</span>
-								</button>
+								<div key={provider.id} className="login-row">
+									<button
+										type="button"
+										className="login-main"
+										disabled={!provider.available}
+										title={provider.authenticated ? "Re-authenticate" : "Sign in"}
+										onClick={() => {
+											onLogin(provider.id);
+											setOpen(false);
+										}}
+									>
+										<span className="picker-item-id">{provider.name}</span>
+										<span className="picker-item-provider">
+											{provider.authenticated ? "✓ signed in" : provider.available ? "sign in" : "unavailable"}
+										</span>
+									</button>
+									{provider.authenticated ? (
+										<button
+											type="button"
+											className="login-signout"
+											onClick={() => {
+												onLogout(provider.id);
+												setOpen(false);
+											}}
+										>
+											Sign out
+										</button>
+									) : null}
+								</div>
 							))}
 						</div>
 					</div>

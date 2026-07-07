@@ -9,6 +9,7 @@ import type {
 	SubagentSnapshot,
 	ThinkingLevel,
 } from "../lib/rpc-protocol";
+import { AuthDialog, type AuthPrompt } from "./AuthDialog";
 import { Composer, type ComposerInjection } from "./Composer";
 import { DialogHost } from "./DialogHost";
 import { LoginMenu } from "./LoginMenu";
@@ -37,6 +38,7 @@ interface AppShellProps {
 	dialog: ExtensionUIRequest | null;
 	toasts: Toast[];
 	injection?: ComposerInjection;
+	authPrompt: AuthPrompt | null;
 	onSend: (text: string) => void;
 	onAbort: () => void;
 	onChangeFolder: () => void;
@@ -45,6 +47,9 @@ interface AppShellProps {
 	onNewSession: () => void;
 	onRenameSession: (name: string) => void;
 	onLogin: (providerId: string) => void;
+	onLogout: (providerId: string) => void;
+	onAuthOpen: (url: string) => void;
+	onAuthCancel: () => void;
 	onDialogRespond: (response: ExtensionUIResponse) => void;
 	onDismissToast: (id: string) => void;
 }
@@ -112,6 +117,7 @@ export function AppShell(props: AppShellProps) {
 		dialog,
 		toasts,
 		injection,
+		authPrompt,
 		onSend,
 		onAbort,
 		onChangeFolder,
@@ -120,6 +126,9 @@ export function AppShell(props: AppShellProps) {
 		onNewSession,
 		onRenameSession,
 		onLogin,
+		onLogout,
+		onAuthOpen,
+		onAuthCancel,
 		onDialogRespond,
 		onDismissToast,
 	} = props;
@@ -138,7 +147,7 @@ export function AppShell(props: AppShellProps) {
 				<div className="app-controls">
 					<ModelPicker current={session.model} models={models} disabled={disabled} onSelect={onSelectModel} />
 					<ThinkingPicker current={session.thinkingLevel} disabled={disabled} onSelect={onSelectThinking} />
-					<LoginMenu providers={loginProviders} disabled={disabled} onLogin={onLogin} />
+					<LoginMenu providers={loginProviders} disabled={disabled} onLogin={onLogin} onLogout={onLogout} />
 					<button type="button" className="btn btn-ghost" disabled={disabled} onClick={onNewSession}>
 						New
 					</button>
@@ -168,6 +177,7 @@ export function AppShell(props: AppShellProps) {
 			</footer>
 
 			<DialogHost request={dialog} onRespond={onDialogRespond} />
+			<AuthDialog prompt={authPrompt} onOpen={onAuthOpen} onCancel={onAuthCancel} />
 			<Toasts toasts={toasts} onDismiss={onDismissToast} />
 		</div>
 	);

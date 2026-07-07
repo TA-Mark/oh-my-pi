@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import { AppShell, type SessionInfo } from "./components/AppShell";
+import type { AuthPrompt } from "./components/AuthDialog";
 import type { ComposerInjection } from "./components/Composer";
 import type { Toast } from "./components/Toasts";
 import { WelcomeScreen } from "./components/WelcomeScreen";
@@ -58,8 +59,10 @@ export function App() {
 	const [toasts, setToasts] = useState<Toast[]>([]);
 	const [loginProviders, setLoginProviders] = useState<LoginProvider[]>([]);
 	const [injection, setInjection] = useState<ComposerInjection | undefined>();
+	const [authPrompt, setAuthPrompt] = useState<AuthPrompt | null>(null);
 	const clientRef = useRef<DesktopRpcClient | null>(null);
 	const injectNonce = useRef(0);
+	const loginProviderRef = useRef<string | undefined>(undefined);
 
 	const refreshState = useCallback(async () => {
 		const client = clientRef.current;
@@ -123,8 +126,10 @@ export function App() {
 					addToast(request.message, request.notifyType ?? "info");
 					return;
 				case "open_url":
-					if (request.instructions) addToast(request.instructions, "info");
-					void openExternalUrl(request.url).catch(() => addToast(`Could not open ${request.url}`, "error"));
+					// Surface a persistent, actionable dialog (URL + open/copy) so login is
+					// usable and debuggable even if the auto-open below fails silently.
+					setAuthPrompt({ provider: loginProviderRef.current, url: request.url, instructions: request.instructions });
+					void openExternalUrl(request.url).catch(() => {});
 					return;
 				case "set_editor_text":
 					injectNonce.current += 1;
@@ -202,6 +207,8 @@ export function App() {
 		setToasts([]);
 		setLoginProviders([]);
 		setInjection(undefined);
+		setAuthPrompt(null);
+		loginProviderRef.current = undefined;
 		setStatus("idle");
 		setStatusDetail(undefined);
 		setWorkspace(folder);
@@ -260,24 +267,61 @@ export function App() {
 		[refreshState, reportError],
 	);
 
+	const refreshAuth = useCallback(async () => {
+		await Promise.all([refreshLoginProviders(), refreshState()]);
+		const client = clientRef.current;
+		if (client) setModels(await client.getAvailableModels());
+	}, [refreshLoginProviders, refreshState]);
+
 	const onLogin = useCallback(
 		(providerId: string) => {
+			loginProviderRef.current = providerId;
 			addToast(`Signing in to ${providerId}…`, "info");
 			clientRef.current
 				?.login(providerId)
 				.then(async () => {
 					addToast(`Signed in to ${providerId}`, "info");
-					await Promise.all([refreshLoginProviders(), refreshState()]);
-					const client = clientRef.current;
-					if (client) setModels(await client.getAvailableModels());
+					await refreshAuth();
 				})
 				.catch(err => {
 					reportError("login failed", err);
 					addToast(`Login failed: ${err instanceof Error ? err.message : String(err)}`, "error");
+				})
+				.finally(() => {
+					setAuthPrompt(null);
+					loginProviderRef.current = undefined;
 				});
 		},
-		[addToast, refreshLoginProviders, refreshState, reportError],
+		[addToast, refreshAuth, reportError],
 	);
+
+	const onLogout = useCallback(
+		(providerId: string) => {
+			clientRef.current
+				?.logout(providerId)
+				.then(async () => {
+					addToast(`Signed out of ${providerId}`, "info");
+					await refreshAuth();
+				})
+				.catch(err => {
+					reportError("logout failed", err);
+					addToast(`Logout failed: ${err instanceof Error ? err.message : String(err)}`, "error");
+				});
+		},
+		[addToast, refreshAuth, reportError],
+	);
+
+	const onAuthOpen = useCallback(
+		(url: string) => {
+			void openExternalUrl(url).catch(() => addToast("Could not open the browser — copy the link instead.", "warning"));
+		},
+		[addToast],
+	);
+
+	const onAuthCancel = useCallback(() => {
+		setAuthPrompt(null);
+		loginProviderRef.current = undefined;
+	}, []);
 
 	if (!workspace) {
 		return <WelcomeScreen onOpenFolder={openFolder} error={status === "error" ? statusDetail : undefined} />;
@@ -299,11 +343,15 @@ export function App() {
 			onSend={onSend}
 			onAbort={onAbort}
 			onChangeFolder={openFolder}
+			authPrompt={authPrompt}
 			onSelectModel={onSelectModel}
 			onSelectThinking={onSelectThinking}
 			onNewSession={onNewSession}
 			onRenameSession={onRenameSession}
 			onLogin={onLogin}
+			onLogout={onLogout}
+			onAuthOpen={onAuthOpen}
+			onAuthCancel={onAuthCancel}
 			onDialogRespond={respondDialog}
 			onDismissToast={dismissToast}
 		/>

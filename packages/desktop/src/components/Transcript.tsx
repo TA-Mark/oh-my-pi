@@ -42,14 +42,11 @@ export function Transcript({ messages }: TranscriptProps) {
 		<div className="transcript">
 			{messages.map(message => {
 				if (message.role === "tool") return <ToolBubble key={message.id} message={message} />;
+				const plain = message.role === "user" || message.error;
 				return (
-					<div key={message.id} className={`bubble bubble-${message.role}`}>
-						<div className="bubble-role">{message.role}</div>
-						{message.role === "user" ? (
-							<div className="bubble-text">{message.text}</div>
-						) : (
-							<Markdown text={message.text} />
-						)}
+					<div key={message.id} className={`bubble bubble-${message.role}${message.error ? " bubble-error" : ""}`}>
+						<div className="bubble-role">{message.error ? "error" : message.role}</div>
+						{plain ? <div className="bubble-text">{message.text}</div> : <Markdown text={message.text} />}
 					</div>
 				);
 			})}

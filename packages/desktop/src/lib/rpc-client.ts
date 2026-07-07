@@ -147,6 +147,11 @@ export class DesktopRpcClient {
 		await this.#send({ type: "login", providerId }, 600_000);
 	}
 
+	/** Sign out of a provider (clears stored credentials). */
+	async logout(providerId: string): Promise<void> {
+		await this.#send({ type: "logout", providerId });
+	}
+
 	/** Reply to an extension UI dialog request (select/confirm/input/editor). Side-channel frame, not a command. */
 	async respondExtensionUI(response: ExtensionUIResponse): Promise<void> {
 		await sendRpcLine(JSON.stringify(response));

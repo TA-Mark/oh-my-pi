@@ -7,6 +7,7 @@
 //   5. set_subagent_subscription "progress" → success (Phase 3)
 //   6. get_subagents → { subagents: [...] } (Phase 3)
 //   7. get_login_providers → { providers: [...] } (Phase 4)
+//   8. logout (fake provider) → success (desktop-added core command; core-touchpoints.md)
 // Exits non-zero on any drift. Keep in sync with src/lib/rpc-protocol.ts.
 import * as path from "node:path";
 
@@ -95,6 +96,12 @@ try {
 					fail("get_login_providers.data.providers is not an array");
 				}
 				console.log("OK: get_login_providers contract holds (providers array)");
+				// Logout a fake provider id — deletes nothing (no real credentials touched),
+				// just verifies the logout command path.
+				send({ type: "logout", providerId: "__smoke_test_provider__", id: "s7" });
+			} else if (frame.id === "s7") {
+				if (frame.success !== true) fail(`logout failed: ${line}`);
+				console.log("OK: logout accepted");
 				clearTimeout(timeout);
 				child.kill();
 				process.exit(0);

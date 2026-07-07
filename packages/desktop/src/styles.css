@@ -132,6 +132,16 @@ body {
 .bubble-assistant {
 	background: var(--assistant);
 }
+.bubble-error {
+	background: #2a1414;
+	border-color: #5c2a2a;
+}
+.bubble-error .bubble-role {
+	color: var(--danger);
+}
+.bubble-error .bubble-text {
+	color: #f2b8b5;
+}
 .bubble-tool {
 	background: var(--tool);
 	font-size: 13px;
@@ -729,4 +739,44 @@ body {
 }
 .toast-error {
 	border-left-color: var(--danger);
+}
+
+/* ── Login rows (sign in / sign out) ─────────────────────────────────── */
+.login-row {
+	display: flex;
+	align-items: center;
+}
+.login-main {
+	flex: 1;
+	display: flex;
+	justify-content: space-between;
+	align-items: baseline;
+	gap: 10px;
+	background: none;
+	border: none;
+	color: var(--text);
+	font: inherit;
+	text-align: left;
+	padding: 7px 10px;
+	cursor: pointer;
+}
+.login-main:hover {
+	background: var(--bg);
+}
+.login-main:disabled {
+	opacity: 0.5;
+	cursor: not-allowed;
+}
+.login-signout {
+	background: none;
+	border: none;
+	color: var(--danger);
+	font: inherit;
+	font-size: 11px;
+	cursor: pointer;
+	padding: 7px 10px;
+	white-space: nowrap;
+}
+.login-signout:hover {
+	text-decoration: underline;
 }

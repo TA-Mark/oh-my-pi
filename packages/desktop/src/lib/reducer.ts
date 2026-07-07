@@ -11,6 +11,8 @@ export interface ChatMessage {
 	id: string;
 	role: ChatRole;
 	text: string;
+	/** Assistant turn failed (provider error) — render with error styling. */
+	error?: boolean;
 	/** Tool-only fields (role === "tool"), consumed by <ToolView>. */
 	toolName?: string;
 	toolArgs?: unknown;
@@ -74,15 +76,23 @@ function finalResult(result: unknown, isError?: boolean): unknown {
 	return { content: [], isError: Boolean(isError) };
 }
 
-function updateLastAssistant(messages: ChatMessage[], text: string): ChatMessage[] {
+/** Assistant text + error state. Falls back to the provider errorMessage when the turn failed with no text. */
+function assistantView(message: EngineMessage): { text: string; error: boolean } {
+	const text = messageText(message);
+	const error = message.stopReason === "error" || Boolean(message.errorMessage);
+	if (!text && message.errorMessage) return { text: message.errorMessage, error: true };
+	return { text, error };
+}
+
+function updateLastAssistant(messages: ChatMessage[], view: { text: string; error: boolean }): ChatMessage[] {
 	const next = [...messages];
 	for (let i = next.length - 1; i >= 0; i--) {
 		if (next[i].role === "assistant") {
-			next[i] = { ...next[i], text };
+			next[i] = { ...next[i], text: view.text, error: view.error };
 			return next;
 		}
 	}
-	next.push({ id: newId("a"), role: "assistant", text });
+	next.push({ id: newId("a"), role: "assistant", text: view.text, error: view.error });
 	return next;
 }
 
@@ -99,15 +109,16 @@ export function reduce(state: ViewModel, event: EngineEvent): ViewModel {
 			return { ...state, streaming: false };
 		case "message_start": {
 			if (event.message.role !== "assistant") return state;
+			const view = assistantView(event.message);
 			return {
 				...state,
-				messages: [...state.messages, { id: newId("a"), role: "assistant", text: messageText(event.message) }],
+				messages: [...state.messages, { id: newId("a"), role: "assistant", text: view.text, error: view.error }],
 			};
 		}
 		case "message_update":
 		case "message_end": {
 			if (event.message.role !== "assistant") return state;
-			return { ...state, messages: updateLastAssistant(state.messages, messageText(event.message)) };
+			return { ...state, messages: updateLastAssistant(state.messages, assistantView(event.message)) };
 		}
 		case "tool_execution_start":
 			return {

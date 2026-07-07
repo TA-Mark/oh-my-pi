@@ -1244,6 +1244,16 @@ export async function runRpcMode(
 				}
 			}
 
+			case "logout": {
+				try {
+					await session.modelRegistry.authStorage.logout(command.providerId);
+					await session.modelRegistry.refresh();
+					return success(id, "logout", { providerId: command.providerId });
+				} catch (err: unknown) {
+					return error(id, "logout", err instanceof Error ? err.message : String(err));
+				}
+			}
+
 			default: {
 				const unknownCommand = command as { type: string };
 				return error(undefined, unknownCommand.type, `Unknown command: ${unknownCommand.type}`);

@@ -30,7 +30,8 @@ export type RpcCommand =
 	| { id?: string; type: "get_subagents" }
 	| { id?: string; type: "set_subagent_subscription"; level: "off" | "progress" | "events" }
 	| { id?: string; type: "get_login_providers" }
-	| { id?: string; type: "login"; providerId: string };
+	| { id?: string; type: "login"; providerId: string }
+	| { id?: string; type: "logout"; providerId: string };
 
 /**
  * Session thinking levels accepted by `set_thinking_level`
@@ -177,6 +178,9 @@ export type ContentPart = TextPart | { type: string; [key: string]: unknown };
 export interface EngineMessage {
 	role: string;
 	content: ContentPart[] | string;
+	/** Present on assistant messages when the provider call failed (stopReason "error"). */
+	errorMessage?: string;
+	stopReason?: string;
 }
 
 /**
