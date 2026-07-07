@@ -1,0 +1,9 @@
+# frontend build output
+dist/
+
+# tauri build artifacts
+src-tauri/target/
+src-tauri/gen/
+
+# bundled engine sidecars (produced per-target at package time)
+src-tauri/binaries/

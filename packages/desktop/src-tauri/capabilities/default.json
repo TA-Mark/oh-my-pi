@@ -1,0 +1,6 @@
+{
+  "identifier": "default",
+  "description": "Core capability for the main window: invoke bridge commands and receive engine events.",
+  "windows": ["main"],
+  "permissions": ["core:default", "dialog:default", "opener:allow-open-url"]
+}
