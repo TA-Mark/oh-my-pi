@@ -55,7 +55,6 @@ function DialogBody({
 					<button
 						type="button"
 						className="btn btn-primary"
-						// biome-ignore lint/a11y/noAutofocus: default action in a modal dialog
 						autoFocus
 						onClick={() => onRespond({ type: "extension_ui_response", id, confirmed: true })}
 					>
@@ -102,7 +101,6 @@ function DialogBody({
 				{request.method === "input" ? (
 					<input
 						className="dialog-input"
-						// biome-ignore lint/a11y/noAutofocus: focus the field when the dialog opens
 						autoFocus
 						placeholder={request.placeholder}
 						value={text}
@@ -111,7 +109,6 @@ function DialogBody({
 				) : (
 					<textarea
 						className="dialog-textarea"
-						// biome-ignore lint/a11y/noAutofocus: focus the field when the dialog opens
 						autoFocus
 						rows={8}
 						value={text}

@@ -3,7 +3,7 @@
  * layer renders. Handles streaming assistant text, tool lifecycle (args →
  * partial → result, fed to the reused collab-web ToolView), and notices.
  */
-import type { ContentPart, EngineEvent, EngineMessage, SessionMessage } from "./rpc-protocol";
+import type { ContentPart, EngineEvent, EngineMessage, ImageContent, SessionMessage } from "./rpc-protocol";
 
 export type ChatRole = "user" | "assistant" | "tool" | "system";
 
@@ -13,6 +13,8 @@ export interface ChatMessage {
 	text: string;
 	/** Assistant turn failed (provider error) — render with error styling. */
 	error?: boolean;
+	/** Images attached to a user message (multimodal input). */
+	images?: ImageContent[];
 	/** Tool-only fields (role === "tool"), consumed by <ToolView>. */
 	toolName?: string;
 	toolArgs?: unknown;
@@ -161,8 +163,14 @@ export function reduce(state: ViewModel, event: EngineEvent): ViewModel {
 	}
 }
 
-export function appendUserMessage(state: ViewModel, text: string): ViewModel {
-	return { ...state, messages: [...state.messages, { id: newId("u"), role: "user", text }] };
+export function appendUserMessage(state: ViewModel, text: string, images?: ImageContent[]): ViewModel {
+	return {
+		...state,
+		messages: [
+			...state.messages,
+			{ id: newId("u"), role: "user", text, images: images && images.length > 0 ? images : undefined },
+		],
+	};
 }
 
 export function appendStderr(state: ViewModel, line: string): ViewModel {
@@ -174,6 +182,18 @@ function partsText(content: ContentPart[] | string | undefined): string {
 	if (typeof content === "string") return content;
 	if (!Array.isArray(content)) return "";
 	return content.flatMap(part => (part.type === "text" ? [String(part.text ?? "")] : [])).join("");
+}
+
+/** Extract image parts from a persisted message's content (for re-seeded transcripts). */
+function imageParts(content: ContentPart[] | string | undefined): ImageContent[] {
+	if (!Array.isArray(content)) return [];
+	const out: ImageContent[] = [];
+	for (const part of content) {
+		if (part.type === "image" && typeof part.data === "string" && typeof part.mimeType === "string") {
+			out.push({ type: "image", data: part.data, mimeType: part.mimeType });
+		}
+	}
+	return out;
 }
 
 /**
@@ -189,7 +209,10 @@ export function seedMessages(messages: SessionMessage[]): ViewModel {
 	for (const message of messages) {
 		if (message.role === "user") {
 			const text = partsText(message.content);
-			if (text) out.push({ id: newId("u"), role: "user", text });
+			const images = imageParts(message.content);
+			if (text || images.length > 0) {
+				out.push({ id: newId("u"), role: "user", text, images: images.length > 0 ? images : undefined });
+			}
 			continue;
 		}
 		if (message.role === "assistant") {

@@ -10,6 +10,7 @@ import {
 	type EngineEvent,
 	type ExtensionUIRequest,
 	type ExtensionUIResponse,
+	type ImageContent,
 	type LoginProvider,
 	type ModelInfo,
 	type RpcCommand,
@@ -19,6 +20,7 @@ import {
 	type SessionState,
 	type SessionSummary,
 	SUBAGENT_FRAME_TYPES,
+	type WorkspaceFileChange,
 	type SubagentSnapshot,
 	type ThinkingLevel,
 } from "./rpc-protocol";
@@ -113,8 +115,8 @@ export class DesktopRpcClient {
 
 	// ── Commands ────────────────────────────────────────────────────────────
 
-	async prompt(message: string): Promise<void> {
-		await this.#send({ type: "prompt", message });
+	async prompt(message: string, images?: ImageContent[]): Promise<void> {
+		await this.#send(images && images.length > 0 ? { type: "prompt", message, images } : { type: "prompt", message });
 	}
 
 	async abort(): Promise<void> {
@@ -147,6 +149,11 @@ export class DesktopRpcClient {
 	/** Start OAuth login. The engine emits `open_url` (handled via onExtensionUI) and resolves when auth completes. */
 	async login(providerId: string): Promise<void> {
 		await this.#send({ type: "login", providerId }, 600_000);
+	}
+
+	/** Store a provider API key in the engine credential store. */
+	async setApiKey(providerId: string, apiKey: string): Promise<void> {
+		await this.#send({ type: "set_api_key", providerId, apiKey });
 	}
 
 	/** Sign out of a provider (clears stored credentials). */
@@ -193,6 +200,12 @@ export class DesktopRpcClient {
 	async getMessages(): Promise<SessionMessage[]> {
 		const response = await this.#send({ type: "get_messages" });
 		return this.#data<{ messages?: SessionMessage[] }>(response).messages ?? [];
+	}
+
+	/** Fetch the workspace git diff (changed/untracked files vs HEAD) for the Changes panel. */
+	async getWorkspaceDiff(): Promise<WorkspaceFileChange[]> {
+		const response = await this.#send({ type: "get_workspace_diff" });
+		return this.#data<{ files?: WorkspaceFileChange[] }>(response).files ?? [];
 	}
 
 	// ── Internal ──────────────────────────────────────────────────────────────

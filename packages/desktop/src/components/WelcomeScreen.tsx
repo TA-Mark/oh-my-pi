@@ -6,10 +6,11 @@ interface WelcomeScreenProps {
 export function WelcomeScreen({ onOpenFolder, error }: WelcomeScreenProps) {
 	return (
 		<div className="welcome">
-			<h1>OMP Desktop</h1>
-			<p>Open a project folder to start a session. The agent runs in the folder you choose.</p>
+			<div className="welcome-mark">OMP</div>
+			<h1>Choose a project</h1>
+			<p>Start a desktop coding session with the local OMP engine.</p>
 			<button type="button" className="btn btn-primary" onClick={onOpenFolder}>
-				Open Folder…
+				Open Folder...
 			</button>
 			{error ? <p className="status-detail">{error}</p> : null}
 		</div>

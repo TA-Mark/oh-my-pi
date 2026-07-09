@@ -10,6 +10,7 @@
  * - Events: AgentSessionEvent objects streamed as they occur
  * - Extension UI: Extension UI requests are emitted, client responds with extension_ui_response
  */
+import { PROVIDER_REGISTRY } from "@oh-my-pi/pi-ai/registry";
 import { getOAuthProviders } from "@oh-my-pi/pi-ai/oauth";
 import { isZodSchema, zodToWireSchema } from "@oh-my-pi/pi-ai/utils/schema";
 import { $env, isRecord, readJsonl, Snowflake } from "@oh-my-pi/pi-utils";
@@ -31,6 +32,7 @@ import { SessionManager } from "../../session/session-manager";
 import { executeAcpBuiltinSlashCommand } from "../../slash-commands/acp-builtins";
 import { buildAvailableSlashCommands } from "../../slash-commands/available-commands";
 import type { EventBus } from "../../utils/event-bus";
+import * as git from "../../utils/git";
 import { initializeExtensions } from "../runtime-init";
 import { isRpcHostToolResult, isRpcHostToolUpdate, RpcHostToolBridge } from "./host-tools";
 import { isRpcHostUriResult, RpcHostUriBridge } from "./host-uris";
@@ -51,6 +53,7 @@ import type {
 	RpcSessionState,
 	RpcSessionSummary,
 	RpcSubagentSubscriptionLevel,
+	RpcWorkspaceFileChange,
 } from "./rpc-types";
 
 // Re-export types for consumers
@@ -81,6 +84,98 @@ export type RpcSessionChangeResult =
 	| { type: "new_session"; data: { cancelled: boolean } }
 	| { type: "switch_session"; data: { cancelled: boolean } }
 	| { type: "branch"; data: { text: string; cancelled: boolean } };
+
+/** Skip inlining untracked-file content past this size (still listed as a change). */
+const MAX_UNTRACKED_DIFF_BYTES = 256 * 1024;
+
+/** Count `+`/`-` body lines in a unified diff (ignoring `+++`/`---` headers). */
+function countDiffLines(diff: string): { additions: number; deletions: number } {
+	let additions = 0;
+	let deletions = 0;
+	for (const line of diff.split("\n")) {
+		if (line.startsWith("+") && !line.startsWith("+++")) additions++;
+		else if (line.startsWith("-") && !line.startsWith("---")) deletions++;
+	}
+	return { additions, deletions };
+}
+
+/** Synthesize a "new file" unified diff for an untracked file's text. */
+function untrackedDiff(relPath: string, content: string): string {
+	const lines = content.split("\n");
+	// A trailing newline yields a final empty element; drop it so we don't emit a phantom line.
+	if (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
+	const body = lines.map(line => `+${line}`).join("\n");
+	return `--- /dev/null\n+++ b/${relPath}\n@@ -0,0 +1,${lines.length} @@\n${body}`;
+}
+
+/**
+ * Build the workspace git diff for the Changes panel: every tracked file changed
+ * vs HEAD (staged + unstaged), plus untracked files rendered as new-file diffs.
+ * Returns `[]` when `cwd` is not inside a git repository.
+ */
+async function buildWorkspaceDiff(cwd: string): Promise<RpcWorkspaceFileChange[]> {
+	const root = await git.repo.root(cwd).catch(() => null);
+	if (!root) return [];
+
+	const out: RpcWorkspaceFileChange[] = [];
+
+	// Tracked changes vs HEAD (falls back to the index diff when there is no HEAD yet).
+	try {
+		let raw = await git.diff(root, { base: "HEAD", allowFailure: true });
+		if (!raw.trim()) {
+			// No commits yet, or nothing vs HEAD — combine unstaged + staged.
+			const [unstaged, staged] = await Promise.all([
+				git.diff(root, { allowFailure: true }),
+				git.diff(root, { cached: true, allowFailure: true }),
+			]);
+			raw = [staged, unstaged].filter(part => part.trim()).join("\n");
+		}
+		for (const file of git.diff.parseFiles(raw)) {
+			const isDelete = /^--- a\/.+\n\+\+\+ \/dev\/null/m.test(file.content);
+			const isAdd = /^--- \/dev\/null/m.test(file.content);
+			out.push({
+				path: file.filename,
+				status: isDelete ? "deleted" : isAdd ? "added" : "modified",
+				diff: file.isBinary ? "" : file.content,
+				additions: file.additions,
+				deletions: file.deletions,
+				truncated: file.isBinary,
+			});
+		}
+	} catch {
+		// Diff failed unexpectedly — fall through with whatever tracked entries we have.
+	}
+
+	// Untracked files: git diff omits them, so synthesize new-file diffs.
+	try {
+		const untracked = await git.ls.untracked(root);
+		const known = new Set(out.map(entry => entry.path));
+		for (const relPath of untracked) {
+			if (known.has(relPath)) continue;
+			let diff = "";
+			let additions = 0;
+			let truncated = false;
+			try {
+				const file = Bun.file(`${root}/${relPath}`);
+				if (file.size > MAX_UNTRACKED_DIFF_BYTES) {
+					truncated = true;
+				} else {
+					const content = await file.text();
+					diff = untrackedDiff(relPath, content);
+					additions = countDiffLines(diff).additions;
+				}
+			} catch {
+				truncated = true; // binary or unreadable
+			}
+			out.push({ path: relPath, status: "untracked", diff, additions, deletions: 0, truncated });
+		}
+	} catch {
+		// ls-files failed — skip untracked enumeration.
+	}
+
+	out.sort((a, b) => a.path.localeCompare(b.path));
+	return out;
+}
 
 export type RpcSessionChangeSession = Pick<AgentSession, "newSession" | "switchSession" | "branch">;
 
@@ -1149,6 +1244,11 @@ export async function runRpcMode(
 				return success(id, "get_session_stats", stats);
 			}
 
+			case "get_workspace_diff": {
+				const files = await buildWorkspaceDiff(session.sessionManager.getCwd());
+				return success(id, "get_workspace_diff", { files });
+			}
+
 			case "export_html": {
 				const path = await session.exportToHtml(command.outputPath);
 				return success(id, "export_html", { path });
@@ -1200,12 +1300,21 @@ export async function runRpcMode(
 			// =================================================================
 
 			case "get_login_providers": {
-				const providers = getOAuthProviders().map(provider => ({
-					id: provider.id,
-					name: provider.name,
-					available: provider.available,
-					authenticated: session.modelRegistry.authStorage.hasAuth(provider.id),
-				}));
+				const oauthProviders = new Map(getOAuthProviders().map(provider => [provider.id, provider]));
+				const providers = PROVIDER_REGISTRY.map(provider => {
+					const oauthProvider = oauthProviders.get(provider.id);
+					const origin = session.modelRegistry.authStorage.getCredentialOrigin(provider.id);
+					return {
+						id: provider.id,
+						name: provider.name,
+						available: oauthProvider?.available ?? provider.available ?? true,
+						authenticated: session.modelRegistry.authStorage.hasAuth(provider.id),
+						authKind: origin?.kind,
+						envVar: origin?.envVar,
+						supportsOAuth: oauthProvider !== undefined,
+						supportsApiKey: true,
+					};
+				});
 				return success(id, "get_login_providers", { providers });
 			}
 
@@ -1258,6 +1367,24 @@ export async function runRpcMode(
 					return success(id, "login", { providerId: command.providerId });
 				} catch (err: unknown) {
 					return error(id, "login", err instanceof Error ? err.message : String(err));
+				}
+			}
+
+			case "set_api_key": {
+				const knownProvider = PROVIDER_REGISTRY.find(provider => provider.id === command.providerId);
+				if (!knownProvider) {
+					return error(id, "set_api_key", `Unknown provider: ${command.providerId}`);
+				}
+				const apiKey = command.apiKey.trim();
+				if (!apiKey) {
+					return error(id, "set_api_key", "API key cannot be empty");
+				}
+				try {
+					await session.modelRegistry.authStorage.set(command.providerId, { type: "api_key", key: apiKey });
+					await session.modelRegistry.refresh();
+					return success(id, "set_api_key", { providerId: command.providerId });
+				} catch (err: unknown) {
+					return error(id, "set_api_key", err instanceof Error ? err.message : String(err));
 				}
 			}
 

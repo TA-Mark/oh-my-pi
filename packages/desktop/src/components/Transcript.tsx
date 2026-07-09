@@ -25,7 +25,6 @@ function ToolBubble({ message }: { message: ChatMessage }) {
 export function Transcript({ messages }: TranscriptProps) {
 	const bottomRef = useRef<HTMLDivElement>(null);
 
-	// biome-ignore lint/correctness/useExhaustiveDependencies: scroll on new content
 	useEffect(() => {
 		bottomRef.current?.scrollIntoView({ behavior: "smooth" });
 	}, [messages]);
@@ -33,7 +32,12 @@ export function Transcript({ messages }: TranscriptProps) {
 	if (messages.length === 0) {
 		return (
 			<div className="transcript transcript-empty">
-				<p>No messages yet. Send a prompt to start.</p>
+				<h1>What should we build in OMP?</h1>
+				<div className="empty-prompts" aria-label="Prompt ideas">
+					<div>Review current desktop changes</div>
+					<div>Improve the session workflow</div>
+					<div>Plan the next release pass</div>
+				</div>
 			</div>
 		);
 	}
@@ -46,7 +50,24 @@ export function Transcript({ messages }: TranscriptProps) {
 				return (
 					<div key={message.id} className={`bubble bubble-${message.role}${message.error ? " bubble-error" : ""}`}>
 						<div className="bubble-role">{message.error ? "error" : message.role}</div>
-						{plain ? <div className="bubble-text">{message.text}</div> : <Markdown text={message.text} />}
+						{message.images && message.images.length > 0 && (
+							<div className="bubble-images">
+								{message.images.map((img, i) => (
+									<img
+										key={i}
+										src={`data:${img.mimeType};base64,${img.data}`}
+										alt={`attachment ${i + 1}`}
+									/>
+								))}
+							</div>
+						)}
+						{message.text ? (
+							plain ? (
+								<div className="bubble-text">{message.text}</div>
+							) : (
+								<Markdown text={message.text} />
+							)
+						) : null}
 					</div>
 				);
 			})}

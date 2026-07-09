@@ -71,6 +71,7 @@ export type RpcCommand =
 
 	// Session
 	| { id?: string; type: "get_session_stats" }
+	| { id?: string; type: "get_workspace_diff" }
 	| { id?: string; type: "export_html"; outputPath?: string }
 	| { id?: string; type: "list_sessions" }
 	| { id?: string; type: "switch_session"; sessionPath: string }
@@ -86,6 +87,7 @@ export type RpcCommand =
 	// Login
 	| { id?: string; type: "get_login_providers" }
 	| { id?: string; type: "login"; providerId: string }
+	| { id?: string; type: "set_api_key"; providerId: string; apiKey: string }
 	| { id?: string; type: "logout"; providerId: string };
 
 // ============================================================================
@@ -124,6 +126,21 @@ export interface RpcSessionSummary {
 	modified: string;
 	/** True when this is the session currently loaded in the RPC process. */
 	active: boolean;
+}
+
+/** One changed file in the workspace git diff (from `get_workspace_diff`). */
+export interface RpcWorkspaceFileChange {
+	/** Repo-relative path (post-rename path for renames). */
+	path: string;
+	status: "modified" | "added" | "deleted" | "renamed" | "untracked";
+	/** Unified diff text for this file (may be empty for binary/oversized). */
+	diff: string;
+	additions: number;
+	deletions: number;
+	/** Pre-rename path when status === "renamed". */
+	oldPath?: string;
+	/** True when the diff was omitted (binary or too large); path/status still shown. */
+	truncated?: boolean;
 }
 
 export interface RpcAvailableSlashCommand {
@@ -276,6 +293,13 @@ export type RpcResponse =
 
 	// Session
 	| { id?: string; type: "response"; command: "get_session_stats"; success: true; data: SessionStats }
+	| {
+			id?: string;
+			type: "response";
+			command: "get_workspace_diff";
+			success: true;
+			data: { files: RpcWorkspaceFileChange[] };
+	  }
 	| { id?: string; type: "response"; command: "export_html"; success: true; data: { path: string } }
 	| { id?: string; type: "response"; command: "list_sessions"; success: true; data: { sessions: RpcSessionSummary[] } }
 	| { id?: string; type: "response"; command: "switch_session"; success: true; data: { cancelled: boolean } }
@@ -306,9 +330,21 @@ export type RpcResponse =
 			type: "response";
 			command: "get_login_providers";
 			success: true;
-			data: { providers: Array<{ id: string; name: string; available: boolean; authenticated: boolean }> };
+			data: {
+				providers: Array<{
+					id: string;
+					name: string;
+					available: boolean;
+					authenticated: boolean;
+					authKind?: "runtime" | "config" | "oauth" | "api_key" | "env" | "fallback";
+					envVar?: string;
+					supportsOAuth: boolean;
+					supportsApiKey: boolean;
+				}>;
+			};
 	  }
 	| { id?: string; type: "response"; command: "login"; success: true; data: { providerId: string } }
+	| { id?: string; type: "response"; command: "set_api_key"; success: true; data: { providerId: string } }
 	| { id?: string; type: "response"; command: "logout"; success: true; data: { providerId: string } }
 
 	// Error response (any command can fail)

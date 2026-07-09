@@ -23,6 +23,7 @@
     "react": "catalog:",
     "react-dom": "catalog:",
     "marked": "catalog:",
+    "lucide-react": "catalog:",
     "@oh-my-pi/collab-web": "workspace:*",
     "@oh-my-pi/pi-wire": "catalog:",
     "@tauri-apps/api": "^2.9.0",

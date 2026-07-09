@@ -15,8 +15,19 @@
 
 // ── Commands (frontend -> engine) ────────────────────────────────────────────
 
+/**
+ * Image attached to a `prompt` (multimodal input). Mirrors pi-ai `ImageContent`.
+ * `data` is base64 (no data-URL prefix); `mimeType` e.g. "image/png".
+ */
+export interface ImageContent {
+	type: "image";
+	data: string;
+	mimeType: string;
+	detail?: "auto" | "low" | "high" | "original";
+}
+
 export type RpcCommand =
-	| { id?: string; type: "prompt"; message: string }
+	| { id?: string; type: "prompt"; message: string; images?: ImageContent[] }
 	| { id?: string; type: "steer"; message: string }
 	| { id?: string; type: "follow_up"; message: string }
 	| { id?: string; type: "abort" }
@@ -32,8 +43,10 @@ export type RpcCommand =
 	| { id?: string; type: "list_sessions" }
 	| { id?: string; type: "switch_session"; sessionPath: string }
 	| { id?: string; type: "get_messages" }
+	| { id?: string; type: "get_workspace_diff" }
 	| { id?: string; type: "get_login_providers" }
 	| { id?: string; type: "login"; providerId: string }
+	| { id?: string; type: "set_api_key"; providerId: string; apiKey: string }
 	| { id?: string; type: "logout"; providerId: string };
 
 /**
@@ -41,7 +54,7 @@ export type RpcCommand =
  * (mirrors ThinkingLevel in packages/agent/src/thinking.ts; "inherit" omitted —
  * it's for nested/agent defaults, not a user-facing session choice).
  */
-export const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"] as const;
+export const THINKING_LEVELS = ["off", "auto", "minimal", "low", "medium", "high", "xhigh"] as const;
 export type ThinkingLevel = (typeof THINKING_LEVELS)[number] | "inherit";
 
 // ── Responses (engine -> frontend) ───────────────────────────────────────────
@@ -68,6 +81,18 @@ export interface SessionState {
 	sessionId: string;
 	sessionName?: string;
 	messageCount: number;
+}
+
+/** One changed file from `get_workspace_diff` (mirrors engine `RpcWorkspaceFileChange`). */
+export interface WorkspaceFileChange {
+	path: string;
+	status: "modified" | "added" | "deleted" | "renamed" | "untracked";
+	diff: string;
+	additions: number;
+	deletions: number;
+	oldPath?: string;
+	/** Diff omitted (binary or oversized); path/status still shown. */
+	truncated?: boolean;
 }
 
 /** Session descriptor from `list_sessions` (mirrors engine `RpcSessionSummary`). */
@@ -106,6 +131,12 @@ export interface ModelInfo {
 	provider: string;
 	id: string;
 	contextWindow?: number;
+	reasoning?: boolean;
+	thinking?: {
+		efforts?: readonly ThinkingLevel[];
+		defaultLevel?: ThinkingLevel;
+		requiresEffort?: boolean;
+	};
 }
 
 /** Subset of engine `RpcSubagentSnapshot` the subagent panel renders. */
@@ -180,6 +211,10 @@ export interface LoginProvider {
 	name: string;
 	available: boolean;
 	authenticated: boolean;
+	authKind?: "runtime" | "config" | "oauth" | "api_key" | "env" | "fallback";
+	envVar?: string;
+	supportsOAuth: boolean;
+	supportsApiKey: boolean;
 }
 
 // ── Event classification (mirrors rpc-client.ts) ─────────────────────────────

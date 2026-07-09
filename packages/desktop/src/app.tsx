@@ -2,6 +2,7 @@ import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import { AppShell, type SessionInfo } from "./components/AppShell";
 import type { AuthPrompt } from "./components/AuthDialog";
 import type { ComposerInjection } from "./components/Composer";
+import type { WidgetEntry } from "./components/ExtensionWidgets";
 import type { Toast } from "./components/Toasts";
 import { WelcomeScreen } from "./components/WelcomeScreen";
 import { appendStderr, appendUserMessage, initialViewModel, reduce, seedMessages, type ViewModel } from "./lib/reducer";
@@ -10,18 +11,20 @@ import type {
 	EngineEvent,
 	ExtensionUIRequest,
 	ExtensionUIResponse,
+	ImageContent,
 	LoginProvider,
 	ModelInfo,
 	SessionMessage,
 	SessionSummary,
 	SubagentSnapshot,
 	ThinkingLevel,
+	WorkspaceFileChange,
 } from "./lib/rpc-protocol";
 import { openExternalUrl, pickWorkspaceFolder } from "./lib/tauri-bridge";
 
 type Action =
 	| { kind: "event"; event: EngineEvent }
-	| { kind: "user"; text: string }
+	| { kind: "user"; text: string; images?: ImageContent[] }
 	| { kind: "stderr"; line: string }
 	| { kind: "seed"; messages: SessionMessage[] }
 	| { kind: "reset" };
@@ -31,7 +34,7 @@ function rootReducer(state: ViewModel, action: Action): ViewModel {
 		case "event":
 			return reduce(state, action.event);
 		case "user":
-			return appendUserMessage(state, action.text);
+			return appendUserMessage(state, action.text, action.images);
 		case "stderr":
 			return appendStderr(state, action.line);
 		case "seed":
@@ -43,6 +46,23 @@ function rootReducer(state: ViewModel, action: Action): ViewModel {
 
 const EMPTY_SESSION: SessionInfo = { messageCount: 0 };
 const DIALOG_METHODS = new Set(["select", "confirm", "input", "editor"]);
+const LAST_WORKSPACE_KEY = "omp.desktop.lastWorkspace";
+
+function loadLastWorkspace(): string | null {
+	try {
+		return window.localStorage.getItem(LAST_WORKSPACE_KEY);
+	} catch {
+		return null;
+	}
+}
+
+function saveLastWorkspace(workspace: string): void {
+	try {
+		window.localStorage.setItem(LAST_WORKSPACE_KEY, workspace);
+	} catch {
+		return;
+	}
+}
 
 function modelLabel(provider?: string, id?: string): string | undefined {
 	if (!id) return undefined;
@@ -53,7 +73,7 @@ function modelLabel(provider?: string, id?: string): string | undefined {
 const REFRESH_EVENTS = new Set(["agent_end", "thinking_level_changed", "goal_updated"]);
 
 export function App() {
-	const [workspace, setWorkspace] = useState<string | null>(null);
+	const [workspace, setWorkspace] = useState<string | null>(() => loadLastWorkspace());
 	const [vm, dispatch] = useReducer(rootReducer, initialViewModel);
 	const [status, setStatus] = useState<EngineStatus>("idle");
 	const [statusDetail, setStatusDetail] = useState<string | undefined>();
@@ -64,10 +84,13 @@ export function App() {
 	const [toasts, setToasts] = useState<Toast[]>([]);
 	const [loginProviders, setLoginProviders] = useState<LoginProvider[]>([]);
 	const [sessions, setSessions] = useState<SessionSummary[]>([]);
-	const [historyOpen, setHistoryOpen] = useState(false);
 	const [historyLoading, setHistoryLoading] = useState(false);
+	const [changes, setChanges] = useState<WorkspaceFileChange[]>([]);
 	const [injection, setInjection] = useState<ComposerInjection | undefined>();
 	const [authPrompt, setAuthPrompt] = useState<AuthPrompt | null>(null);
+	const [statuses, setStatuses] = useState<Record<string, string>>({});
+	const [widgets, setWidgets] = useState<Record<string, WidgetEntry>>({});
+	const [docTitle, setDocTitle] = useState<string | undefined>();
 	const clientRef = useRef<DesktopRpcClient | null>(null);
 	const injectNonce = useRef(0);
 	const loginProviderRef = useRef<string | undefined>(undefined);
@@ -121,6 +144,16 @@ export function App() {
 		}
 	}, []);
 
+	const refreshWorkspaceDiff = useCallback(async () => {
+		const client = clientRef.current;
+		if (!client) return;
+		try {
+			setChanges(await client.getWorkspaceDiff());
+		} catch {
+			// transient; ignore
+		}
+	}, []);
+
 	const dismissToast = useCallback((id: string) => {
 		setToasts(list => list.filter(toast => toast.id !== id));
 	}, []);
@@ -160,8 +193,27 @@ export function App() {
 					injectNonce.current += 1;
 					setInjection({ text: request.text, nonce: injectNonce.current });
 					return;
+				case "setStatus":
+					setStatuses(prev => {
+						const next = { ...prev };
+						if (!request.statusText) delete next[request.statusKey];
+						else next[request.statusKey] = request.statusText;
+						return next;
+					});
+					return;
+				case "setWidget":
+					setWidgets(prev => {
+						const next = { ...prev };
+						if (request.widgetLines === undefined) delete next[request.widgetKey];
+						else next[request.widgetKey] = { lines: request.widgetLines, placement: request.widgetPlacement ?? "aboveEditor" };
+						return next;
+					});
+					return;
+				case "setTitle":
+					setDocTitle(request.title);
+					return;
 				default:
-					// setStatus / setWidget / setTitle — not surfaced yet
+					// Unknown/unsupported method — ignore.
 					return;
 			}
 		},
@@ -174,13 +226,20 @@ export function App() {
 	}, []);
 
 	useEffect(() => {
+		document.title = docTitle ? `${docTitle} — OMP` : "OMP";
+	}, [docTitle]);
+
+	useEffect(() => {
 		if (!workspace) return;
 		let cancelled = false;
 
 		const client = new DesktopRpcClient({
 			onEvent: event => {
 				dispatch({ kind: "event", event });
-				if (REFRESH_EVENTS.has(event.type)) void refreshState();
+				if (REFRESH_EVENTS.has(event.type)) {
+					void refreshState();
+					void refreshWorkspaceDiff();
+				}
 			},
 			onStatus: (next, detail) => {
 				if (cancelled) return;
@@ -201,6 +260,8 @@ export function App() {
 					client.getAvailableModels(),
 					refreshState(),
 					refreshLoginProviders(),
+					refreshSessions(),
+					refreshWorkspaceDiff(),
 				]);
 				if (cancelled) return;
 				setModels(availableModels);
@@ -215,7 +276,15 @@ export function App() {
 			clientRef.current = null;
 			void client.stop();
 		};
-	}, [workspace, refreshState, refreshSubagents, refreshLoginProviders, handleExtensionUI]);
+	}, [
+		workspace,
+		refreshState,
+		refreshSubagents,
+		refreshLoginProviders,
+		refreshSessions,
+		refreshWorkspaceDiff,
+		handleExtensionUI,
+	]);
 
 	const reportError = useCallback((label: string, err: unknown) => {
 		dispatch({ kind: "stderr", line: `${label}: ${err instanceof Error ? err.message : String(err)}` });
@@ -232,19 +301,23 @@ export function App() {
 		setToasts([]);
 		setLoginProviders([]);
 		setSessions([]);
-		setHistoryOpen(false);
+		setChanges([]);
 		setInjection(undefined);
 		setAuthPrompt(null);
+		setStatuses({});
+		setWidgets({});
+		setDocTitle(undefined);
 		loginProviderRef.current = undefined;
 		setStatus("idle");
 		setStatusDetail(undefined);
+		saveLastWorkspace(folder);
 		setWorkspace(folder);
 	}, []);
 
 	const onSend = useCallback(
-		(text: string) => {
-			dispatch({ kind: "user", text });
-			clientRef.current?.prompt(text).catch(err => reportError("send failed", err));
+		(text: string, images: ImageContent[]) => {
+			dispatch({ kind: "user", text, images });
+			clientRef.current?.prompt(text, images).catch(err => reportError("send failed", err));
 		},
 		[reportError],
 	);
@@ -279,10 +352,10 @@ export function App() {
 			.then(() => {
 				dispatch({ kind: "reset" });
 				setSubagents([]);
-				return Promise.all([refreshState(), historyOpen ? refreshSessions() : Promise.resolve()]);
+				return Promise.all([refreshState(), refreshSessions(), refreshWorkspaceDiff()]);
 			})
 			.catch(err => reportError("new session failed", err));
-	}, [refreshState, refreshSessions, historyOpen, reportError]);
+	}, [refreshState, refreshSessions, refreshWorkspaceDiff, reportError]);
 
 	const onRenameSession = useCallback(
 		(name: string) => {
@@ -293,14 +366,6 @@ export function App() {
 		},
 		[refreshState, reportError],
 	);
-
-	const onToggleHistory = useCallback(() => {
-		setHistoryOpen(open => {
-			const next = !open;
-			if (next) void refreshSessions();
-			return next;
-		});
-	}, [refreshSessions]);
 
 	const onSelectSession = useCallback(
 		(session: SessionSummary) => {
@@ -313,7 +378,6 @@ export function App() {
 					const messages = await client.getMessages();
 					dispatch({ kind: "seed", messages });
 					setSubagents([]);
-					setHistoryOpen(false);
 					await Promise.all([refreshState(), refreshSessions()]);
 				} catch (err) {
 					reportError("switch session failed", err);
@@ -346,6 +410,23 @@ export function App() {
 				.finally(() => {
 					setAuthPrompt(null);
 					loginProviderRef.current = undefined;
+				});
+		},
+		[addToast, refreshAuth, reportError],
+	);
+
+	const onSetApiKey = useCallback(
+		(providerId: string, apiKey: string) => {
+			addToast(`Saving API key for ${providerId}…`, "info");
+			clientRef.current
+				?.setApiKey(providerId, apiKey)
+				.then(async () => {
+					addToast(`API key saved for ${providerId}`, "info");
+					await refreshAuth();
+				})
+				.catch(err => {
+					reportError("set api key failed", err);
+					addToast(`API key failed: ${err instanceof Error ? err.message : String(err)}`, "error");
 				});
 		},
 		[addToast, refreshAuth, reportError],
@@ -396,7 +477,10 @@ export function App() {
 			subagents={subagents}
 			loginProviders={loginProviders}
 			sessions={sessions}
-			historyOpen={historyOpen}
+			statuses={statuses}
+			widgets={widgets}
+			changes={changes}
+			onRefreshChanges={refreshWorkspaceDiff}
 			historyLoading={historyLoading}
 			dialog={dialogQueue.find(d => DIALOG_METHODS.has(d.method)) ?? null}
 			toasts={toasts}
@@ -409,9 +493,9 @@ export function App() {
 			onSelectThinking={onSelectThinking}
 			onNewSession={onNewSession}
 			onRenameSession={onRenameSession}
-			onToggleHistory={onToggleHistory}
 			onSelectSession={onSelectSession}
 			onLogin={onLogin}
+			onSetApiKey={onSetApiKey}
 			onLogout={onLogout}
 			onAuthOpen={onAuthOpen}
 			onAuthCancel={onAuthCancel}

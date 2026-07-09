@@ -71,6 +71,30 @@ fn resolve_engine_program() -> String {
     "omp".to_string()
 }
 
+#[cfg(debug_assertions)]
+fn dev_source_engine_argv() -> Option<Vec<String>> {
+    let cli = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("coding-agent")
+        .join("src")
+        .join("cli.ts");
+    if !cli.is_file() {
+        return None;
+    }
+    Some(vec![
+        "bun".to_string(),
+        cli.to_string_lossy().into_owned(),
+        "--mode".to_string(),
+        "rpc-ui".to_string(),
+    ])
+}
+
+#[cfg(not(debug_assertions))]
+fn dev_source_engine_argv() -> Option<Vec<String>> {
+    None
+}
+
 fn engine_argv() -> Vec<String> {
     if let Ok(raw) = std::env::var("OMP_ENGINE_ARGV") {
         if let Ok(argv) = serde_json::from_str::<Vec<String>>(&raw) {
@@ -78,6 +102,9 @@ fn engine_argv() -> Vec<String> {
                 return argv;
             }
         }
+    }
+    if let Some(argv) = dev_source_engine_argv() {
+        return argv;
     }
     vec![resolve_engine_program(), "--mode".to_string(), "rpc-ui".to_string()]
 }
