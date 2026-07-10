@@ -37,6 +37,7 @@ export type RpcCommand =
 	| { id?: string; type: "set_model"; provider: string; modelId: string }
 	| { id?: string; type: "cycle_model" }
 	| { id?: string; type: "set_thinking_level"; level: ThinkingLevel }
+	| { id?: string; type: "set_approval_mode"; mode: ApprovalMode }
 	| { id?: string; type: "set_session_name"; name: string }
 	| { id?: string; type: "get_subagents" }
 	| { id?: string; type: "set_subagent_subscription"; level: "off" | "progress" | "events" }
@@ -56,6 +57,7 @@ export type RpcCommand =
  */
 export const THINKING_LEVELS = ["off", "auto", "minimal", "low", "medium", "high", "xhigh"] as const;
 export type ThinkingLevel = (typeof THINKING_LEVELS)[number] | "inherit";
+export type ApprovalMode = "always-ask" | "write" | "yolo";
 
 // ── Responses (engine -> frontend) ───────────────────────────────────────────
 
@@ -77,6 +79,7 @@ export interface ReadyFrame {
 export interface SessionState {
 	model?: ModelInfo;
 	thinkingLevel?: ThinkingLevel;
+	approvalMode?: ApprovalMode;
 	isStreaming: boolean;
 	sessionId: string;
 	sessionName?: string;

@@ -5,13 +5,14 @@
  * Receives commands as JSON on stdin, outputs events and responses as JSON on stdout.
  *
  * Protocol:
- * - Commands: JSON objects with `type` field, optional `id` for correlation
- * - Responses: JSON objects with `type: "response"`, `command`, `success`, and optional `data`/`error`
+ * - Commands: JSON objects with 	ype` field, optional `id` for correlation
+ * - Responses: JSON objects with 	ype: "response"`, `command`, `success`, and optional `data`/`error`
  * - Events: AgentSessionEvent objects streamed as they occur
  * - Extension UI: Extension UI requests are emitted, client responds with extension_ui_response
  */
-import { PROVIDER_REGISTRY } from "@oh-my-pi/pi-ai/registry";
+
 import { getOAuthProviders } from "@oh-my-pi/pi-ai/oauth";
+import { PROVIDER_REGISTRY } from "@oh-my-pi/pi-ai/registry";
 import { isZodSchema, zodToWireSchema } from "@oh-my-pi/pi-ai/utils/schema";
 import { $env, isRecord, readJsonl, Snowflake } from "@oh-my-pi/pi-utils";
 import { reset as resetCapabilities } from "../../capability";
@@ -331,7 +332,7 @@ export interface RpcInputFrameDeps {
 /**
  * Structural guard for a well-formed extension UI response frame. Mirrors the
  * shape declared in {@link RpcExtensionUIResponse} — a truthy record with
- * `type === "extension_ui_response"` and a string `id`. Payload variants (value,
+ * 	ype === "extension_ui_response"` and a string `id`. Payload variants (value,
  * confirmed, cancelled) are validated at the read site.
  */
 function isRpcExtensionUIResponse(value: unknown): value is RpcExtensionUIResponse {
@@ -1033,6 +1034,7 @@ export async function runRpcMode(
 					steeringMode: session.steeringMode,
 					followUpMode: session.followUpMode,
 					interruptMode: session.interruptMode,
+					approvalMode: session.settings.get("tools.approvalMode"),
 					sessionFile: session.sessionFile,
 					sessionId: session.sessionId,
 					sessionName: session.sessionName,
@@ -1190,6 +1192,11 @@ export async function runRpcMode(
 			case "set_auto_compaction": {
 				session.setAutoCompactionEnabled(command.enabled);
 				return success(id, "set_auto_compaction");
+			}
+
+			case "set_approval_mode": {
+				session.settings.override("tools.approvalMode", command.mode);
+				return success(id, "set_approval_mode", { mode: session.settings.get("tools.approvalMode") });
 			}
 
 			// =================================================================

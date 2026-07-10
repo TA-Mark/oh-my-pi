@@ -1,15 +1,19 @@
+import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
 import {
 	Archive,
+	Badge,
 	Box,
+	Bug,
 	CalendarClock,
 	Check,
 	ChevronDown,
+	ChevronLeft,
 	ChevronRight,
 	CirclePlus,
-	GripVertical,
 	FolderOpen,
 	FolderPlus,
 	GitBranchPlus,
+	GripVertical,
 	History,
 	Maximize2,
 	MessageSquarePlus,
@@ -21,16 +25,20 @@ import {
 	Pencil,
 	Pin,
 	Plug,
+	RefreshCw,
 	Search,
 	SortDesc,
+	Telescope,
+	Terminal,
+	Wrench,
 	X,
 } from "lucide-react";
-import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
-import { useEffect, useMemo, useRef, useState } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { ViewModel } from "../lib/reducer";
 import type { EngineStatus } from "../lib/rpc-client";
 import type {
+	ApprovalMode,
 	ExtensionUIRequest,
 	ExtensionUIResponse,
 	ImageContent,
@@ -47,7 +55,7 @@ import { DialogHost } from "./DialogHost";
 import { StatusBar, WidgetArea, type WidgetEntry } from "./ExtensionWidgets";
 import { LoginMenu } from "./LoginMenu";
 import { ModelPicker } from "./ModelPicker";
-import { SessionHistory, type ChatContextActions } from "./SessionHistory";
+import { type ChatContextActions, SessionHistory } from "./SessionHistory";
 import { SubagentPanel } from "./SubagentPanel";
 import { ThinkingPicker } from "./ThinkingPicker";
 import { type Toast, Toasts } from "./Toasts";
@@ -57,6 +65,7 @@ import { WorkspaceToolsPanel, type WorkspaceToolView } from "./WorkspaceToolsPan
 export interface SessionInfo {
 	model?: string;
 	thinkingLevel?: ThinkingLevel;
+	approvalMode?: ApprovalMode;
 	sessionName?: string;
 	messageCount: number;
 }
@@ -85,6 +94,7 @@ interface AppShellProps {
 	onChangeFolder: () => void;
 	onSelectModel: (provider: string, id: string) => void;
 	onSelectThinking: (level: ThinkingLevel) => void;
+	onSelectApprovalMode: (mode: ApprovalMode) => void;
 	onNewSession: () => void;
 	onRenameSession: (name: string) => void;
 	onSelectSession: (session: SessionSummary) => void;
@@ -97,23 +107,17 @@ interface AppShellProps {
 	onDismissToast: (id: string) => void;
 }
 
-const STATUS_LABEL: Record<EngineStatus, string> = {
-	idle: "Idle",
-	starting: "Starting engine…",
-	ready: "Ready",
-	error: "Error",
-	stopped: "Engine stopped",
-};
-
 function projectName(p: string): string {
 	const parts = p.split(/[\\/]/).filter(Boolean);
 	return parts.at(-1) ?? p;
 }
 
-const DEFAULT_SIDEBAR_WIDTH = 374;
+const DEFAULT_SIDEBAR_WIDTH = 300;
 const MIN_SIDEBAR_WIDTH = 240;
-const MAX_SIDEBAR_WIDTH = 420;
+const MAX_SIDEBAR_WIDTH = 342;
 const MIN_MAIN_WORKSPACE_WIDTH = 360;
+const SIDEBAR_COLLAPSED_KEY = "omp.sidebar.collapsed";
+const SIDEBAR_WIDTH_KEY = "omp.sidebar.width.v2";
 
 function maxSidebarWidth(): number {
 	return Math.max(MIN_SIDEBAR_WIDTH, Math.min(MAX_SIDEBAR_WIDTH, window.innerWidth - MIN_MAIN_WORKSPACE_WIDTH));
@@ -121,6 +125,25 @@ function maxSidebarWidth(): number {
 
 function clampSidebarWidth(width: number): number {
 	return Math.min(maxSidebarWidth(), Math.max(MIN_SIDEBAR_WIDTH, width));
+}
+
+function readSidebarCollapsed(): boolean {
+	return window.localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "true";
+}
+
+function readSidebarWidth(): number {
+	const raw = window.localStorage.getItem(SIDEBAR_WIDTH_KEY);
+	if (!raw) return clampSidebarWidth(Math.round(window.innerWidth * 0.21));
+	const parsed = Number.parseInt(raw, 10);
+	return Number.isFinite(parsed) ? clampSidebarWidth(parsed) : DEFAULT_SIDEBAR_WIDTH;
+}
+
+function taskTitleFromPrompt(prompt: string): string {
+	const normalized = prompt.replace(/\s+/g, " ").trim();
+	if (normalized.length <= 52) return normalized;
+	const shortened = normalized.slice(0, 49);
+	const wordBoundary = shortened.lastIndexOf(" ");
+	return `${(wordBoundary > 28 ? shortened.slice(0, wordBoundary) : shortened).trimEnd()}...`;
 }
 
 function SessionName({ name, onRename }: { name?: string; onRename: (name: string) => void }) {
@@ -208,7 +231,7 @@ function ProjectMenu({
 
 type ProjectHeaderSubmenu = "organize" | "sort" | null;
 type ProjectSubmenuPlacement = "left" | "right";
-type SidebarNavView = "chats" | "search" | "scheduled" | "plugins";
+type SidebarNavView = "new-task" | "chats" | "search" | "scheduled" | "plugins";
 type SidebarOrganization = "by-project" | "recent-projects" | "chronological";
 type SidebarSortMode = "manual" | "created" | "updated";
 
@@ -218,21 +241,94 @@ interface SidebarSettings {
 	projectsMovedDown: boolean;
 }
 
+interface WorkspaceSidebarState {
+	projectPinned: boolean;
+	projectHidden: boolean;
+	projectLabel: string | null;
+	archivedSessionPaths: string[];
+	pinnedSessionPaths: string[];
+	unreadSessionPaths: string[];
+	sessionTitleOverrides: Record<string, string>;
+}
+
 const DEFAULT_SIDEBAR_SETTINGS: SidebarSettings = {
 	organization: "by-project",
 	sortMode: "manual",
 	projectsMovedDown: false,
 };
 
+const DEFAULT_WORKSPACE_SIDEBAR_STATE: WorkspaceSidebarState = {
+	projectPinned: false,
+	projectHidden: false,
+	projectLabel: null,
+	archivedSessionPaths: [],
+	pinnedSessionPaths: [],
+	unreadSessionPaths: [],
+	sessionTitleOverrides: {},
+};
+
+const HOME_PROMPTS = [
+	{ icon: Telescope, tone: "blue", label: "Explore and understand code" },
+	{ icon: Wrench, tone: "violet", label: "Build a new feature, app, or tool" },
+	{ icon: RefreshCw, tone: "green", label: "Review code and suggest changes" },
+	{ icon: Bug, tone: "orange", label: "Fix issues and failures" },
+] as const;
+
 function readSidebarSettings(): SidebarSettings {
 	const organization = window.localStorage.getItem("omp.sidebar.organization");
 	const sortMode = window.localStorage.getItem("omp.sidebar.sortMode");
 	const projectsMovedDown = window.localStorage.getItem("omp.sidebar.projectsMovedDown") === "true";
 	return {
-		organization: organization === "recent-projects" || organization === "chronological" || organization === "by-project" ? organization : DEFAULT_SIDEBAR_SETTINGS.organization,
-		sortMode: sortMode === "created" || sortMode === "updated" || sortMode === "manual" ? sortMode : DEFAULT_SIDEBAR_SETTINGS.sortMode,
+		organization:
+			organization === "recent-projects" || organization === "chronological" || organization === "by-project"
+				? organization
+				: DEFAULT_SIDEBAR_SETTINGS.organization,
+		sortMode:
+			sortMode === "created" || sortMode === "updated" || sortMode === "manual"
+				? sortMode
+				: DEFAULT_SIDEBAR_SETTINGS.sortMode,
 		projectsMovedDown,
 	};
+}
+
+function workspaceSidebarStateKey(workspace: string): string {
+	return `omp.sidebar.workspace.${encodeURIComponent(workspace)}`;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isStringArray(value: unknown): value is string[] {
+	return Array.isArray(value) && value.every(item => typeof item === "string");
+}
+
+function isStringRecord(value: unknown): value is Record<string, string> {
+	return isRecord(value) && Object.values(value).every(item => typeof item === "string");
+}
+
+function readWorkspaceSidebarState(workspace: string): WorkspaceSidebarState {
+	try {
+		const raw = window.localStorage.getItem(workspaceSidebarStateKey(workspace));
+		if (!raw) return DEFAULT_WORKSPACE_SIDEBAR_STATE;
+		const parsed: unknown = JSON.parse(raw);
+		if (!isRecord(parsed)) return DEFAULT_WORKSPACE_SIDEBAR_STATE;
+		return {
+			projectPinned: parsed.projectPinned === true,
+			projectHidden: parsed.projectHidden === true,
+			projectLabel: typeof parsed.projectLabel === "string" ? parsed.projectLabel : null,
+			archivedSessionPaths: isStringArray(parsed.archivedSessionPaths) ? parsed.archivedSessionPaths : [],
+			pinnedSessionPaths: isStringArray(parsed.pinnedSessionPaths) ? parsed.pinnedSessionPaths : [],
+			unreadSessionPaths: isStringArray(parsed.unreadSessionPaths) ? parsed.unreadSessionPaths : [],
+			sessionTitleOverrides: isStringRecord(parsed.sessionTitleOverrides) ? parsed.sessionTitleOverrides : {},
+		};
+	} catch {
+		return DEFAULT_WORKSPACE_SIDEBAR_STATE;
+	}
+}
+
+function writeWorkspaceSidebarState(workspace: string, state: WorkspaceSidebarState): void {
+	window.localStorage.setItem(workspaceSidebarStateKey(workspace), JSON.stringify(state));
 }
 
 function ProjectsHeaderMenu({
@@ -276,38 +372,64 @@ function ProjectsHeaderMenu({
 	return (
 		<div className="projects-menu-shell" ref={shellRef} onMouseLeave={() => setSubmenu(null)}>
 			<div className="projects-header-menu">
-			<button type="button" className="project-menu-item" onClick={onArchiveAllChats}>
-				<Archive size={16} strokeWidth={1.8} />
-				<span>Archive all chats</span>
-			</button>
-			<div className="project-menu-separator" />
-			<button type="button" className={`project-menu-item${submenu === "organize" ? " project-menu-item--active" : ""}`} onMouseEnter={() => showSubmenu("organize")}>
-				<PanelLeftClose size={16} strokeWidth={1.8} />
-				<span>Organize sidebar</span>
-				<ChevronRight className="project-menu-arrow" size={15} strokeWidth={1.9} />
-			</button>
-			<button type="button" className={`project-menu-item${submenu === "sort" ? " project-menu-item--active" : ""}`} onMouseEnter={() => showSubmenu("sort")}>
-				<CalendarClock size={16} strokeWidth={1.8} />
-				<span>Sort by</span>
-				<ChevronRight className="project-menu-arrow" size={15} strokeWidth={1.9} />
-			</button>
+				<button type="button" className="project-menu-item" onClick={onArchiveAllChats}>
+					<Archive size={16} strokeWidth={1.8} />
+					<span>Archive all chats</span>
+				</button>
+				<div className="project-menu-separator" />
+				<button
+					type="button"
+					className={`project-menu-item${submenu === "organize" ? " project-menu-item--active" : ""}`}
+					onMouseEnter={() => showSubmenu("organize")}
+				>
+					<PanelLeftClose size={16} strokeWidth={1.8} />
+					<span>Organize sidebar</span>
+					<ChevronRight className="project-menu-arrow" size={15} strokeWidth={1.9} />
+				</button>
+				<button
+					type="button"
+					className={`project-menu-item${submenu === "sort" ? " project-menu-item--active" : ""}`}
+					onMouseEnter={() => showSubmenu("sort")}
+				>
+					<CalendarClock size={16} strokeWidth={1.8} />
+					<span>Sort by</span>
+					<ChevronRight className="project-menu-arrow" size={15} strokeWidth={1.9} />
+				</button>
 			</div>
 			{submenu === "organize" ? (
 				<div className={`project-submenu project-submenu--${submenuPlacement}`}>
-					<button type="button" className={`project-menu-item${settings.organization === "by-project" ? " project-menu-item--selected" : ""}`} onClick={() => selectOrganization("by-project")}>
+					<button
+						type="button"
+						className={`project-menu-item${settings.organization === "by-project" ? " project-menu-item--selected" : ""}`}
+						onClick={() => selectOrganization("by-project")}
+					>
 						<Archive size={16} strokeWidth={1.8} />
 						<span>By project</span>
-						{settings.organization === "by-project" ? <Check className="project-menu-check" size={15} strokeWidth={2} /> : null}
+						{settings.organization === "by-project" ? (
+							<Check className="project-menu-check" size={15} strokeWidth={2} />
+						) : null}
 					</button>
-					<button type="button" className={`project-menu-item${settings.organization === "recent-projects" ? " project-menu-item--selected" : ""}`} onClick={() => selectOrganization("recent-projects")}>
+					<button
+						type="button"
+						className={`project-menu-item${settings.organization === "recent-projects" ? " project-menu-item--selected" : ""}`}
+						onClick={() => selectOrganization("recent-projects")}
+					>
 						<FolderOpen size={16} strokeWidth={1.8} />
 						<span>Recent projects</span>
-						{settings.organization === "recent-projects" ? <Check className="project-menu-check" size={15} strokeWidth={2} /> : null}
+						{settings.organization === "recent-projects" ? (
+							<Check className="project-menu-check" size={15} strokeWidth={2} />
+						) : null}
 					</button>
-					<button type="button" className={`project-menu-item${settings.organization === "chronological" ? " project-menu-item--selected" : ""}`} onClick={() => selectOrganization("chronological")}>
+					<button
+						type="button"
+						className={`project-menu-item${settings.organization === "chronological" ? " project-menu-item--selected" : ""}`}
+						onClick={() => selectOrganization("chronological")}
+					>
 						<History size={16} strokeWidth={1.8} />
 						<span>Chronological list</span>
-						{settings.organization === "chronological" ? <Check className="project-menu-check" size={15} strokeWidth={2} /> : null}
+						{settings.organization === "chronological" ? (
+							<Check className="project-menu-check" size={15} strokeWidth={2} />
+						) : null}
 					</button>
 					<button type="button" className="project-menu-item" onClick={onToggleProjectOrder}>
 						<SortDesc size={16} strokeWidth={1.8} />
@@ -317,20 +439,38 @@ function ProjectsHeaderMenu({
 			) : null}
 			{submenu === "sort" ? (
 				<div className={`project-submenu project-submenu--${submenuPlacement}`}>
-					<button type="button" className={`project-menu-item${settings.sortMode === "manual" ? " project-menu-item--selected" : ""}`} onClick={() => selectSortMode("manual")}>
+					<button
+						type="button"
+						className={`project-menu-item${settings.sortMode === "manual" ? " project-menu-item--selected" : ""}`}
+						onClick={() => selectSortMode("manual")}
+					>
 						<GripVertical size={16} strokeWidth={1.8} />
 						<span>Manual order</span>
-						{settings.sortMode === "manual" ? <Check className="project-menu-check" size={15} strokeWidth={2} /> : null}
+						{settings.sortMode === "manual" ? (
+							<Check className="project-menu-check" size={15} strokeWidth={2} />
+						) : null}
 					</button>
-					<button type="button" className={`project-menu-item${settings.sortMode === "created" ? " project-menu-item--selected" : ""}`} onClick={() => selectSortMode("created")}>
+					<button
+						type="button"
+						className={`project-menu-item${settings.sortMode === "created" ? " project-menu-item--selected" : ""}`}
+						onClick={() => selectSortMode("created")}
+					>
 						<CirclePlus size={16} strokeWidth={1.8} />
 						<span>Created</span>
-						{settings.sortMode === "created" ? <Check className="project-menu-check" size={15} strokeWidth={2} /> : null}
+						{settings.sortMode === "created" ? (
+							<Check className="project-menu-check" size={15} strokeWidth={2} />
+						) : null}
 					</button>
-					<button type="button" className={`project-menu-item${settings.sortMode === "updated" ? " project-menu-item--selected" : ""}`} onClick={() => selectSortMode("updated")}>
+					<button
+						type="button"
+						className={`project-menu-item${settings.sortMode === "updated" ? " project-menu-item--selected" : ""}`}
+						onClick={() => selectSortMode("updated")}
+					>
 						<Pencil size={16} strokeWidth={1.8} />
 						<span>Last updated</span>
-						{settings.sortMode === "updated" ? <Check className="project-menu-check" size={15} strokeWidth={2} /> : null}
+						{settings.sortMode === "updated" ? (
+							<Check className="project-menu-check" size={15} strokeWidth={2} />
+						) : null}
 					</button>
 				</div>
 			) : null}
@@ -363,6 +503,7 @@ export function AppShell(props: AppShellProps) {
 		onChangeFolder,
 		onSelectModel,
 		onSelectThinking,
+		onSelectApprovalMode,
 		onNewSession,
 		onRenameSession,
 		onSelectSession,
@@ -375,22 +516,34 @@ export function AppShell(props: AppShellProps) {
 		onDismissToast,
 	} = props;
 	const disabled = status !== "ready";
+	const isEmptySession = vm.messages.length === 0;
+	const [initialWorkspaceSidebarState] = useState(() => readWorkspaceSidebarState(workspace));
 	const [toolsOpen, setToolsOpen] = useState(false);
 	const [toolsView, setToolsView] = useState<WorkspaceToolView>("menu");
-	const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-	const [sidebarWidth, setSidebarWidth] = useState(DEFAULT_SIDEBAR_WIDTH);
+	const [sidebarCollapsed, setSidebarCollapsed] = useState(() => readSidebarCollapsed());
+	const [sidebarWidth, setSidebarWidth] = useState(() => readSidebarWidth());
 	const [projectMenuPlacement, setProjectMenuPlacement] = useState<"header" | "row" | null>(null);
-	const [projectPinned, setProjectPinned] = useState(false);
-	const [projectHidden, setProjectHidden] = useState(false);
-	const [projectLabel, setProjectLabel] = useState<string | null>(null);
-	const [activeSidebarView, setActiveSidebarView] = useState<SidebarNavView>("chats");
+	const [projectPinned, setProjectPinned] = useState(initialWorkspaceSidebarState.projectPinned);
+	const [projectHidden, setProjectHidden] = useState(initialWorkspaceSidebarState.projectHidden);
+	const [projectLabel, setProjectLabel] = useState<string | null>(initialWorkspaceSidebarState.projectLabel);
+	const [projectContextEnabled, setProjectContextEnabled] = useState(false);
+	const [activeSidebarView, setActiveSidebarView] = useState<SidebarNavView>("new-task");
 	const [historyQuery, setHistoryQuery] = useState("");
-	const [archivedSessionPaths, setArchivedSessionPaths] = useState<Set<string>>(() => new Set());
-	const [pinnedSessionPaths, setPinnedSessionPaths] = useState<Set<string>>(() => new Set());
-	const [unreadSessionPaths, setUnreadSessionPaths] = useState<Set<string>>(() => new Set());
-	const [sessionTitleOverrides, setSessionTitleOverrides] = useState<Record<string, string>>({});
+	const [archivedSessionPaths, setArchivedSessionPaths] = useState<Set<string>>(
+		() => new Set(initialWorkspaceSidebarState.archivedSessionPaths),
+	);
+	const [pinnedSessionPaths, setPinnedSessionPaths] = useState<Set<string>>(
+		() => new Set(initialWorkspaceSidebarState.pinnedSessionPaths),
+	);
+	const [unreadSessionPaths, setUnreadSessionPaths] = useState<Set<string>>(
+		() => new Set(initialWorkspaceSidebarState.unreadSessionPaths),
+	);
+	const [sessionTitleOverrides, setSessionTitleOverrides] = useState<Record<string, string>>(
+		initialWorkspaceSidebarState.sessionTitleOverrides,
+	);
 	const [sidebarSettings, setSidebarSettings] = useState<SidebarSettings>(() => readSidebarSettings());
 	const [sidebarNotice, setSidebarNotice] = useState<string | null>(null);
+	const [workspaceStateLoadedFor, setWorkspaceStateLoadedFor] = useState(workspace);
 
 	useEffect(() => {
 		window.localStorage.setItem("omp.sidebar.organization", sidebarSettings.organization);
@@ -399,20 +552,58 @@ export function AppShell(props: AppShellProps) {
 	}, [sidebarSettings]);
 
 	useEffect(() => {
-		setProjectHidden(false);
-		setProjectLabel(null);
-		setArchivedSessionPaths(new Set());
-		setPinnedSessionPaths(new Set());
-		setUnreadSessionPaths(new Set());
-		setSessionTitleOverrides({});
+		window.localStorage.setItem(SIDEBAR_COLLAPSED_KEY, String(sidebarCollapsed));
+	}, [sidebarCollapsed]);
+
+	useEffect(() => {
+		window.localStorage.setItem(SIDEBAR_WIDTH_KEY, String(sidebarWidth));
+	}, [sidebarWidth]);
+
+	useEffect(() => {
+		const state = readWorkspaceSidebarState(workspace);
+		setProjectPinned(state.projectPinned);
+		setProjectHidden(state.projectHidden);
+		setProjectLabel(state.projectLabel);
+		setArchivedSessionPaths(new Set(state.archivedSessionPaths));
+		setPinnedSessionPaths(new Set(state.pinnedSessionPaths));
+		setUnreadSessionPaths(new Set(state.unreadSessionPaths));
+		setSessionTitleOverrides(state.sessionTitleOverrides);
+		setWorkspaceStateLoadedFor(workspace);
 		setSidebarNotice(null);
 	}, [workspace]);
 
+	useEffect(() => {
+		if (workspaceStateLoadedFor !== workspace) return;
+		writeWorkspaceSidebarState(workspace, {
+			projectPinned,
+			projectHidden,
+			projectLabel,
+			archivedSessionPaths: [...archivedSessionPaths],
+			pinnedSessionPaths: [...pinnedSessionPaths],
+			unreadSessionPaths: [...unreadSessionPaths],
+			sessionTitleOverrides,
+		});
+	}, [
+		archivedSessionPaths,
+		pinnedSessionPaths,
+		projectHidden,
+		projectLabel,
+		projectPinned,
+		sessionTitleOverrides,
+		unreadSessionPaths,
+		workspace,
+		workspaceStateLoadedFor,
+	]);
+
+	const currentProjectName = projectLabel ?? projectName(workspace);
 	const visibleSessions = useMemo(() => {
 		const query = historyQuery.trim().toLowerCase();
-		const withOverrides = sessions.map(summary => ({
+		const withOverrides = sessions.map((summary, index) => ({
 			...summary,
-			title: sessionTitleOverrides[summary.path] ?? summary.title,
+			title:
+				sessionTitleOverrides[summary.path] ??
+				summary.title ??
+				`${currentProjectName} task ${sessions.length - index}`,
 		}));
 		const filtered = withOverrides.filter(summary => {
 			if (archivedSessionPaths.has(summary.path)) return false;
@@ -421,27 +612,48 @@ export function AppShell(props: AppShellProps) {
 			return title.toLowerCase().includes(query) || summary.id.toLowerCase().includes(query);
 		});
 		const pinSorted = (list: SessionSummary[]): SessionSummary[] =>
-			[...list].sort((left, right) => Number(pinnedSessionPaths.has(right.path)) - Number(pinnedSessionPaths.has(left.path)));
+			[...list].sort(
+				(left, right) => Number(pinnedSessionPaths.has(right.path)) - Number(pinnedSessionPaths.has(left.path)),
+			);
 		switch (sidebarSettings.sortMode) {
 			case "created":
 				return pinSorted(filtered).sort((left, right) => {
-					const pinnedDiff = Number(pinnedSessionPaths.has(right.path)) - Number(pinnedSessionPaths.has(left.path));
+					const pinnedDiff =
+						Number(pinnedSessionPaths.has(right.path)) - Number(pinnedSessionPaths.has(left.path));
 					if (pinnedDiff !== 0) return pinnedDiff;
 					return new Date(right.created).getTime() - new Date(left.created).getTime();
 				});
 			case "updated":
 				return pinSorted(filtered).sort((left, right) => {
-					const pinnedDiff = Number(pinnedSessionPaths.has(right.path)) - Number(pinnedSessionPaths.has(left.path));
+					const pinnedDiff =
+						Number(pinnedSessionPaths.has(right.path)) - Number(pinnedSessionPaths.has(left.path));
 					if (pinnedDiff !== 0) return pinnedDiff;
 					return new Date(right.modified).getTime() - new Date(left.modified).getTime();
 				});
 			case "manual":
 				return pinSorted(filtered);
 		}
-	}, [archivedSessionPaths, historyQuery, pinnedSessionPaths, sessionTitleOverrides, sessions, sidebarSettings.sortMode]);
+	}, [
+		archivedSessionPaths,
+		historyQuery,
+		pinnedSessionPaths,
+		currentProjectName,
+		sessionTitleOverrides,
+		sessions,
+		sidebarSettings.sortMode,
+	]);
 
-	const historyEmptyLabel = historyQuery.trim() ? "No matching chats." : archivedSessionPaths.size > 0 ? "All visible chats are archived." : "No sessions yet.";
-	const currentProjectName = projectLabel ?? projectName(workspace);
+	const historyEmptyLabel = historyQuery.trim()
+		? "No matching chats."
+		: archivedSessionPaths.size > 0
+			? "All visible chats are archived."
+			: "No sessions yet.";
+	const isProjectContextActive = projectContextEnabled && !projectHidden;
+	const composerProjectName = isProjectContextActive ? currentProjectName : "";
+	const composerWorkspaceTitle = isProjectContextActive ? workspace : "Choose project";
+	const homeHeading = isProjectContextActive
+		? `What should we build in ${currentProjectName}?`
+		: "What should we work on?";
 
 	useEffect(() => {
 		const onWindowResize = (): void => {
@@ -463,6 +675,16 @@ export function AppShell(props: AppShellProps) {
 		if (view !== "search") setHistoryQuery("");
 	};
 
+	const chooseProject = (): void => {
+		setProjectContextEnabled(true);
+		onChangeFolder();
+	};
+
+	const startNewChat = (withProject: boolean): void => {
+		setProjectContextEnabled(withProject);
+		onNewSession();
+	};
+
 	const openWorkspaceInExplorer = (): void => {
 		setProjectMenuPlacement(null);
 		void revealItemInDir(workspace).catch(() => openPath(workspace).catch(() => undefined));
@@ -476,7 +698,9 @@ export function AppShell(props: AppShellProps) {
 	const archiveSessions = (onlyCurrentProject: boolean): void => {
 		const paths = sessions.filter(summary => !summary.active).map(summary => summary.path);
 		setArchivedSessionPaths(currentPaths => new Set([...currentPaths, ...paths]));
-		setSidebarNotice(onlyCurrentProject ? "Archived inactive chats in this project." : "Archived all inactive chats.");
+		setSidebarNotice(
+			onlyCurrentProject ? "Archived inactive chats in this project." : "Archived all inactive chats.",
+		);
 		setProjectMenuPlacement(null);
 	};
 
@@ -500,6 +724,7 @@ export function AppShell(props: AppShellProps) {
 
 	const removeProject = (): void => {
 		setProjectHidden(true);
+		setProjectContextEnabled(false);
 		setProjectMenuPlacement(null);
 		setSidebarNotice("Project hidden from sidebar. Use the folder button to choose another project.");
 	};
@@ -514,6 +739,17 @@ export function AppShell(props: AppShellProps) {
 			() => setSidebarNotice(`${label} copied.`),
 			() => setSidebarNotice(`Could not copy ${label.toLowerCase()}.`),
 		);
+	};
+
+	const selectSessionFromSidebar = (selectedSession: SessionSummary): void => {
+		setProjectContextEnabled(true);
+		setUnreadSessionPaths(paths => {
+			if (!paths.has(selectedSession.path)) return paths;
+			const next = new Set(paths);
+			next.delete(selectedSession.path);
+			return next;
+		});
+		onSelectSession(selectedSession);
 	};
 
 	const chatContextActions: ChatContextActions = {
@@ -553,7 +789,8 @@ export function AppShell(props: AppShellProps) {
 		},
 		onCopyWorkingDirectory: () => copyText(workspace, "Working directory"),
 		onCopySessionId: chat => copyText(chat.id, "Session ID"),
-		onCopyDeeplink: chat => copyText(`omp://session/${encodeURIComponent(chat.id)}`, "Deeplink"),
+		onCopyDeeplink: chat =>
+			copyText(`omp://session/${encodeURIComponent(chat.id)}?path=${encodeURIComponent(chat.path)}`, "Deeplink"),
 		onOpenNewWindow: () => {
 			setSidebarNotice("Open in new window is reserved for a future desktop window command.");
 		},
@@ -578,7 +815,12 @@ export function AppShell(props: AppShellProps) {
 	const projectBlock = !projectHidden ? (
 		<div className="sidebar-projects sidebar-expanded-only">
 			<div className="sidebar-section-head">
-				<button type="button" className="sidebar-section-title-button" title="Projects" onClick={() => changeOrganization("by-project")}>
+				<button
+					type="button"
+					className="sidebar-section-title-button"
+					title="Projects"
+					onClick={() => changeOrganization("by-project")}
+				>
 					<span>Projects</span>
 					<ChevronDown size={14} strokeWidth={1.9} />
 				</button>
@@ -595,7 +837,12 @@ export function AppShell(props: AppShellProps) {
 						</button>
 						{projectMenuPlacement === "header" ? (
 							<>
-								<button type="button" className="picker-backdrop" aria-label="Close project menu" onClick={() => setProjectMenuPlacement(null)} />
+								<button
+									type="button"
+									className="picker-backdrop"
+									aria-label="Close project menu"
+									onClick={() => setProjectMenuPlacement(null)}
+								/>
 								<ProjectsHeaderMenu
 									settings={sidebarSettings}
 									onArchiveAllChats={() => archiveSessions(false)}
@@ -607,13 +854,26 @@ export function AppShell(props: AppShellProps) {
 							</>
 						) : null}
 					</div>
-					<button type="button" className="sidebar-mini-button" title="Create project from folder" aria-label="Create project from folder" onClick={onChangeFolder}>
+					<button
+						type="button"
+						className="sidebar-mini-button"
+						title="Create project from folder"
+						aria-label="Create project from folder"
+						onClick={chooseProject}
+					>
 						<FolderPlus size={16} strokeWidth={1.9} />
 					</button>
 				</div>
 			</div>
-			<div className={`project-row${projectMenuPlacement != null ? " project-row--active" : ""}${projectPinned ? " project-row--pinned" : ""}`}>
-				<button type="button" className="project-row-main" title={workspace}>
+			<div
+				className={`project-row${projectMenuPlacement != null ? " project-row--active" : ""}${projectPinned ? " project-row--pinned" : ""}`}
+			>
+				<button
+					type="button"
+					className="project-row-main"
+					title={workspace}
+					onClick={() => setProjectContextEnabled(true)}
+				>
 					<Box size={17} strokeWidth={1.8} />
 					<span className="project-row-name">{currentProjectName}</span>
 					<ChevronDown size={14} strokeWidth={1.9} />
@@ -631,7 +891,12 @@ export function AppShell(props: AppShellProps) {
 						</button>
 						{projectMenuPlacement === "row" ? (
 							<>
-								<button type="button" className="picker-backdrop" aria-label="Close project menu" onClick={() => setProjectMenuPlacement(null)} />
+								<button
+									type="button"
+									className="picker-backdrop"
+									aria-label="Close project menu"
+									onClick={() => setProjectMenuPlacement(null)}
+								/>
 								<ProjectMenu
 									pinned={projectPinned}
 									onTogglePinned={toggleProjectPinned}
@@ -650,7 +915,7 @@ export function AppShell(props: AppShellProps) {
 						title="New chat in this project"
 						aria-label="New chat in this project"
 						disabled={disabled}
-						onClick={onNewSession}
+						onClick={() => startNewChat(true)}
 					>
 						<Pencil size={15} strokeWidth={1.9} />
 					</button>
@@ -661,36 +926,86 @@ export function AppShell(props: AppShellProps) {
 
 	const chatsBlock = (
 		<div className="sidebar-section">
-			<div className="history-title sidebar-expanded-only">{activeSidebarView === "search" ? "Search chats" : "Chats"}</div>
+			<div className="history-title sidebar-expanded-only">
+				{activeSidebarView === "search" ? "Search tasks" : "Tasks"}
+			</div>
 			{activeSidebarView === "search" ? (
 				<label className="sidebar-search sidebar-expanded-only">
 					<Search size={15} strokeWidth={1.8} />
-					<input value={historyQuery} onChange={event => setHistoryQuery(event.target.value)} placeholder="Search chats..." autoFocus />
+					<input
+						value={historyQuery}
+						onChange={event => setHistoryQuery(event.target.value)}
+						placeholder="Search chats..."
+						autoFocus
+					/>
 				</label>
 			) : null}
-			{activeSidebarView === "scheduled" ? <div className="sidebar-notice sidebar-expanded-only">No scheduled tasks yet.</div> : null}
-			{activeSidebarView === "plugins" ? <div className="sidebar-notice sidebar-expanded-only">Plugin management is available from the active project context.</div> : null}
+			{activeSidebarView === "scheduled" ? (
+				<div className="sidebar-notice sidebar-expanded-only">No scheduled tasks yet.</div>
+			) : null}
+			{activeSidebarView === "plugins" ? (
+				<div className="sidebar-notice sidebar-expanded-only">
+					Plugin management is available from the active project context.
+				</div>
+			) : null}
 			{sidebarNotice ? (
-				<button type="button" className="sidebar-notice sidebar-notice--button sidebar-expanded-only" onClick={() => setSidebarNotice(null)}>
+				<button
+					type="button"
+					className="sidebar-notice sidebar-notice--button sidebar-expanded-only"
+					onClick={() => setSidebarNotice(null)}
+				>
 					{sidebarNotice}
 				</button>
 			) : null}
 			<SessionHistory
 				sessions={visibleSessions}
 				loading={historyLoading}
-				onSelect={onSelectSession}
+				onSelect={selectSessionFromSidebar}
 				emptyLabel={historyEmptyLabel}
 				contextActions={chatContextActions}
 			/>
 		</div>
 	);
 
+	const sendWithTaskTitle = (text: string, images: ImageContent[]): void => {
+		if (isEmptySession && !session.sessionName && text.trim()) {
+			onRenameSession(taskTitleFromPrompt(text));
+		}
+		onSend(text, images);
+	};
+
+	const composerNode = (
+		<Composer
+			disabled={disabled}
+			streaming={vm.streaming}
+			injection={injection}
+			workspace={composerWorkspaceTitle}
+			projectName={composerProjectName}
+			model={session.model}
+			thinkingLevel={session.thinkingLevel}
+			approvalMode={session.approvalMode}
+			onSelectThinking={onSelectThinking}
+			onSelectApprovalMode={onSelectApprovalMode}
+			onChooseProject={chooseProject}
+			onSend={sendWithTaskTitle}
+			onAbort={onAbort}
+		/>
+	);
+
+	const submitHomePrompt = (prompt: string): void => {
+		if (disabled) return;
+		sendWithTaskTitle(prompt, []);
+	};
+
 	return (
 		<div className="app-shell">
-			<aside className={`app-sidebar${sidebarCollapsed ? " app-sidebar--collapsed" : ""}`} style={sidebarCollapsed ? undefined : { width: sidebarWidth }}>
+			<aside
+				className={`app-sidebar${sidebarCollapsed ? " app-sidebar--collapsed" : ""}`}
+				style={sidebarCollapsed ? undefined : { width: sidebarWidth }}
+			>
 				<div className="sidebar-resize-handle" onPointerDown={startSidebarResize} />
 				<div className="sidebar-top">
-					<div className="sidebar-window-row">
+					<div className="sidebar-menu-bar">
 						<button
 							type="button"
 							className="sidebar-icon-button"
@@ -698,39 +1013,102 @@ export function AppShell(props: AppShellProps) {
 							aria-label={sidebarCollapsed ? "Show sidebar" : "Hide sidebar"}
 							onClick={() => setSidebarCollapsed(collapsed => !collapsed)}
 						>
-							{sidebarCollapsed ? <PanelLeftOpen size={17} strokeWidth={1.8} /> : <PanelLeftClose size={17} strokeWidth={1.8} />}
+							{sidebarCollapsed ? (
+								<PanelLeftOpen size={17} strokeWidth={1.8} />
+							) : (
+								<PanelLeftClose size={17} strokeWidth={1.8} />
+							)}
 						</button>
-						<span className="brand-mark sidebar-expanded-only">OMP</span>
-						<div className={`status status-${status}`} title={statusDetail ?? STATUS_LABEL[status]}>
-							<span className="status-dot" />
-							<span className="status-label">{STATUS_LABEL[status]}</span>
+						<button
+							type="button"
+							className="sidebar-history-button sidebar-expanded-only"
+							disabled
+							title="Back"
+							aria-label="Back"
+						>
+							<ChevronLeft size={16} strokeWidth={1.8} />
+						</button>
+						<button
+							type="button"
+							className="sidebar-history-button sidebar-expanded-only"
+							disabled
+							title="Forward"
+							aria-label="Forward"
+						>
+							<ChevronRight size={16} strokeWidth={1.8} />
+						</button>
+						<div className="sidebar-app-menu sidebar-expanded-only" aria-label="Application menu">
+							<span>File</span>
+							<span>Edit</span>
+							<span>View</span>
+							<span>Help</span>
 						</div>
+					</div>
+					<div className="sidebar-brand sidebar-expanded-only">
+						<div className="sidebar-brand-name">
+							<strong>OMP</strong>
+							<span>Codex</span>
+						</div>
+						<button
+							type="button"
+							className="sidebar-icon-button"
+							title="Search"
+							aria-label="Search"
+							onClick={() => setSidebarView("search")}
+						>
+							<Search size={17} strokeWidth={1.65} />
+						</button>
 					</div>
 					<nav className="sidebar-nav" aria-label="Primary">
 						<button
 							type="button"
-							className={`sidebar-nav-item${activeSidebarView === "chats" ? " sidebar-nav-item--active" : ""}`}
+							className={`sidebar-nav-item${activeSidebarView === "new-task" ? " sidebar-nav-item--active" : ""}`}
 							disabled={disabled}
 							onClick={() => {
-								setSidebarView("chats");
-								onNewSession();
+								setSidebarView("new-task");
+								startNewChat(false);
 							}}
-							title="New chat"
+							title="New task"
 						>
 							<MessageSquarePlus size={18} strokeWidth={1.8} />
-							<span className="sidebar-nav-label">New chat</span>
+							<span className="sidebar-nav-label">New task</span>
 						</button>
-						<button type="button" className={`sidebar-nav-item${activeSidebarView === "search" ? " sidebar-nav-item--active" : ""}`} title="Search" onClick={() => setSidebarView("search")}>
-							<Search size={18} strokeWidth={1.8} />
-							<span className="sidebar-nav-label">Search</span>
+						<button
+							type="button"
+							className="sidebar-nav-item sidebar-nav-item--project"
+							title="Projects"
+							onClick={chooseProject}
+						>
+							<FolderOpen size={18} strokeWidth={1.8} />
+							<span className="sidebar-nav-label">Projects</span>
+							<FolderPlus className="sidebar-nav-tail" size={16} strokeWidth={1.7} />
 						</button>
-						<button type="button" className={`sidebar-nav-item${activeSidebarView === "scheduled" ? " sidebar-nav-item--active" : ""}`} title="Scheduled" onClick={() => setSidebarView("scheduled")}>
+						<button
+							type="button"
+							className={`sidebar-nav-item${activeSidebarView === "scheduled" ? " sidebar-nav-item--active" : ""}`}
+							title="Scheduled"
+							onClick={() => setSidebarView("scheduled")}
+						>
 							<CalendarClock size={18} strokeWidth={1.8} />
 							<span className="sidebar-nav-label">Scheduled</span>
 						</button>
-						<button type="button" className={`sidebar-nav-item${activeSidebarView === "plugins" ? " sidebar-nav-item--active" : ""}`} title="Plugins" onClick={() => setSidebarView("plugins")}>
+						<button
+							type="button"
+							className={`sidebar-nav-item${activeSidebarView === "plugins" ? " sidebar-nav-item--active" : ""}`}
+							title="Plugins"
+							onClick={() => setSidebarView("plugins")}
+						>
 							<Plug size={18} strokeWidth={1.8} />
 							<span className="sidebar-nav-label">Plugins</span>
+						</button>{" "}
+						<button
+							type="button"
+							className={`sidebar-nav-item${activeSidebarView === "chats" ? " sidebar-nav-item--active" : ""}`}
+							title="Chat"
+							onClick={() => setSidebarView("chats")}
+						>
+							<CirclePlus size={18} strokeWidth={1.8} />
+							<span className="sidebar-nav-label">Chat</span>
 						</button>
 					</nav>
 					{sidebarSettings.projectsMovedDown ? null : projectBlock}
@@ -738,49 +1116,125 @@ export function AppShell(props: AppShellProps) {
 				{chatsBlock}
 				{sidebarSettings.projectsMovedDown ? projectBlock : null}
 				<div className="sidebar-footer">
-					<ModelPicker current={session.model} models={models} providers={loginProviders} disabled={disabled} onSelect={onSelectModel} />
-					<ThinkingPicker current={session.thinkingLevel} model={session.model} models={models} disabled={disabled} onSelect={onSelectThinking} />
-					<LoginMenu providers={loginProviders} disabled={disabled} onLogin={onLogin} onSetApiKey={onSetApiKey} onLogout={onLogout} />
+					<ModelPicker
+						current={session.model}
+						models={models}
+						providers={loginProviders}
+						disabled={disabled}
+						onSelect={onSelectModel}
+					/>
+					<ThinkingPicker
+						current={session.thinkingLevel}
+						model={session.model}
+						models={models}
+						disabled={disabled}
+						onSelect={onSelectThinking}
+					/>
+					<LoginMenu
+						providers={loginProviders}
+						disabled={disabled}
+						onLogin={onLogin}
+						onSetApiKey={onSetApiKey}
+						onLogout={onLogout}
+					/>
 				</div>
 			</aside>
 
-			<section className="app-workspace">
-				<header className="app-header">
-					<div className="app-heading">
-						<SessionName name={session.sessionName} onRename={onRenameSession} />
-						{session.messageCount > 0 ? <span className="msg-count">{session.messageCount} msgs</span> : null}
+			<section className={`app-workspace${isEmptySession ? " app-workspace--empty" : ""}`}>
+				{isEmptySession ? (
+					<div className="empty-window-controls">
+						<button
+							type="button"
+							className="top-icon-button"
+							title="Toggle bottom panel"
+							aria-label="Toggle bottom panel"
+						>
+							<PanelBottom size={16} strokeWidth={1.8} />
+						</button>
+						<button
+							type="button"
+							className={`top-icon-button${toolsOpen ? " top-icon-button--active" : ""}`}
+							title="Toggle side panel"
+							aria-label="Toggle side panel"
+							onClick={() => {
+								if (toolsOpen) setToolsOpen(false);
+								else openTools("menu");
+							}}
+						>
+							<PanelRight size={16} strokeWidth={1.8} />
+						</button>
 					</div>
-					<div className="app-controls">
-						<div className="window-tool-controls">
-							<button type="button" className="top-icon-button" title="Focus mode" aria-label="Focus mode">
-								<Maximize2 size={15} strokeWidth={1.8} />
-							</button>
-							<button type="button" className="top-icon-button" title="Toggle bottom panel" aria-label="Toggle bottom panel">
-								<PanelBottom size={16} strokeWidth={1.8} />
-							</button>
-							<button
-								type="button"
-								className={`top-icon-button${toolsOpen ? " top-icon-button--active" : ""}`}
-								title="Toggle side panel"
-								aria-label="Toggle side panel"
-								onClick={() => {
-									if (toolsOpen) setToolsOpen(false);
-									else openTools("menu");
-								}}
-							>
-								<PanelRight size={16} strokeWidth={1.8} />
-							</button>
+				) : (
+					<header className="app-header">
+						<div className="app-heading">
+							<SessionName name={session.sessionName} onRename={onRenameSession} />
+							{session.messageCount > 0 ? <span className="msg-count">{session.messageCount} msgs</span> : null}
 						</div>
-					</div>
-				</header>
+						<div className="app-controls">
+							<div className="window-tool-controls">
+								<button type="button" className="top-icon-button" title="Focus mode" aria-label="Focus mode">
+									<Maximize2 size={15} strokeWidth={1.8} />
+								</button>
+								<button
+									type="button"
+									className="top-icon-button"
+									title="Toggle bottom panel"
+									aria-label="Toggle bottom panel"
+								>
+									<PanelBottom size={16} strokeWidth={1.8} />
+								</button>
+								<button
+									type="button"
+									className={`top-icon-button${toolsOpen ? " top-icon-button--active" : ""}`}
+									title="Toggle side panel"
+									aria-label="Toggle side panel"
+									onClick={() => {
+										if (toolsOpen) setToolsOpen(false);
+										else openTools("menu");
+									}}
+								>
+									<PanelRight size={16} strokeWidth={1.8} />
+								</button>
+							</div>
+						</div>
+					</header>
+				)}
 
 				{statusDetail && status === "error" ? <div className="error-banner">{statusDetail}</div> : null}
 
 				<main className="app-main">
 					<div className="app-center">
-						<div className="app-content">
+						<div className={`app-content${isEmptySession ? " app-content--home" : ""}`}>
 							<SubagentPanel subagents={subagents} />
-							<Transcript messages={vm.messages} />
+							{isEmptySession ? (
+								<div className="home-start">
+									<div className="home-mark" aria-hidden="true">
+										<Badge size={62} strokeWidth={1.55} />
+										<Terminal size={25} strokeWidth={1.7} />
+									</div>
+									<h1>{homeHeading}</h1>
+									<div className="empty-prompts" aria-label="Prompt ideas">
+										{HOME_PROMPTS.map(prompt => {
+											const PromptIcon = prompt.icon;
+											return (
+												<button
+													type="button"
+													key={prompt.label}
+													className={`home-prompt-card home-prompt-card--${prompt.tone}`}
+													disabled={disabled}
+													onClick={() => submitHomePrompt(prompt.label)}
+												>
+													<PromptIcon size={18} strokeWidth={1.8} />
+													<span>{prompt.label}</span>
+												</button>
+											);
+										})}
+									</div>
+									{composerNode}
+								</div>
+							) : (
+								<Transcript messages={vm.messages} />
+							)}
 							{status === "error" && vm.stderr.length > 0 ? (
 								<details className="stderr-panel">
 									<summary>Engine diagnostics ({vm.stderr.length})</summary>
@@ -788,18 +1242,14 @@ export function AppShell(props: AppShellProps) {
 								</details>
 							) : null}
 						</div>
-						<footer className="app-footer">
-							<StatusBar statuses={statuses} />
-							<WidgetArea widgets={widgets} placement="aboveEditor" />
-							<Composer
-								disabled={disabled}
-								streaming={vm.streaming}
-								injection={injection}
-								onSend={onSend}
-								onAbort={onAbort}
-							/>
-							<WidgetArea widgets={widgets} placement="belowEditor" />
-						</footer>
+						{isEmptySession ? null : (
+							<footer className="app-footer">
+								<StatusBar statuses={statuses} />
+								<WidgetArea widgets={widgets} placement="aboveEditor" />
+								{composerNode}
+								<WidgetArea widgets={widgets} placement="belowEditor" />
+							</footer>
+						)}
 					</div>
 					{toolsOpen ? (
 						<WorkspaceToolsPanel

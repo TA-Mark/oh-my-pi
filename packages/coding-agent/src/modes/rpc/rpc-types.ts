@@ -18,6 +18,7 @@ import type {
 	SubagentLifecyclePayload,
 	SubagentProgressPayload,
 } from "../../task";
+import type { ApprovalMode } from "../../tools/approval";
 import type { TodoPhase } from "../../tools/todo";
 
 // ============================================================================
@@ -60,6 +61,7 @@ export type RpcCommand =
 	// Compaction
 	| { id?: string; type: "compact"; customInstructions?: string }
 	| { id?: string; type: "set_auto_compaction"; enabled: boolean }
+	| { id?: string; type: "set_approval_mode"; mode: ApprovalMode }
 
 	// Retry
 	| { id?: string; type: "set_auto_retry"; enabled: boolean }
@@ -102,6 +104,7 @@ export interface RpcSessionState {
 	steeringMode: "all" | "one-at-a-time";
 	followUpMode: "all" | "one-at-a-time";
 	interruptMode: "immediate" | "wait";
+	approvalMode: ApprovalMode;
 	sessionFile?: string;
 	sessionId: string;
 	sessionName?: string;
@@ -282,6 +285,7 @@ export type RpcResponse =
 	// Compaction
 	| { id?: string; type: "response"; command: "compact"; success: true; data: CompactionResult }
 	| { id?: string; type: "response"; command: "set_auto_compaction"; success: true }
+	| { id?: string; type: "response"; command: "set_approval_mode"; success: true; data: { mode: ApprovalMode } }
 
 	// Retry
 	| { id?: string; type: "response"; command: "set_auto_retry"; success: true }
@@ -510,7 +514,7 @@ export interface RpcHostUriResult {
 	 * Set on errors when a textual explanation accompanies `isError`.
 	 */
 	content?: string;
-	/** Defaults to `text/plain` when omitted. */
+	/** Defaults to 	ext/plain` when omitted. */
 	contentType?: "text/markdown" | "application/json" | "text/plain";
 	/** Optional resolution notes propagated to the read tool. */
 	notes?: string[];

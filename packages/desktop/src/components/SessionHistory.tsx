@@ -87,16 +87,19 @@ export function SessionHistory({
 						<span className="history-item-dot" aria-hidden="true" />
 						<span className="history-item-body">
 							<span className="history-item-name">{session.title || "untitled"}</span>
-							<span className="history-item-meta">
-								{session.messageCount} msgs · {relativeTime(session.modified)}
-							</span>
+							<span className="history-item-meta">{relativeTime(session.modified)}</span>
 						</span>
 					</button>
 				))
 			)}
 			{menu && contextActions ? (
 				<>
-					<button type="button" className="chat-menu-backdrop" aria-label="Close chat menu" onClick={() => setMenu(null)} />
+					<button
+						type="button"
+						className="chat-menu-backdrop"
+						aria-label="Close chat menu"
+						onClick={() => setMenu(null)}
+					/>
 					<div className="chat-context-menu" style={{ left: menu.x, top: menu.y }}>
 						<button type="button" onClick={() => runAction(contextActions.onPin)}>
 							{contextActions.isPinned(menu.session) ? "Unpin chat" : "Pin chat"}

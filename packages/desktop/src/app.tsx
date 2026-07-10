@@ -8,6 +8,7 @@ import { WelcomeScreen } from "./components/WelcomeScreen";
 import { appendStderr, appendUserMessage, initialViewModel, reduce, seedMessages, type ViewModel } from "./lib/reducer";
 import { DesktopRpcClient, type EngineStatus } from "./lib/rpc-client";
 import type {
+	ApprovalMode,
 	EngineEvent,
 	ExtensionUIRequest,
 	ExtensionUIResponse,
@@ -105,6 +106,7 @@ export function App() {
 				thinkingLevel: state.thinkingLevel,
 				sessionName: state.sessionName,
 				messageCount: state.messageCount,
+				approvalMode: state.approvalMode,
 			});
 		} catch {
 			// transient; ignore
@@ -335,7 +337,15 @@ export function App() {
 		},
 		[refreshState, reportError],
 	);
-
+	const onSelectApprovalMode = useCallback(
+		(mode: ApprovalMode) => {
+			clientRef.current
+				?.setApprovalMode(mode)
+				.then(refreshState)
+				.catch(err => reportError("set approval mode failed", err));
+		},
+		[refreshState, reportError],
+	);
 	const onSelectThinking = useCallback(
 		(level: ThinkingLevel) => {
 			clientRef.current
@@ -491,6 +501,7 @@ export function App() {
 			authPrompt={authPrompt}
 			onSelectModel={onSelectModel}
 			onSelectThinking={onSelectThinking}
+			onSelectApprovalMode={onSelectApprovalMode}
 			onNewSession={onNewSession}
 			onRenameSession={onRenameSession}
 			onSelectSession={onSelectSession}

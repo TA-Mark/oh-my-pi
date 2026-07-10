@@ -7,6 +7,7 @@
  */
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import {
+	type ApprovalMode,
 	type EngineEvent,
 	type ExtensionUIRequest,
 	type ExtensionUIResponse,
@@ -178,6 +179,10 @@ export class DesktopRpcClient {
 
 	async setThinkingLevel(level: ThinkingLevel): Promise<void> {
 		await this.#send({ type: "set_thinking_level", level });
+	}
+
+	async setApprovalMode(mode: ApprovalMode): Promise<void> {
+		await this.#send({ type: "set_approval_mode", mode });
 	}
 
 	async setSessionName(name: string): Promise<void> {

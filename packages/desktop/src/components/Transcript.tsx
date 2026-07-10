@@ -34,9 +34,9 @@ export function Transcript({ messages }: TranscriptProps) {
 			<div className="transcript transcript-empty">
 				<h1>What should we build in OMP?</h1>
 				<div className="empty-prompts" aria-label="Prompt ideas">
-					<div>Review current desktop changes</div>
-					<div>Improve the session workflow</div>
-					<div>Plan the next release pass</div>
+					<div>Update desktop smoke-rpc for images, changes, and extension UI drift</div>
+					<div>Finish the desktop Changes sidebar with real rename and truncation behavior</div>
+					<div>Connect your favorite apps to OMP</div>
 				</div>
 			</div>
 		);
@@ -53,11 +53,7 @@ export function Transcript({ messages }: TranscriptProps) {
 						{message.images && message.images.length > 0 && (
 							<div className="bubble-images">
 								{message.images.map((img, i) => (
-									<img
-										key={i}
-										src={`data:${img.mimeType};base64,${img.data}`}
-										alt={`attachment ${i + 1}`}
-									/>
+									<img key={i} src={`data:${img.mimeType};base64,${img.data}`} alt={`attachment ${i + 1}`} />
 								))}
 							</div>
 						)}

@@ -55,8 +55,10 @@ export function LoginMenu({ providers, disabled, onLogin, onSetApiKey, onLogout 
 		});
 	}, [filter, providers]);
 	if (providers.length === 0) return null;
-	const signedIn = providers.filter(provider => provider.authenticated).length;
+	const authenticatedProviders = providers.filter(provider => provider.authenticated);
+	const signedIn = authenticatedProviders.length;
 	const available = providers.filter(provider => provider.available).length;
+	const accountTitle = authenticatedProviders[0]?.name ?? "Accounts";
 	const submitApiKey = (): void => {
 		const nextApiKey = apiKey.trim();
 		if (!apiKeyProvider || !nextApiKey) return;
@@ -79,10 +81,9 @@ export function LoginMenu({ providers, disabled, onLogin, onSetApiKey, onLogout 
 					<UserRound size={16} strokeWidth={1.9} />
 				</span>
 				<span className="account-trigger-copy">
-					<span className="account-trigger-title">Accounts</span>
-					<span className="account-trigger-subtitle">{signedIn > 0 ? `${signedIn} connected` : "Connect providers"}</span>
+					<span className="account-trigger-title">{accountTitle}</span>
 				</span>
-				<span className={`account-count${signedIn > 0 ? " account-count--active" : ""}`}>{signedIn}</span>
+				<ChevronRight className="account-trigger-caret" size={16} strokeWidth={1.8} />
 			</button>
 			{open ? (
 				<>
@@ -109,7 +110,12 @@ export function LoginMenu({ providers, disabled, onLogin, onSetApiKey, onLogout 
 						</div>
 						<label className="account-filter">
 							<Search size={15} strokeWidth={1.9} />
-							<input autoFocus placeholder="Filter providers..." value={filter} onChange={event => setFilter(event.currentTarget.value)} />
+							<input
+								autoFocus
+								placeholder="Filter providers..."
+								value={filter}
+								onChange={event => setFilter(event.currentTarget.value)}
+							/>
 						</label>
 						<div className="account-provider-list">
 							{filteredProviders.length === 0 ? <div className="account-empty">No providers</div> : null}
@@ -124,7 +130,13 @@ export function LoginMenu({ providers, disabled, onLogin, onSetApiKey, onLogout 
 										type="button"
 										className="account-provider-main"
 										disabled={!provider.available}
-										title={provider.supportsOAuth ? (provider.authenticated ? "Re-authenticate" : "Sign in") : "Use API key"}
+										title={
+											provider.supportsOAuth
+												? provider.authenticated
+													? "Re-authenticate"
+													: "Sign in"
+												: "Use API key"
+										}
 										onClick={() => {
 											if (provider.supportsOAuth) {
 												onLogin(provider.id);
@@ -191,7 +203,9 @@ export function LoginMenu({ providers, disabled, onLogin, onSetApiKey, onLogout 
 						<div className="account-api-dialog" role="dialog" aria-modal="true">
 							<div className="account-api-card">
 								<div className="account-api-title">API key for {apiKeyProvider.name}</div>
-								<div className="account-api-copy">Stored in OMP credentials. Environment keys still take precedence when configured.</div>
+								<div className="account-api-copy">
+									Stored in OMP credentials. Environment keys still take precedence when configured.
+								</div>
 								<input
 									className="account-api-input"
 									type="password"
@@ -218,7 +232,12 @@ export function LoginMenu({ providers, disabled, onLogin, onSetApiKey, onLogout 
 									>
 										Cancel
 									</button>
-									<button type="button" className="btn btn-primary" disabled={!apiKey.trim()} onClick={submitApiKey}>
+									<button
+										type="button"
+										className="btn btn-primary"
+										disabled={!apiKey.trim()}
+										onClick={submitApiKey}
+									>
 										Save key
 									</button>
 								</div>
