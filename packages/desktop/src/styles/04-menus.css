@@ -1,0 +1,782 @@
+.picker-item,
+.login-main {
+	display: flex;
+	align-items: baseline;
+	justify-content: space-between;
+	gap: 12px;
+	width: 100%;
+	padding: 9px 11px;
+	border: none;
+	background: transparent;
+	color: var(--text);
+	text-align: left;
+	cursor: pointer;
+}
+
+.picker-item:hover,
+.login-main:hover {
+	background: var(--color-overlay-hover);
+}
+
+.picker-item-active {
+	background: var(--color-accent-soft);
+}
+
+.picker-item-id {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.picker-item-provider {
+	color: var(--text-faint);
+	font-size: 11px;
+	flex-shrink: 0;
+}
+
+.picker-empty {
+	padding: 14px;
+	color: var(--text-dim);
+	font-size: 13px;
+}
+
+.thinking-picker {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 8px;
+	color: var(--text-dim);
+	font-size: 12px;
+}
+
+.thinking-select {
+	flex: 1;
+	min-width: 0;
+	padding: 8px 10px;
+	border: 1px solid var(--color-border-subtle);
+	border-radius: 8px;
+	background: var(--color-bg-control);
+	color: var(--text);
+	cursor: pointer;
+}
+
+.setting-menu {
+	position: relative;
+	width: 100%;
+}
+
+.setting-trigger {
+	width: 100%;
+	min-height: 44px;
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	padding: 7px 9px;
+	border: 1px solid var(--color-border);
+	border-radius: 14px;
+	background: var(--color-bg-control);
+	color: var(--text);
+	cursor: pointer;
+	text-align: left;
+}
+
+.setting-trigger:hover:not(:disabled),
+.setting-trigger--open {
+	background: var(--color-overlay-hover);
+	border-color: var(--color-border-strong);
+}
+
+.setting-trigger:disabled {
+	opacity: 0.5;
+	cursor: not-allowed;
+}
+
+.setting-avatar {
+	width: 30px;
+	height: 30px;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	flex-shrink: 0;
+	border: 1px solid var(--color-border);
+	border-radius: 999px;
+	background: var(--color-avatar-bg);
+	color: var(--color-avatar-fg);
+}
+
+.setting-avatar--thinking {
+	background: var(--color-avatar-bg-thinking);
+	color: var(--color-avatar-fg-thinking);
+}
+
+.setting-trigger-copy,
+.setting-item-copy {
+	min-width: 0;
+	display: flex;
+	flex: 1;
+	flex-direction: column;
+	gap: 1px;
+}
+
+.setting-trigger-title,
+.setting-item-title,
+.setting-panel-title {
+	overflow: hidden;
+	color: var(--color-text-primary);
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.setting-trigger-title {
+	font-size: 13px;
+	font-weight: 650;
+}
+
+.setting-trigger-subtitle,
+.setting-item-subtitle,
+.setting-panel-subtitle {
+	overflow: hidden;
+	color: var(--text-faint);
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	font-size: 11px;
+}
+
+.setting-trigger-caret {
+	flex-shrink: 0;
+	color: var(--text-faint);
+	transform: rotate(-90deg);
+	transition: transform 120ms ease, color 120ms ease;
+}
+
+.setting-trigger--open .setting-trigger-caret {
+	color: var(--text-dim);
+	transform: rotate(90deg);
+}
+
+.setting-panel {
+	position: absolute;
+	left: 0;
+	right: 0;
+	bottom: calc(100% + 9px);
+	z-index: 21;
+	max-height: min(560px, calc(100vh - 96px));
+	display: flex;
+	flex-direction: column;
+	overflow: hidden;
+	border: 1px solid var(--color-border);
+	border-radius: 16px;
+	background: var(--color-bg-menu);
+	box-shadow: 0 22px 60px rgba(0, 0, 0, 0.5);
+}
+
+.setting-search {
+	height: 40px;
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 0 12px;
+	border-bottom: 1px solid var(--color-border);
+	color: var(--text-faint);
+}
+
+.setting-search input {
+	min-width: 0;
+	flex: 1;
+	border: none;
+	outline: none;
+	background: transparent;
+	color: var(--text);
+	font-size: 13px;
+}
+
+.setting-search input::placeholder {
+	color: var(--text-faint);
+}
+
+.setting-panel-toolbar {
+	height: 32px;
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 10px;
+	padding: 0 12px;
+	border-bottom: 1px solid var(--color-border-subtle);
+	color: var(--text-faint);
+	font-size: 11px;
+}
+
+.setting-panel-toolbar button {
+	border: none;
+	background: transparent;
+	color: var(--text-dim);
+	cursor: pointer;
+	font-size: 11px;
+}
+
+.setting-panel-toolbar button:hover {
+	color: var(--text);
+}
+
+.setting-panel-head {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+	padding: 11px 12px;
+	border-bottom: 1px solid var(--color-border);
+}
+
+.setting-panel-title {
+	font-size: 13px;
+	font-weight: 650;
+}
+
+.setting-list {
+	max-height: min(360px, calc(100vh - 190px));
+	overflow-x: hidden;
+	overflow-y: auto;
+	padding: 6px;
+}
+
+.setting-group {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+	padding: 2px 0 6px;
+}
+
+.setting-group + .setting-group {
+	border-top: 1px solid var(--color-border-subtle);
+}
+
+.setting-group-title {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 10px;
+	width: 100%;
+	padding: 7px 9px 4px;
+	border: none;
+	background: transparent;
+	color: var(--text-faint);
+	font-size: 11px;
+	text-transform: uppercase;
+	letter-spacing: 0.04em;
+}
+
+.setting-group-title--button {
+	cursor: pointer;
+	border-radius: 8px;
+}
+
+.setting-group-title--button:hover {
+	background: var(--color-overlay-hover);
+	color: var(--text-dim);
+}
+
+.setting-group-title-main {
+	min-width: 0;
+	display: inline-flex;
+	align-items: center;
+	gap: 5px;
+}
+
+.setting-group-title-main span {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.setting-panel--thinking .setting-list {
+	max-height: min(326px, calc(100vh - 150px));
+}
+
+.setting-list::-webkit-scrollbar {
+	width: 10px;
+}
+
+.setting-list::-webkit-scrollbar-track {
+	background: transparent;
+}
+
+.setting-list::-webkit-scrollbar-thumb {
+	border: 3px solid transparent;
+	border-radius: 999px;
+	background: var(--color-scrollbar-thumb);
+	background-clip: padding-box;
+}
+
+.setting-item {
+	width: 100%;
+	min-height: 46px;
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	padding: 7px 9px;
+	border: none;
+	border-radius: 11px;
+	background: transparent;
+	color: var(--text);
+	cursor: pointer;
+	text-align: left;
+}
+
+.setting-item:hover,
+.setting-item--active {
+	background: var(--color-overlay-hover);
+}
+
+.setting-item--active {
+	box-shadow: inset 3px 0 0 rgba(117, 223, 145, 0.82);
+}
+
+.setting-item-title {
+	font-size: 13px;
+}
+
+.setting-item-meta {
+	display: inline-flex;
+	align-items: center;
+	justify-content: flex-end;
+	gap: 4px;
+	flex-shrink: 0;
+	max-width: 74px;
+	overflow: hidden;
+	color: var(--text-faint);
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	font-size: 11px;
+}
+
+.setting-item--active .setting-item-meta {
+	color: #75df91;
+}
+
+.setting-empty {
+	padding: 13px 10px;
+	color: var(--text-faint);
+	font-size: 13px;
+}
+
+.account-menu {
+	position: relative;
+	width: 100%;
+}
+
+.account-trigger {
+	width: 100%;
+	min-height: 48px;
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	padding: 7px 9px;
+	border: 1px solid var(--color-border);
+	border-radius: 14px;
+	background: var(--color-bg-control);
+	color: var(--text);
+	cursor: pointer;
+	text-align: left;
+}
+
+.account-trigger:hover:not(:disabled),
+.account-trigger--open {
+	background: var(--color-overlay-hover);
+	border-color: var(--color-border-strong);
+}
+
+.account-trigger:disabled {
+	opacity: 0.5;
+	cursor: not-allowed;
+}
+
+.account-avatar,
+.account-provider-icon {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	flex-shrink: 0;
+	border-radius: 999px;
+	background: var(--color-avatar-bg);
+	color: var(--color-avatar-fg);
+}
+
+.account-avatar {
+	width: 30px;
+	height: 30px;
+	border: 1px solid var(--color-border);
+}
+
+.account-avatar--large {
+	width: 34px;
+	height: 34px;
+	background: var(--color-avatar-bg);
+}
+
+.account-trigger-copy,
+.account-panel-copy,
+.account-provider-copy {
+	min-width: 0;
+	display: flex;
+	flex-direction: column;
+}
+
+.account-trigger-copy {
+	gap: 1px;
+	flex: 1;
+}
+
+.account-trigger-title,
+.account-panel-title,
+.account-provider-name {
+	overflow: hidden;
+	color: var(--color-text-primary);
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.account-trigger-title {
+	font-size: 13px;
+	font-weight: 600;
+}
+
+.account-trigger-subtitle,
+.account-panel-subtitle,
+.account-provider-id {
+	overflow: hidden;
+	color: var(--text-faint);
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	font-size: 11px;
+}
+
+.account-count {
+	min-width: 22px;
+	height: 22px;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	border-radius: 999px;
+	background: var(--color-overlay-hover);
+	color: var(--text-dim);
+	font-size: 12px;
+	font-weight: 650;
+}
+
+.account-count--active {
+	background: rgba(71, 193, 106, 0.18);
+	color: #75df91;
+}
+
+.account-panel {
+	position: absolute;
+	left: 0;
+	right: 0;
+	bottom: calc(100% + 9px);
+	z-index: 21;
+	max-height: min(560px, calc(100vh - 96px));
+	display: flex;
+	flex-direction: column;
+	overflow: hidden;
+	border: 1px solid var(--color-border);
+	border-radius: 16px;
+	background: var(--color-bg-menu);
+	box-shadow: 0 22px 60px rgba(0, 0, 0, 0.5);
+}
+
+.account-panel-head {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	padding: 11px 12px;
+	border-bottom: 1px solid var(--color-border);
+}
+
+.account-filter {
+	height: 38px;
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 0 12px;
+	border-bottom: 1px solid var(--color-border);
+	color: var(--text-faint);
+}
+
+.account-filter input {
+	min-width: 0;
+	flex: 1;
+	border: none;
+	outline: none;
+	background: transparent;
+	color: var(--text);
+	font-size: 13px;
+}
+
+.account-filter input::placeholder {
+	color: var(--text-faint);
+}
+
+.account-panel-copy {
+	gap: 2px;
+}
+
+.account-panel-title {
+	font-size: 13px;
+	font-weight: 650;
+}
+
+.account-provider-list {
+	max-height: min(360px, calc(100vh - 170px));
+	overflow-y: auto;
+	overflow-x: hidden;
+	padding: 6px;
+}
+
+.account-empty {
+	padding: 13px 10px;
+	color: var(--text-faint);
+	font-size: 13px;
+}
+
+.account-provider-list::-webkit-scrollbar {
+	width: 10px;
+}
+
+.account-provider-list::-webkit-scrollbar-track {
+	background: transparent;
+}
+
+.account-provider-list::-webkit-scrollbar-thumb {
+	border: 3px solid transparent;
+	border-radius: 999px;
+	background: var(--color-scrollbar-thumb);
+	background-clip: padding-box;
+}
+
+.account-provider {
+	display: flex;
+	align-items: center;
+	border-radius: 11px;
+}
+
+.account-provider:hover {
+	background: var(--color-overlay-hover);
+}
+
+.account-provider--connected {
+	background: rgba(71, 193, 106, 0.055);
+}
+
+.account-provider--unavailable {
+	opacity: 0.58;
+}
+
+.account-provider-main {
+	min-width: 0;
+	flex: 1;
+	height: 44px;
+	display: flex;
+	align-items: center;
+	gap: 9px;
+	padding: 0 9px;
+	border: none;
+	border-radius: 11px;
+	background: transparent;
+	color: var(--text);
+	cursor: pointer;
+	text-align: left;
+}
+
+.account-provider-main:disabled {
+	cursor: not-allowed;
+}
+
+.account-provider-icon {
+	width: 26px;
+	height: 26px;
+	font-size: 10px;
+	font-weight: 750;
+	letter-spacing: 0.02em;
+}
+
+.account-provider-copy {
+	gap: 1px;
+	flex: 1;
+}
+
+.account-provider-name {
+	font-size: 13px;
+}
+
+.account-provider-status {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	flex-shrink: 0;
+	color: var(--text-faint);
+	font-size: 11px;
+	white-space: nowrap;
+}
+
+.account-provider--connected .account-provider-status {
+	color: #75df91;
+}
+
+.login-row {
+	display: flex;
+	align-items: stretch;
+}
+
+.login-main:disabled {
+	opacity: 0.45;
+	cursor: not-allowed;
+}
+
+.login-signout {
+	width: 32px;
+	height: 32px;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	flex-shrink: 0;
+	margin-right: 5px;
+	padding: 0;
+	border: none;
+	border-radius: 9px;
+	background: transparent;
+	color: var(--text-faint);
+	cursor: pointer;
+}
+
+.login-signout:hover {
+	background: rgba(240, 93, 85, 0.12);
+	color: #ff9d98;
+}
+
+.login-signout:disabled {
+	opacity: 0.42;
+	cursor: not-allowed;
+}
+
+.login-api-key:hover:not(:disabled) {
+	background: var(--color-overlay-hover);
+	color: var(--text);
+}
+
+.account-api-dialog {
+	position: fixed;
+	inset: 0;
+	z-index: 80;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	padding: 18px;
+	background: rgba(0, 0, 0, 0.28);
+}
+
+.account-api-card {
+	width: min(360px, calc(100vw - 36px));
+	display: flex;
+	flex-direction: column;
+	gap: 10px;
+	padding: 14px;
+	border: 1px solid var(--color-border);
+	border-radius: 16px;
+	background: var(--color-bg-menu);
+	box-shadow: 0 22px 60px rgba(0, 0, 0, 0.5);
+}
+
+.account-api-title {
+	color: var(--text);
+	font-size: 14px;
+	font-weight: 650;
+}
+
+.account-api-copy {
+	color: var(--text-faint);
+	font-size: 12px;
+	line-height: 1.4;
+}
+
+.account-api-input {
+	width: 100%;
+	height: 38px;
+	padding: 0 11px;
+	border: 1px solid var(--color-border);
+	border-radius: 10px;
+	background: var(--color-bg-input);
+	color: var(--text);
+}
+
+.account-api-input:focus {
+	outline: 1px solid var(--color-border-strong);
+}
+
+.account-api-actions {
+	display: flex;
+	align-items: center;
+	justify-content: flex-end;
+	gap: 8px;
+}
+
+.tool-row {
+	margin: 0;
+}
+
+/* MIGRATED → styles/tokens.css (fg/inset/raised aliases now live in tokens.css).
+:root {
+	--fg: var(--text);
+	--fg-muted: var(--text-dim);
+	--fg-faint: var(--text-faint);
+	--error: var(--danger);
+	--success: #47c16a;
+	--warning: #d8a441;
+	--bg-inset: #0d0f12;
+	--bg-raised: #1d2127;
+}
+*/
+
+.subagent-panel {
+	width: min(100%, var(--content-width));
+	margin: 0 auto 18px;
+	overflow: hidden;
+	border: 1px solid var(--border);
+	border-radius: 8px;
+	background: var(--color-bg-sidebar);
+}
+
+.subagent-title {
+	padding: 8px 12px;
+	border-bottom: 1px solid var(--border);
+	color: var(--text-faint);
+	font-size: 11px;
+	text-transform: uppercase;
+}
+
+.subagent-list {
+	margin: 0;
+	padding: 4px 0;
+	list-style: none;
+}
+
+.subagent-item {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 6px 12px;
+	font-size: 13px;
+}
+
+.subagent-dot {
+	width: 7px;
+	height: 7px;
+	border-radius: 50%;
+	background: var(--text-faint);
+	flex-shrink: 0;
+}
+
+.subagent-active .subagent-dot {
+	background: var(--warning);
+	animation: subagent-pulse 1.4s ease-in-out infinite;
+}
+

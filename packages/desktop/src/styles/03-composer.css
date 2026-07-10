@@ -1,0 +1,564 @@
+.composer,
+.status-bar,
+.widget-area {
+	width: min(100%, var(--composer-width));
+	margin: 0 auto;
+}
+
+.composer {
+	display: flex;
+	flex-direction: column;
+	gap: 10px;
+}
+
+.composer--dragover {
+	outline: 2px solid var(--accent);
+	outline-offset: 4px;
+}
+
+.composer-input-shell {
+	position: relative;
+	display: flex;
+	flex-direction: column;
+	gap: 0;
+	overflow: visible;
+	border: 1px solid var(--color-border);
+	border-radius: 28px;
+	background: var(--color-bg-composer);
+	box-shadow: 0 18px 52px rgba(0, 0, 0, 0.38);
+}
+
+.home-start .composer-input-shell {
+	border-radius: 18px;
+}
+
+.composer-input {
+	width: 100%;
+	min-height: 76px;
+	max-height: 180px;
+	resize: none;
+	padding: 22px 20px 8px;
+	border: none;
+	background: transparent;
+	color: var(--text);
+	font: inherit;
+	line-height: 1.5;
+}
+
+.home-start .composer-input {
+	min-height: 62px;
+	padding-top: 17px;
+}
+
+.composer-input:focus {
+	outline: none;
+}
+
+.composer-input::placeholder {
+	color: var(--text-faint);
+}
+
+.composer-actions {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	min-height: 44px;
+	padding: 0 12px 10px 14px;
+}
+
+.composer-actions > .composer-menu-anchor {
+	flex: 0 1 auto;
+	min-width: 0;
+}
+
+.composer-approval-anchor {
+	max-width: min(190px, 34%);
+}
+
+.composer-profile-anchor {
+	max-width: min(180px, 32%);
+	justify-content: flex-end;
+}
+
+.composer-circle-button,
+.composer-send,
+.composer-icon-action {
+	width: 36px;
+	height: 36px;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	padding: 0;
+	border-radius: 50%;
+	flex-shrink: 0;
+	border: none;
+	cursor: pointer;
+}
+
+.composer-circle-button,
+.composer-icon-action {
+	background: transparent;
+	color: var(--text-dim);
+}
+
+.composer-circle-button:hover:not(:disabled),
+.composer-icon-action:hover:not(:disabled) {
+	background: var(--color-overlay-hover);
+	color: var(--text);
+}
+
+.composer-pill,
+.composer-text-button,
+.composer-context-chip {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	min-width: 0;
+	border: none;
+	background: transparent;
+	color: var(--text-dim);
+	cursor: pointer;
+	font: inherit;
+}
+
+.composer-pill {
+	max-width: 100%;
+	height: 32px;
+	padding: 0 9px;
+	border-radius: 999px;
+	font-size: 14px;
+	overflow: hidden;
+	white-space: nowrap;
+}
+
+.composer-pill span {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.composer-pill--approval {
+	color: #ff8a45;
+}
+
+.composer-pill:hover:not(:disabled),
+.composer-pill--active,
+.composer-text-button:hover:not(:disabled),
+.composer-text-button--active,
+.composer-context-chip:hover:not(:disabled),
+.composer-context-chip--active {
+	background: var(--color-overlay-hover);
+	color: var(--text);
+}
+
+.composer-pill:focus,
+.composer-text-button:focus,
+.composer-context-chip:focus,
+.composer-circle-button:focus,
+.composer-icon-action:focus,
+.composer-send:focus {
+	outline: none;
+}
+
+.composer-pill:focus-visible,
+.composer-text-button:focus-visible,
+.composer-context-chip:focus-visible,
+.composer-circle-button:focus-visible,
+.composer-icon-action:focus-visible,
+.composer-send:focus-visible {
+	outline: 1px solid var(--color-focus-ring);
+	outline-offset: 2px;
+}
+
+.composer-text-button {
+	max-width: 100%;
+	height: 32px;
+	padding: 0 8px;
+	border-radius: 999px;
+	color: var(--text);
+	font-size: 14px;
+	overflow: hidden;
+	white-space: nowrap;
+}
+
+.composer-profile-model,
+.composer-profile-thinking {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.composer-profile-model {
+	flex: 0 1 auto;
+}
+
+.composer-profile-thinking {
+	flex: 0 0 auto;
+}
+
+.composer-text-button span + span {
+	color: var(--text-dim);
+}
+
+.composer-spacer {
+	flex: 1;
+	min-width: 8px;
+}
+
+.composer-icon-action:disabled {
+	cursor: default;
+	opacity: 0.55;
+}
+
+.composer-send {
+	background: var(--color-bg-send);
+	color: var(--color-text-on-inverse);
+	transition:
+		background 120ms ease,
+		opacity 120ms ease;
+}
+
+.composer-send:not(:disabled):hover {
+	background: var(--color-bg-send-hover);
+}
+
+.composer-send:disabled {
+	cursor: default;
+	opacity: 0.45;
+}
+
+.composer-send--stop {
+	background: rgba(240, 93, 85, 0.95);
+	color: var(--color-accent-contrast);
+}
+
+.composer-context-row {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	min-height: 54px;
+	padding: 10px 14px 12px;
+	border-top: 1px solid var(--color-border-subtle);
+	border-radius: 0 0 26px 26px;
+	background: var(--color-overlay-sunken);
+}
+
+.home-start .composer-context-row {
+	min-height: 44px;
+	padding: 8px 14px 9px;
+	border-radius: 0 0 17px 17px;
+}
+
+.composer-context-row > .composer-menu-anchor {
+	flex: 0 1 auto;
+	max-width: 34%;
+}
+
+.composer-context-chip {
+	max-width: 100%;
+	height: 30px;
+	padding: 0 8px;
+	border-radius: 999px;
+	font-size: 14px;
+	white-space: nowrap;
+}
+
+.composer-context-chip span {
+	flex: 0 1 auto;
+	min-width: 0;
+	overflow: hidden;
+	white-space: nowrap;
+	text-overflow: ellipsis;
+}
+
+.composer-context-row > .composer-context-chip {
+	flex: 0 1 auto;
+	max-width: 34%;
+}
+
+.composer-context-chip svg {
+	flex: 0 0 auto;
+}
+
+.composer-context-warning {
+	display: inline-flex;
+	align-items: center;
+	gap: 5px;
+	margin-left: auto;
+	color: #ffad7a;
+	font-size: 12px;
+	white-space: nowrap;
+}
+
+.composer-menu-anchor {
+	position: relative;
+	display: inline-flex;
+	min-width: 0;
+}
+
+.composer-menu {
+	position: absolute;
+	z-index: 80;
+	min-width: 260px;
+	padding: 8px;
+	border: 1px solid var(--color-border);
+	border-radius: 15px;
+	background: var(--color-bg-popover);
+	box-shadow: 0 22px 52px rgba(0, 0, 0, 0.45);
+}
+
+.composer-menu--approval,
+.composer-menu--profile {
+	left: 0;
+	bottom: calc(100% + 8px);
+}
+
+.composer-profile-anchor .composer-menu--profile {
+	right: 0;
+	left: auto;
+}
+
+.composer-menu--context {
+	left: 0;
+	bottom: calc(100% + 8px);
+}
+
+.composer-context-row .composer-menu-anchor:last-of-type .composer-menu--context {
+	right: 0;
+	left: auto;
+}
+
+.composer-menu-item {
+	width: 100%;
+	display: grid;
+	grid-template-columns: 20px minmax(0, 1fr) 18px;
+	align-items: center;
+	gap: 10px;
+	padding: 9px 10px;
+	border: none;
+	border-radius: 10px;
+	background: transparent;
+	color: var(--text);
+	text-align: left;
+	cursor: pointer;
+}
+
+.composer-menu-item:hover,
+.composer-menu-item--selected {
+	background: var(--color-overlay-hover);
+}
+
+.composer-menu-item strong,
+.composer-menu-item small {
+	display: block;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.composer-menu-item strong {
+	font-size: 13px;
+	font-weight: 560;
+}
+
+.composer-menu-item small {
+	margin-top: 2px;
+	color: var(--text-faint);
+	font-size: 11px;
+}
+
+.composer-menu-check {
+	color: var(--text);
+}
+
+.composer-menu-info {
+	display: grid;
+	gap: 4px;
+	padding: 10px;
+	border-radius: 10px;
+}
+
+.composer-menu-section-title {
+	margin: 6px 10px 4px;
+	color: var(--text-faint);
+	font-size: 11px;
+	font-weight: 560;
+	text-transform: uppercase;
+	letter-spacing: 0.04em;
+}
+
+.composer-menu-info span,
+.composer-menu-note {
+	color: var(--text-faint);
+	font-size: 11px;
+}
+
+.composer-menu-info strong {
+	overflow: hidden;
+	color: var(--text);
+	font-size: 13px;
+	font-weight: 560;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.composer-menu-note {
+	margin: 4px 6px 2px;
+	padding-top: 8px;
+	border-top: 1px solid var(--color-border);
+}
+
+.composer-attachments {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+}
+
+.attachment {
+	position: relative;
+	width: 64px;
+	height: 64px;
+	overflow: hidden;
+	border: 1px solid var(--border);
+	border-radius: 8px;
+	background: var(--bg-elev);
+}
+
+.attachment img {
+	width: 100%;
+	height: 100%;
+	object-fit: cover;
+	display: block;
+}
+
+.attachment-remove {
+	position: absolute;
+	top: 3px;
+	right: 3px;
+	width: 18px;
+	height: 18px;
+	border: none;
+	border-radius: 50%;
+	background: var(--color-scrim);
+	color: var(--color-accent-contrast);
+	font-size: 12px;
+	line-height: 1;
+	cursor: pointer;
+	padding: 0;
+}
+
+.attachment-remove:hover {
+	background: var(--danger);
+}
+
+.btn {
+	border: none;
+	border-radius: 8px;
+	padding: 9px 14px;
+	font-weight: 650;
+	cursor: pointer;
+}
+
+.btn-primary {
+	background: var(--color-bg-btn-primary);
+	color: var(--color-text-on-inverse);
+}
+
+.btn-primary:hover:not(:disabled) {
+	background: var(--color-bg-btn-primary-hover);
+}
+
+.btn-danger {
+	background: var(--danger);
+	color: var(--color-accent-contrast);
+}
+
+.btn-ghost {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	gap: 7px;
+	padding: 8px 10px;
+	border-radius: 8px;
+	background: var(--color-overlay-subtle);
+	border-color: var(--color-border-subtle);
+	font-size: 13px;
+}
+
+.btn-ghost:hover:not(:disabled) {
+	background: var(--color-overlay-hover);
+	border-color: var(--color-border);
+}
+
+.picker {
+	position: relative;
+}
+
+.picker-trigger {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 8px;
+	max-width: 100%;
+	padding: 8px 10px;
+	border-radius: 8px;
+	background: var(--color-overlay-subtle);
+	border-color: var(--color-border-subtle);
+	font-size: 12px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.picker-trigger:hover:not(:disabled) {
+	background: var(--color-overlay-hover);
+}
+
+.picker-caret {
+	color: var(--text-faint);
+}
+
+.picker-backdrop {
+	position: fixed;
+	inset: 0;
+	z-index: 20;
+	border: none;
+	background: transparent;
+	padding: 0;
+	cursor: default;
+}
+
+.picker-panel {
+	position: absolute;
+	right: 0;
+	bottom: calc(100% + 6px);
+	z-index: 21;
+	width: min(340px, calc(100vw - 24px));
+	max-height: min(420px, calc(100vh - 96px));
+	display: flex;
+	flex-direction: column;
+	overflow: hidden;
+	border: 1px solid var(--border);
+	border-radius: 8px;
+	background: var(--color-bg-elevated);
+	box-shadow: 0 18px 55px rgba(0, 0, 0, 0.5);
+}
+
+.picker-filter {
+	padding: 10px 12px;
+	border: none;
+	border-bottom: 1px solid var(--border);
+	background: var(--color-bg-sidebar);
+	color: var(--text);
+}
+
+.picker-filter:focus {
+	outline: none;
+}
+
+.picker-list {
+	overflow-y: auto;
+}
+

@@ -1,0 +1,50 @@
+/* ============================================================
+   Container queries — Codex-style composer collapse.
+   ------------------------------------------------------------
+   The composer hides its textual labels based on the width of
+   the COMPOSER ITSELF (not the viewport), so when the sidebar
+   or a side panel opens and squeezes the composer, the labels
+   collapse to icons without any JS measuring. Loaded last so
+   these rules win the cascade over the 08 density passes.
+   Breakpoints mirror Codex: ~480 / ~440 / ~400px.
+   ============================================================ */
+
+.composer {
+	container-type: inline-size;
+	container-name: composer;
+}
+
+/* ~480px: drop the reasoning-effort label, keep the model name */
+@container composer (max-width: 480px) {
+	.composer-profile-thinking {
+		display: none;
+	}
+}
+
+/* ~440px: collapse the approval pill to its icon only */
+@container composer (max-width: 440px) {
+	.composer-pill--approval span {
+		display: none;
+	}
+
+	.composer-pill--approval {
+		padding-left: 8px;
+		padding-right: 8px;
+	}
+}
+
+/* ~400px: collapse the model button and project chip to icons too */
+@container composer (max-width: 400px) {
+	.composer-profile-model {
+		display: none;
+	}
+
+	.composer-context-chip.composer-project-chip span {
+		display: none;
+	}
+
+	.composer-context-chip.composer-project-chip {
+		padding-left: 8px;
+		padding-right: 8px;
+	}
+}

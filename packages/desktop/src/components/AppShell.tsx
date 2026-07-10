@@ -54,6 +54,7 @@ import { Composer, type ComposerInjection } from "./Composer";
 import { DialogHost } from "./DialogHost";
 import { StatusBar, WidgetArea, type WidgetEntry } from "./ExtensionWidgets";
 import { LoginMenu } from "./LoginMenu";
+import { ThemeToggle } from "./ThemeToggle";
 import { ModelPicker } from "./ModelPicker";
 import { type ChatContextActions, SessionHistory } from "./SessionHistory";
 import { SubagentPanel } from "./SubagentPanel";
@@ -1137,6 +1138,7 @@ export function AppShell(props: AppShellProps) {
 						onSetApiKey={onSetApiKey}
 						onLogout={onLogout}
 					/>
+					<ThemeToggle collapsed={sidebarCollapsed} />
 				</div>
 			</aside>
 

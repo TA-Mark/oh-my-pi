@@ -1,0 +1,23 @@
+/* ============================================================
+   OMP Desktop — stylesheet entry
+   ------------------------------------------------------------
+   Import order defines the cascade. tokens.css MUST come first
+   (defines every color, space and radius variable plus theme). The
+   feature modules are order-preserving slices of the original
+   styles.css (verified byte-identical when concatenated), so the
+   Codex override passes in 08-codex-overrides.css stay LAST and
+   keep winning exactly as before. When folding a hardcoded value
+   into a design token (Step 3), edit the module in place and do
+   not reorder these imports.
+   ============================================================ */
+@import "./tokens.css";
+
+@import "./01-base.css"; /* reset, shell, sidebar, header, home, transcript */
+@import "./02-thread.css"; /* bubbles, markdown, stderr, widget/composer top */
+@import "./03-composer.css"; /* composer input, actions, menus, attachments */
+@import "./04-menus.css"; /* btn, picker, thinking, setting, account/login */
+@import "./05-panels.css"; /* subagent, dialog, toasts, status, workspace-tools */
+@import "./06-changes.css"; /* changes/review/diff panel */
+@import "./07-responsive.css"; /* welcome + @container/@media geometry */
+@import "./08-codex-overrides.css"; /* Codex density/light/polish passes */
+@import "./09-container.css"; /* composer container-query collapse (LAST) */
