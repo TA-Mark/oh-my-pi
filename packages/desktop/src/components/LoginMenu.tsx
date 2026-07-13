@@ -1,9 +1,10 @@
 import { Check, ChevronRight, KeyRound, LogOut, PlugZap, Search, UserRound } from "lucide-react";
 import { useMemo, useState } from "react";
-import type { LoginProvider } from "../lib/rpc-protocol";
+import type { LoginProvider, ModelInfo } from "../lib/rpc-protocol";
 
 interface LoginMenuProps {
 	providers: LoginProvider[];
+	models?: ModelInfo[];
 	disabled?: boolean;
 	onLogin: (providerId: string) => void;
 	onSetApiKey: (providerId: string, apiKey: string) => void;
@@ -41,11 +42,18 @@ function authLabel(provider: LoginProvider): string {
 	}
 }
 
-export function LoginMenu({ providers, disabled, onLogin, onSetApiKey, onLogout }: LoginMenuProps) {
+export function LoginMenu({ providers, models, disabled, onLogin, onSetApiKey, onLogout }: LoginMenuProps) {
 	const [open, setOpen] = useState(false);
 	const [apiKeyProvider, setApiKeyProvider] = useState<LoginProvider | null>(null);
 	const [apiKey, setApiKey] = useState("");
 	const [filter, setFilter] = useState("");
+	const modelCounts = useMemo(() => {
+		const counts = new Map<string, number>();
+		for (const model of models ?? []) {
+			counts.set(model.provider, (counts.get(model.provider) ?? 0) + 1);
+		}
+		return counts;
+	}, [models]);
 	const filteredProviders = useMemo(() => {
 		const query = filter.trim().toLowerCase();
 		if (!query) return providers;
@@ -151,6 +159,11 @@ export function LoginMenu({ providers, disabled, onLogin, onSetApiKey, onLogout 
 										<span className="account-provider-copy">
 											<span className="account-provider-name">{provider.name}</span>
 											<span className="account-provider-id">{provider.id}</span>
+											{modelCounts.has(provider.id) ? (
+												<span className="account-provider-models">
+													{modelCounts.get(provider.id)!.toLocaleString()} models
+												</span>
+											) : null}
 										</span>
 										<span className="account-provider-status">
 											{provider.authenticated ? (

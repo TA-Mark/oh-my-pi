@@ -983,8 +983,11 @@ export function AppShell(props: AppShellProps) {
 			workspace={composerWorkspaceTitle}
 			projectName={composerProjectName}
 			model={session.model}
+			models={models}
+			providers={loginProviders}
 			thinkingLevel={session.thinkingLevel}
 			approvalMode={session.approvalMode}
+			onSelectModel={onSelectModel}
 			onSelectThinking={onSelectThinking}
 			onSelectApprovalMode={onSelectApprovalMode}
 			onChooseProject={chooseProject}
@@ -1133,6 +1136,7 @@ export function AppShell(props: AppShellProps) {
 					/>
 					<LoginMenu
 						providers={loginProviders}
+						models={models}
 						disabled={disabled}
 						onLogin={onLogin}
 						onSetApiKey={onSetApiKey}

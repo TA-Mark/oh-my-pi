@@ -410,6 +410,77 @@
 	border-top: 1px solid var(--color-border);
 }
 
+.composer-menu-models {
+	display: flex;
+	flex-direction: column;
+	min-width: 260px;
+}
+
+.composer-model-search {
+	margin: 0 6px 4px;
+}
+
+.composer-model-search input {
+	width: 100%;
+	padding: 7px 10px;
+	border: 1px solid var(--color-border);
+	border-radius: 9px;
+	background: var(--color-bg-input, var(--color-bg-popover));
+	color: var(--text);
+	font-size: 12px;
+}
+
+.composer-model-search input:focus {
+	outline: none;
+	border-color: var(--color-accent, var(--text));
+}
+
+.composer-model-list {
+	display: flex;
+	flex-direction: column;
+	max-height: 260px;
+	overflow-y: auto;
+}
+
+.composer-model-group-title {
+	width: 100%;
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 8px;
+	margin: 4px 0 2px;
+	padding: 6px 10px;
+	border: none;
+	border-radius: 8px;
+	background: transparent;
+	color: var(--text-faint);
+	font-size: 11px;
+	font-weight: 560;
+	text-align: left;
+	cursor: pointer;
+}
+
+.composer-model-group-title:hover {
+	background: var(--color-overlay-hover);
+}
+
+.composer-model-group-name {
+	display: flex;
+	align-items: center;
+	gap: 5px;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.composer-model-empty {
+	padding: 10px;
+	color: var(--text-faint);
+	font-size: 12px;
+	text-align: center;
+}
+
 .composer-attachments {
 	display: flex;
 	flex-wrap: wrap;

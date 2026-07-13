@@ -128,6 +128,10 @@ pub fn start_engine(
 
     let mut cmd = Command::new(program);
     cmd.args(rest);
+    // The engine gates `setTitle` behind PI_RPC_EMIT_TITLE (see rpc-mode.ts
+    // shouldEmitRpcTitles). This desktop host renders the title as the window
+    // document title, so opt in — otherwise setTitle is silently dropped.
+    cmd.env("PI_RPC_EMIT_TITLE", "1");
     if let Some(cwd) = args.cwd.as_deref() {
         if !cwd.is_empty() {
             cmd.current_dir(cwd);

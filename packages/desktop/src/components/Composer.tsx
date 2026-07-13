@@ -1,6 +1,6 @@
-import { ArrowUp, Check, ChevronDown, FolderOpen, Hand, Mic, Plus, Shield, ShieldCheck, Square } from "lucide-react";
-import { type ClipboardEvent, type DragEvent, type KeyboardEvent, useEffect, useRef, useState } from "react";
-import type { ApprovalMode, ImageContent, ThinkingLevel } from "../lib/rpc-protocol";
+import { ArrowUp, Bot, Check, ChevronDown, ChevronRight, FolderOpen, Hand, Mic, Plus, Shield, ShieldCheck, Square } from "lucide-react";
+import { type ClipboardEvent, type DragEvent, type KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
+import type { ApprovalMode, ImageContent, LoginProvider, ModelInfo, ThinkingLevel } from "../lib/rpc-protocol";
 
 /** Text pushed into the composer by the engine (extension_ui `set_editor_text`). */
 export interface ComposerInjection {
@@ -15,8 +15,11 @@ interface ComposerProps {
 	workspace: string;
 	projectName: string;
 	model?: string;
+	models?: ModelInfo[];
+	providers?: LoginProvider[];
 	thinkingLevel?: ThinkingLevel;
 	approvalMode?: ApprovalMode;
+	onSelectModel?: (provider: string, id: string) => void;
 	onSelectThinking: (level: ThinkingLevel) => void;
 	onSelectApprovalMode: (mode: ApprovalMode) => void;
 	onChooseProject: () => void;
@@ -77,6 +80,33 @@ function choiceLabel<T extends string>(choices: readonly ComposerChoice<T>[], id
 	return choices.find(choice => choice.id === id)?.label ?? id;
 }
 
+function providerDisplayName(providers: readonly LoginProvider[], providerId: string): string {
+	return providers.find(provider => provider.id === providerId)?.name ?? providerId;
+}
+
+/** Group models by provider for the composer picker: connected providers first, then alphabetical. */
+function groupModelsByProvider(
+	models: readonly ModelInfo[],
+	providers: readonly LoginProvider[],
+	filter: string,
+): Array<[string, ModelInfo[]]> {
+	const query = filter.trim().toLowerCase();
+	const list = query ? models.filter(model => `${model.provider}/${model.id}`.toLowerCase().includes(query)) : models;
+	const priority = new Map(providers.map((provider, index) => [provider.id, provider.authenticated ? index : index + providers.length]));
+	const buckets = new Map<string, ModelInfo[]>();
+	for (const model of list) {
+		const bucket = buckets.get(model.provider) ?? [];
+		bucket.push(model);
+		buckets.set(model.provider, bucket);
+	}
+	return [...buckets.entries()].sort((left, right) => {
+		const leftPriority = priority.get(left[0]) ?? Number.MAX_SAFE_INTEGER;
+		const rightPriority = priority.get(right[0]) ?? Number.MAX_SAFE_INTEGER;
+		if (leftPriority !== rightPriority) return leftPriority - rightPriority;
+		return providerDisplayName(providers, left[0]).localeCompare(providerDisplayName(providers, right[0]));
+	});
+}
+
 function composerEffortLabel(level: ThinkingLevel | undefined): string {
 	switch (level) {
 		case "xhigh":
@@ -117,8 +147,11 @@ export function Composer({
 	workspace,
 	projectName,
 	model,
+	models,
+	providers,
 	thinkingLevel,
 	approvalMode = "yolo",
+	onSelectModel,
 	onSelectThinking,
 	onSelectApprovalMode,
 	onChooseProject,
@@ -129,7 +162,35 @@ export function Composer({
 	const [images, setImages] = useState<ImageContent[]>([]);
 	const [dragOver, setDragOver] = useState(false);
 	const [openMenu, setOpenMenu] = useState<ComposerMenu>(null);
+	const [modelFilter, setModelFilter] = useState("");
+	const [collapsedProviders, setCollapsedProviders] = useState<Set<string>>(() => new Set());
 	const fileRef = useRef<HTMLInputElement>(null);
+
+	const modelGroups = useMemo(() => groupModelsByProvider(models ?? [], providers ?? [], modelFilter), [models, providers, modelFilter]);
+	const modelGroupKey = modelGroups.map(([providerId]) => providerId).join("\n");
+	const currentModelProvider = model ? model.slice(0, model.indexOf("/")) : undefined;
+
+	// When the model menu opens, expand only connected providers (and the active model's provider); collapse the rest.
+	useEffect(() => {
+		if (openMenu !== "profile") return;
+		const connected = new Set((providers ?? []).filter(provider => provider.authenticated).map(provider => provider.id));
+		setCollapsedProviders(
+			new Set(
+				modelGroups
+					.map(([providerId]) => providerId)
+					.filter(providerId => providerId !== currentModelProvider && !connected.has(providerId)),
+			),
+		);
+	}, [openMenu, modelGroupKey, currentModelProvider, providers]);
+
+	const toggleProvider = (providerId: string): void => {
+		setCollapsedProviders(collapsed => {
+			const next = new Set(collapsed);
+			if (next.has(providerId)) next.delete(providerId);
+			else next.add(providerId);
+			return next;
+		});
+	};
 
 	useEffect(() => {
 		if (injection) setText(injection.text);
@@ -324,10 +385,70 @@ export function Composer({
 									onClick={() => setOpenMenu(null)}
 								/>
 								<div className="composer-menu composer-menu--profile">
-									<div className="composer-menu-info">
-										<span>Model</span>
-										<strong>{model ?? "No model selected"}</strong>
-									</div>
+									{onSelectModel && (models?.length ?? 0) > 0 ? (
+										<div className="composer-menu-models">
+											<div className="composer-menu-section-title">Model</div>
+											<label className="composer-model-search">
+												<input
+													placeholder="Filter models…"
+													value={modelFilter}
+													onChange={event => setModelFilter(event.currentTarget.value)}
+												/>
+											</label>
+											<div className="composer-model-list">
+												{modelGroups.length === 0 ? (
+													<div className="composer-model-empty">No models</div>
+												) : (
+													modelGroups.map(([providerId, providerModels]) => {
+														const collapsed = collapsedProviders.has(providerId);
+														return (
+														<div key={providerId} className="composer-model-group">
+															<button
+																type="button"
+																className="composer-model-group-title"
+																onClick={() => toggleProvider(providerId)}
+															>
+																<span className="composer-model-group-name">
+																	{collapsed ? <ChevronRight size={13} strokeWidth={2} /> : <ChevronDown size={13} strokeWidth={2} />}
+																	<span>{providerDisplayName(providers ?? [], providerId)}</span>
+																</span>
+																<span>{providerModels.length.toLocaleString()} models</span>
+															</button>
+															{collapsed ? null : providerModels.map(candidate => {
+																const label = `${candidate.provider}/${candidate.id}`;
+																const selected = label === model;
+																return (
+																	<button
+																		type="button"
+																		key={label}
+																		className={`composer-menu-item${selected ? " composer-menu-item--selected" : ""}`}
+																		onClick={() => {
+																			onSelectModel(candidate.provider, candidate.id);
+																			setOpenMenu(null);
+																			setModelFilter("");
+																		}}
+																	>
+																		<Bot size={16} strokeWidth={1.8} />
+																		<span>
+																			<strong>{candidate.id}</strong>
+																			<small>{candidate.provider}</small>
+																		</span>
+																		<MenuCheck selected={selected} />
+																	</button>
+																);
+															})}
+														</div>
+													);
+													})
+												)}
+											</div>
+										</div>
+									) : (
+										<div className="composer-menu-info">
+											<span>Model</span>
+											<strong>{model ?? "No model selected"}</strong>
+										</div>
+									)}
 									<div className="composer-menu-section-title">Thinking</div>
 									{THINKING_CHOICES.map(choice => (
 										<button

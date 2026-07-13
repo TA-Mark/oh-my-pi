@@ -400,7 +400,16 @@ export function App() {
 	const refreshAuth = useCallback(async () => {
 		await Promise.all([refreshLoginProviders(), refreshState()]);
 		const client = clientRef.current;
-		if (client) setModels(await client.getAvailableModels());
+		if (!client) return;
+		// Swallow transient model-refresh failures like the sibling refreshers above.
+		// A slow/failed getAvailableModels() after a *successful* login must not
+		// reject refreshAuth() — otherwise the login handler's .catch fires and shows
+		// a false "Login failed" toast even though the credential was stored.
+		try {
+			setModels(await client.getAvailableModels());
+		} catch {
+			// transient; ignore — providers/state already refreshed above
+		}
 	}, [refreshLoginProviders, refreshState]);
 
 	const onLogin = useCallback(

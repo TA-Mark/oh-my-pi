@@ -450,6 +450,12 @@
 	font-size: 11px;
 }
 
+.account-provider-models {
+	color: var(--text-faint);
+	font-size: 11px;
+	font-variant-numeric: tabular-nums;
+}
+
 .account-count {
 	min-width: 22px;
 	height: 22px;
