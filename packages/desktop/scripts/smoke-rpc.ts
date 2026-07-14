@@ -11,6 +11,11 @@
 //   9. get_login_providers -> { providers: [...] } (Phase 4)
 //   10. logout (fake provider) -> success (desktop-added core command; core-touchpoints.md)
 //   11. list_sessions -> { sessions: [...] } (session history/switch; core-touchpoints.md)
+//   12. set_plan_mode enabled -> success (plan mode; core-touchpoints.md)
+//   13. get_state -> planMode.enabled === true
+//   14. set_plan_mode disabled -> success
+//   15. get_state -> planMode === undefined (cleared)
+//   16. get_workspace_diff -> { files: [...] } (bounded scan; must not hang)
 // Exits non-zero on any drift. Keep in sync with src/lib/rpc-protocol.ts.
 import * as path from "node:path";
 
@@ -121,6 +126,33 @@ try {
 					fail("list_sessions.data.sessions is not an array");
 				}
 				console.log("OK: list_sessions contract holds (sessions array)");
+				send({ type: "set_plan_mode", enabled: true, id: "s11" });
+			} else if (frame.id === "s11") {
+				if (frame.success !== true) fail(`set_plan_mode enable failed: ${line}`);
+				console.log("OK: set_plan_mode enable accepted");
+				send({ type: "get_state", id: "s12" });
+			} else if (frame.id === "s12") {
+				const data = isRecord(frame.data) ? (frame.data as Record<string, unknown>) : {};
+				const planMode = isRecord(data.planMode) ? (data.planMode as Record<string, unknown>) : undefined;
+				if (planMode?.enabled !== true) fail(`plan mode not enabled: ${JSON.stringify(data.planMode)}`);
+				if (typeof planMode.planFilePath !== "string") fail("planMode.planFilePath not a string");
+				console.log("OK: plan mode enabled (planMode.enabled === true)");
+				send({ type: "set_plan_mode", enabled: false, id: "s13" });
+			} else if (frame.id === "s13") {
+				if (frame.success !== true) fail(`set_plan_mode disable failed: ${line}`);
+				console.log("OK: set_plan_mode disable accepted");
+				send({ type: "get_state", id: "s14" });
+			} else if (frame.id === "s14") {
+				const data = isRecord(frame.data) ? (frame.data as Record<string, unknown>) : {};
+				if (data.planMode !== undefined) fail(`plan mode not cleared: ${JSON.stringify(data.planMode)}`);
+				console.log("OK: plan mode cleared (planMode === undefined)");
+				send({ type: "get_workspace_diff", id: "s15" });
+			} else if (frame.id === "s15") {
+				if (frame.success !== true || !isRecord(frame.data)) fail(`get_workspace_diff failed: ${line}`);
+				if (!Array.isArray((frame.data as Record<string, unknown>).files)) {
+					fail("get_workspace_diff.data.files is not an array");
+				}
+				console.log("OK: get_workspace_diff contract holds (files array)");
 				clearTimeout(timeout);
 				child.kill();
 				process.exit(0);
