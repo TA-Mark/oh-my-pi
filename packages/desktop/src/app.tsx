@@ -111,6 +111,11 @@ export function App() {
 	// seeded. Drives an immediate "opening…" indicator so the switch never looks
 	// frozen while the engine tears down the in-flight turn (serial RPC dispatch).
 	const [switching, setSwitching] = useState(false);
+	// True from the instant Stop is clicked until the turn actually ends. The
+	// engine's `abort` awaits the in-flight turn tearing down (`waitForIdle`), so
+	// without this the Stop button sits unchanged for seconds and invites repeat
+	// clicks. Reset below when streaming clears (agent_end or engine-stopped).
+	const [aborting, setAborting] = useState(false);
 	const [changes, setChanges] = useState<WorkspaceFileChange[]>([]);
 	const [update, setUpdate] = useState<{ info: UpdateInfo; update: UpdateHandle } | null>(null);
 	const [updateInstalling, setUpdateInstalling] = useState(false);
@@ -502,8 +507,19 @@ export function App() {
 	);
 
 	const onAbort = useCallback(() => {
+		// Reflect the stop request immediately (button → "Stopping…", disabled) so a
+		// slow turn teardown doesn't look unresponsive. The `aborting` effect clears
+		// this once streaming ends via agent_end / engine-stopped.
+		setAborting(true);
 		clientRef.current?.abort().catch(() => {});
 	}, []);
+
+	// Clear the optimistic aborting flag whenever the turn is no longer streaming.
+	// Covers both graceful (agent_end) and transport (engine stopped) endings, and
+	// self-heals if abort() never produces a terminal event.
+	useEffect(() => {
+		if (aborting && !vm.streaming) setAborting(false);
+	}, [aborting, vm.streaming]);
 
 	const onSelectModel = useCallback(
 		(provider: string, id: string) => {
@@ -734,6 +750,7 @@ export function App() {
 			injection={injection}
 			onSend={onSend}
 			onAbort={onAbort}
+			aborting={aborting}
 			onChangeFolder={openFolder}
 			authPrompt={authPrompt}
 			onSelectModel={onSelectModel}

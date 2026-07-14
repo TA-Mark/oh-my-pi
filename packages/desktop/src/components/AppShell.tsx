@@ -104,6 +104,8 @@ interface AppShellProps {
 	authPrompt: AuthPrompt | null;
 	onSend: (text: string, images: ImageContent[]) => void;
 	onAbort: () => void;
+	/** Stop was clicked and the turn is still tearing down — reflected on the Stop button. */
+	aborting: boolean;
 	onChangeFolder: () => void;
 	onSelectModel: (provider: string, id: string) => void;
 	onSelectThinking: (level: ThinkingLevel) => void;
@@ -521,6 +523,7 @@ export function AppShell(props: AppShellProps) {
 		authPrompt,
 		onSend,
 		onAbort,
+		aborting,
 		onChangeFolder,
 		onSelectModel,
 		onSelectThinking,
@@ -1013,6 +1016,7 @@ export function AppShell(props: AppShellProps) {
 			onChooseProject={chooseProject}
 			onSend={sendWithTaskTitle}
 			onAbort={onAbort}
+			aborting={aborting}
 		/>
 	);
 

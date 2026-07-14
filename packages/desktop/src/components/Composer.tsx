@@ -38,6 +38,8 @@ interface ComposerProps {
 	onChooseProject: () => void;
 	onSend: (text: string, images: ImageContent[]) => void;
 	onAbort: () => void;
+	/** Stop clicked, turn still tearing down — shows "Stopping…" and blocks repeat clicks. */
+	aborting?: boolean;
 }
 
 type ComposerMenu = "approval" | "profile" | null;
@@ -162,6 +164,7 @@ function MenuCheck({ selected }: { selected: boolean }) {
 export function Composer({
 	disabled,
 	streaming,
+	aborting = false,
 	injection,
 	workspace,
 	projectName,
@@ -514,9 +517,11 @@ export function Composer({
 					{streaming ? (
 						<button
 							type="button"
-							className="composer-send composer-send--stop"
+							className={`composer-send composer-send--stop${aborting ? " composer-send--stopping" : ""}`}
 							onClick={onAbort}
-							aria-label="Stop"
+							disabled={aborting}
+							aria-label={aborting ? "Stopping" : "Stop"}
+							title={aborting ? "Stopping…" : "Stop"}
 						>
 							<Square size={14} fill="currentColor" strokeWidth={1.8} />
 						</button>

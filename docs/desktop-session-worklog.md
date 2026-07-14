@@ -57,6 +57,24 @@ Tất cả tập trung vào việc loại bỏ độ trễ/treo cảm nhận đ�
     - `packages/desktop/src/components/AppShell.tsx`
     - `packages/desktop/src/styles/02-thread.css`
 
+## 4. Nút Stop trơ khi bấm (hardening) (đã xong)
+
+- **Triệu chứng:** Bấm Stop khi agent đang chạy không thấy phản hồi ngay, dễ
+  bấm lại nhiều lần.
+- **Nguyên nhân:** Engine `session.abort()` `await waitForIdle()` chặn vài giây
+  trong lúc tháo turn LLM; nút Stop chỉ đổi khi `agent_end`/`interrupted` về nên
+  trong khoảng đó nút không thay đổi.
+- **Fix (frontend-only, mẫu optimistic):**
+  - Cờ `aborting` bật ngay khi click → nút chuyển "Stopping…", disabled (chống
+    double-click), pulse báo "đang xử lý".
+  - Effect reset cờ khi `vm.streaming` về `false` — bao cả lối graceful
+    (`agent_end`) lẫn transport (`engine stopped`), tự lành nếu không có terminal event.
+    - `packages/desktop/src/app.tsx` (state `aborting`, `onAbort`, effect, prop)
+    - `packages/desktop/src/components/AppShell.tsx` (truyền prop)
+    - `packages/desktop/src/components/Composer.tsx` (nút Stop → "Stopping…")
+    - `packages/desktop/src/styles/03-composer.css` (`.composer-send--stopping` pulse,
+      fallback `prefers-reduced-motion`)
+
 ## Validation
 
 - Desktop typecheck (`bun run check`): sạch.
