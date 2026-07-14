@@ -31,9 +31,15 @@ export function AuthDialog({ prompt, onOpen, onCancel }: AuthDialogProps) {
 			<div className="dialog" role="dialog" aria-modal="true">
 				<h2 className="dialog-title">Sign in{prompt.provider ? ` — ${prompt.provider}` : ""}</h2>
 				<p className="dialog-message">
-					{prompt.instructions ?? "Continue in your browser to authorize, then return here. This dialog closes automatically when sign-in completes."}
+					{prompt.instructions ??
+						"Continue in your browser to authorize, then return here. This dialog closes automatically when sign-in completes."}
 				</p>
-				<input className="dialog-input" readOnly value={prompt.url} onFocus={event => event.currentTarget.select()} />
+				<input
+					className="dialog-input"
+					readOnly
+					value={prompt.url}
+					onFocus={event => event.currentTarget.select()}
+				/>
 				<div className="dialog-actions">
 					<button type="button" className="btn btn-ghost" onClick={copy}>
 						{copied ? "Copied" : "Copy link"}

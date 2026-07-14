@@ -40,7 +40,9 @@ export function ModelPicker({ current, models, providers, disabled, onSelect }: 
 		const list = query
 			? models.filter(model => `${model.provider}/${model.id}`.toLowerCase().includes(query))
 			: models;
-		const providerPriority = new Map(providers.map((provider, index) => [provider.id, provider.authenticated ? index : index + providers.length]));
+		const providerPriority = new Map(
+			providers.map((provider, index) => [provider.id, provider.authenticated ? index : index + providers.length]),
+		);
 		const buckets = new Map<string, ModelInfo[]>();
 		for (const model of list.slice(0, MAX_VISIBLE)) {
 			const bucket = buckets.get(model.provider) ?? [];
@@ -63,7 +65,9 @@ export function ModelPicker({ current, models, providers, disabled, onSelect }: 
 
 	useEffect(() => {
 		if (!open) return;
-		const connectedProviders = new Set(providers.filter(provider => provider.authenticated).map(provider => provider.id));
+		const connectedProviders = new Set(
+			providers.filter(provider => provider.authenticated).map(provider => provider.id),
+		);
 		setCollapsedProviders(
 			new Set(
 				grouped
@@ -105,7 +109,9 @@ export function ModelPicker({ current, models, providers, disabled, onSelect }: 
 				</span>
 				<span className="setting-trigger-copy">
 					<span className="setting-trigger-title">{currentModel.id ?? "Select model"}</span>
-					<span className="setting-trigger-subtitle">{currentModel.provider ?? `${models.length.toLocaleString()} models`}</span>
+					<span className="setting-trigger-subtitle">
+						{currentModel.provider ?? `${models.length.toLocaleString()} models`}
+					</span>
 				</span>
 				<ChevronRight className="setting-trigger-caret" size={15} strokeWidth={1.9} />
 			</button>
@@ -134,37 +140,47 @@ export function ModelPicker({ current, models, providers, disabled, onSelect }: 
 							) : (
 								grouped.map(([provider, providerModels]) => (
 									<div key={provider} className="setting-group">
-										<button type="button" className="setting-group-title setting-group-title--button" onClick={() => toggleProvider(provider)}>
+										<button
+											type="button"
+											className="setting-group-title setting-group-title--button"
+											onClick={() => toggleProvider(provider)}
+										>
 											<span className="setting-group-title-main">
-												{collapsedProviders.has(provider) ? <ChevronRight size={13} strokeWidth={2} /> : <ChevronDown size={13} strokeWidth={2} />}
+												{collapsedProviders.has(provider) ? (
+													<ChevronRight size={13} strokeWidth={2} />
+												) : (
+													<ChevronDown size={13} strokeWidth={2} />
+												)}
 												<span>{providerName(providers, provider)}</span>
 											</span>
 											<span>{providerModels.length.toLocaleString()} models</span>
 										</button>
-										{collapsedProviders.has(provider) ? null : providerModels.map(model => {
-											const label = `${model.provider}/${model.id}`;
-											const context = formatContextWindow(model.contextWindow);
-											return (
-												<button
-													key={label}
-													type="button"
-													className={`setting-item${label === current ? " setting-item--active" : ""}`}
-													onClick={() => {
-														onSelect(model.provider, model.id);
-														close();
-													}}
-												>
-													<span className="setting-item-copy">
-														<span className="setting-item-title">{model.id}</span>
-														<span className="setting-item-subtitle">{model.provider}</span>
-													</span>
-													<span className="setting-item-meta">
-														{label === current ? <Check size={13} strokeWidth={2.1} /> : null}
-														{context ?? ""}
-													</span>
-												</button>
-											);
-										})}
+										{collapsedProviders.has(provider)
+											? null
+											: providerModels.map(model => {
+													const label = `${model.provider}/${model.id}`;
+													const context = formatContextWindow(model.contextWindow);
+													return (
+														<button
+															key={label}
+															type="button"
+															className={`setting-item${label === current ? " setting-item--active" : ""}`}
+															onClick={() => {
+																onSelect(model.provider, model.id);
+																close();
+															}}
+														>
+															<span className="setting-item-copy">
+																<span className="setting-item-title">{model.id}</span>
+																<span className="setting-item-subtitle">{model.provider}</span>
+															</span>
+															<span className="setting-item-meta">
+																{label === current ? <Check size={13} strokeWidth={2.1} /> : null}
+																{context ?? ""}
+															</span>
+														</button>
+													);
+												})}
 									</div>
 								))
 							)}

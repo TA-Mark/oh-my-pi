@@ -22,9 +22,9 @@ import {
 	type SessionState,
 	type SessionSummary,
 	SUBAGENT_FRAME_TYPES,
-	type WorkspaceFileChange,
 	type SubagentSnapshot,
 	type ThinkingLevel,
+	type WorkspaceFileChange,
 } from "./rpc-protocol";
 import { onEngineExit, onRpcFrame, onRpcStderr, sendRpcLine, startEngine, stopEngine } from "./tauri-bridge";
 

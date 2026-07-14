@@ -498,6 +498,11 @@ jobs:
               github-token: ${{ secrets.GITHUB_TOKEN }}
          - name: CLI smoke test
            run: bun run ci:test:smoke
+         # Desktop RPC drift guard: spawns the engine in rpc-ui mode and asserts
+         # the command/response contract the desktop client depends on. Runs the
+         # engine source via Bun (no Tauri/WebView), so it is headless-safe.
+         - name: Desktop RPC smoke test
+           run: bun --cwd=packages/desktop run smoke
 
    install_methods:
       name: Install method smoke tests

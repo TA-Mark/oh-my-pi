@@ -1,3 +1,4 @@
+import type { Update as UpdateHandle } from "@tauri-apps/plugin-updater";
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import { AppShell, type SessionInfo } from "./components/AppShell";
 import type { AuthPrompt } from "./components/AuthDialog";
@@ -33,7 +34,6 @@ import type {
 } from "./lib/rpc-protocol";
 import { openExternalUrl, pickWorkspaceFolder } from "./lib/tauri-bridge";
 import { checkForUpdate, installUpdate, type UpdateInfo } from "./lib/updater";
-import type { Update as UpdateHandle } from "@tauri-apps/plugin-updater";
 
 type Action =
 	| { kind: "event"; event: EngineEvent }
@@ -226,7 +226,11 @@ export function App() {
 					setWidgets(prev => {
 						const next = { ...prev };
 						if (request.widgetLines === undefined) delete next[request.widgetKey];
-						else next[request.widgetKey] = { lines: request.widgetLines, placement: request.widgetPlacement ?? "aboveEditor" };
+						else
+							next[request.widgetKey] = {
+								lines: request.widgetLines,
+								placement: request.widgetPlacement ?? "aboveEditor",
+							};
 						return next;
 					});
 					return;
@@ -262,7 +266,6 @@ export function App() {
 			cancelled = true;
 		};
 	}, []);
-
 
 	useEffect(() => {
 		if (!workspace) return;
@@ -453,9 +456,7 @@ export function App() {
 	const onTogglePlanMode = useCallback(
 		(enabled: boolean) => {
 			// The engine emits `plan_mode_changed`, which updates `planMode` state.
-			clientRef.current
-				?.setPlanMode(enabled)
-				.catch(err => reportError("set plan mode failed", err));
+			clientRef.current?.setPlanMode(enabled).catch(err => reportError("set plan mode failed", err));
 		},
 		[reportError],
 	);

@@ -52,7 +52,8 @@ async function main(): Promise<void> {
 	let triple: string;
 	if (crossTarget) {
 		const mapped = CROSS_TO_TRIPLE[crossTarget];
-		if (!mapped) throw new Error(`Unknown CROSS_TARGET "${crossTarget}". Known: ${Object.keys(CROSS_TO_TRIPLE).join(", ")}`);
+		if (!mapped)
+			throw new Error(`Unknown CROSS_TARGET "${crossTarget}". Known: ${Object.keys(CROSS_TO_TRIPLE).join(", ")}`);
 		triple = mapped;
 	} else {
 		triple = await rustHostTriple();

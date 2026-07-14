@@ -1,6 +1,6 @@
 import { Brain, Check, ChevronRight } from "lucide-react";
 import { useMemo, useState } from "react";
-import { type ModelInfo, type ThinkingLevel, THINKING_LEVELS } from "../lib/rpc-protocol";
+import { type ModelInfo, THINKING_LEVELS, type ThinkingLevel } from "../lib/rpc-protocol";
 
 interface ThinkingPickerProps {
 	current?: ThinkingLevel;
@@ -31,7 +31,9 @@ function splitModelLabel(label?: string): { provider?: string; id?: string } {
 
 function supportedLevelsForModel(modelLabel: string | undefined, models: ModelInfo[]): SelectableThinkingLevel[] {
 	const currentModel = splitModelLabel(modelLabel);
-	const model = models.find(candidate => candidate.provider === currentModel.provider && candidate.id === currentModel.id);
+	const model = models.find(
+		candidate => candidate.provider === currentModel.provider && candidate.id === currentModel.id,
+	);
 	const efforts = model?.thinking?.efforts?.filter((level): level is SelectableThinkingLevel =>
 		(THINKING_LEVELS as readonly string[]).includes(level),
 	);
@@ -88,7 +90,9 @@ export function ThinkingPicker({ current, model, models, disabled, onSelect }: T
 										<span className="setting-item-title">{level}</span>
 										<span className="setting-item-subtitle">{THINKING_COPY[level]}</span>
 									</span>
-									<span className="setting-item-meta">{level === current ? <Check size={13} strokeWidth={2.1} /> : null}</span>
+									<span className="setting-item-meta">
+										{level === current ? <Check size={13} strokeWidth={2.1} /> : null}
+									</span>
 								</button>
 							))}
 						</div>

@@ -57,10 +57,10 @@ import { Composer, type ComposerInjection } from "./Composer";
 import { DialogHost } from "./DialogHost";
 import { StatusBar, WidgetArea, type WidgetEntry } from "./ExtensionWidgets";
 import { LoginMenu } from "./LoginMenu";
-import { ThemeToggle } from "./ThemeToggle";
 import { ModelPicker } from "./ModelPicker";
 import { type ChatContextActions, SessionHistory } from "./SessionHistory";
 import { SubagentPanel } from "./SubagentPanel";
+import { ThemeToggle } from "./ThemeToggle";
 import { ThinkingPicker } from "./ThinkingPicker";
 import { type Toast, Toasts } from "./Toasts";
 import { Transcript } from "./Transcript";
@@ -1292,9 +1292,14 @@ export function AppShell(props: AppShellProps) {
 									<div className="plan-mode-banner" role="status">
 										<ClipboardList size={14} strokeWidth={1.9} />
 										<span>
-											Plan mode active — the workspace is read-only until the agent submits a plan for approval.
+											Plan mode active — the workspace is read-only until the agent submits a plan for
+											approval.
 										</span>
-										<button type="button" className="plan-mode-banner__exit" onClick={() => onTogglePlanMode(false)}>
+										<button
+											type="button"
+											className="plan-mode-banner__exit"
+											onClick={() => onTogglePlanMode(false)}
+										>
 											Exit
 										</button>
 									</div>

@@ -17,8 +17,8 @@ import {
 	SquareSplitHorizontal,
 	Undo2,
 } from "lucide-react";
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { HunkSelection, WorkspaceFileChange } from "../lib/rpc-protocol";
 
 interface ChangesPanelProps {
@@ -104,7 +104,12 @@ function jumpToFile(path: string): void {
 function fileExtension(path: string): string {
 	const name = splitPath(path).name;
 	const dot = name.lastIndexOf(".");
-	return dot >= 0 ? name.slice(dot + 1).slice(0, 2).toUpperCase() : "F";
+	return dot >= 0
+		? name
+				.slice(dot + 1)
+				.slice(0, 2)
+				.toUpperCase()
+		: "F";
 }
 
 function statusLabel(status: WorkspaceFileChange["status"]): string | null {
@@ -294,7 +299,10 @@ function buildFileTree(changes: WorkspaceFileChange[]): FileTreeNode[] {
 		return { ...current, children: current.children.map(compactNode) };
 	};
 
-	return Array.from(root.children.values()).sort((left, right) => left.name.localeCompare(right.name)).map(toNode).map(compactNode);
+	return Array.from(root.children.values())
+		.sort((left, right) => left.name.localeCompare(right.name))
+		.map(toNode)
+		.map(compactNode);
 }
 
 function ChangeBadge({ tone, children }: { tone?: "add" | "del" | "muted"; children: ReactNode }): ReactNode {
@@ -372,7 +380,9 @@ function VirtualizedDiffRows({ items, mode }: { items: DiffRenderItem[]; mode: D
 	const diffRef = useRef<HTMLDivElement>(null);
 	const animationFrameRef = useRef<number | null>(null);
 	const offsets = useMemo(() => buildItemOffsets(items), [items]);
-	const [range, setRange] = useState<DiffRenderRange>(() => visibleRangeFromOffsets(buildItemOffsets(items), 0, INITIAL_DIFF_RENDER_HEIGHT));
+	const [range, setRange] = useState<DiffRenderRange>(() =>
+		visibleRangeFromOffsets(buildItemOffsets(items), 0, INITIAL_DIFF_RENDER_HEIGHT),
+	);
 	const updateRange = useCallback((): void => {
 		const diffElement = diffRef.current;
 		if (!diffElement) return;
@@ -383,7 +393,10 @@ function VirtualizedDiffRows({ items, mode }: { items: DiffRenderItem[]; mode: D
 		const bottom = rootBounds.bottom - diffBounds.top + DIFF_OVERSCAN_PX;
 		const nextRange = visibleRangeFromOffsets(offsets, top, bottom);
 		setRange(previous =>
-			previous.start === nextRange.start && previous.end === nextRange.end && previous.top === nextRange.top && previous.bottom === nextRange.bottom
+			previous.start === nextRange.start &&
+			previous.end === nextRange.end &&
+			previous.top === nextRange.top &&
+			previous.bottom === nextRange.bottom
 				? previous
 				: nextRange,
 		);
@@ -437,7 +450,8 @@ function VirtualizedDiffRows({ items, mode }: { items: DiffRenderItem[]; mode: D
 function DiffView({ change, mode }: { change: WorkspaceFileChange; mode: DiffMode }): ReactNode {
 	const hunks = useMemo(() => parseUnifiedDiff(change.diff), [change.diff]);
 	const items = useMemo(() => flattenDiffHunks(hunks), [hunks]);
-	if (change.truncated) return <div className="changes-note">Diff omitted because this file is binary or too large.</div>;
+	if (change.truncated)
+		return <div className="changes-note">Diff omitted because this file is binary or too large.</div>;
 	if (!change.diff || hunks.length === 0) return <div className="changes-note">No textual diff available.</div>;
 	return (
 		<div className={`review-diff review-diff--${mode}`}>
@@ -459,7 +473,12 @@ function FileActions({
 		<span className="changes-file-actions">
 			<span className="changes-total changes-total--add">+{change.additions.toLocaleString()}</span>
 			<span className="changes-total changes-total--del">-{change.deletions.toLocaleString()}</span>
-			<button type="button" className="changes-icon-button changes-icon-button--compact" title="Revert file" disabled>
+			<button
+				type="button"
+				className="changes-icon-button changes-icon-button--compact"
+				title="Revert file"
+				disabled
+			>
 				<Undo2 size={15} />
 			</button>
 			<button
@@ -474,7 +493,12 @@ function FileActions({
 			>
 				<Plus size={15} />
 			</button>
-			<button type="button" className="changes-icon-button changes-icon-button--compact" title="Jump to file" onClick={() => jumpToFile(change.path)}>
+			<button
+				type="button"
+				className="changes-icon-button changes-icon-button--compact"
+				title="Jump to file"
+				onClick={() => jumpToFile(change.path)}
+			>
 				<ExternalLink size={15} />
 			</button>
 		</span>
@@ -519,7 +543,11 @@ function FileChangeSection({
 		return () => observer.disconnect();
 	}, [collapsed, isDiffNearViewport]);
 	return (
-		<section ref={sectionRef} id={fileDomId(change.path)} className={`changes-file${collapsed ? " changes-file--collapsed" : ""}`}>
+		<section
+			ref={sectionRef}
+			id={fileDomId(change.path)}
+			className={`changes-file${collapsed ? " changes-file--collapsed" : ""}`}
+		>
 			<div className="changes-file-head">
 				<button
 					type="button"
@@ -632,7 +660,8 @@ function JumpToFileMenu({
 }): ReactNode {
 	const normalizedFilter = filter.trim().toLowerCase();
 	const matches = useMemo(
-		() => (normalizedFilter ? changes.filter(change => change.path.toLowerCase().includes(normalizedFilter)) : changes),
+		() =>
+			normalizedFilter ? changes.filter(change => change.path.toLowerCase().includes(normalizedFilter)) : changes,
 		[changes, normalizedFilter],
 	);
 	const selectFirst = (): void => {
@@ -698,11 +727,17 @@ export function ChangesPanel({ changes, onRefresh, onStageHunks, onUnstage, disa
 		[orderedChanges, hiddenPaths],
 	);
 	const navigatorChanges = useMemo(
-		() => (normalizedNavigatorFilter ? visibleChanges.filter(change => change.path.toLowerCase().includes(normalizedNavigatorFilter)) : visibleChanges),
+		() =>
+			normalizedNavigatorFilter
+				? visibleChanges.filter(change => change.path.toLowerCase().includes(normalizedNavigatorFilter))
+				: visibleChanges,
 		[visibleChanges, normalizedNavigatorFilter],
 	);
 	const fileTree = useMemo(() => buildFileTree(navigatorChanges), [navigatorChanges]);
-	const activePath = selectedPath && visibleChanges.some(change => change.path === selectedPath) ? selectedPath : visibleChanges[0]?.path ?? null;
+	const activePath =
+		selectedPath && visibleChanges.some(change => change.path === selectedPath)
+			? selectedPath
+			: (visibleChanges[0]?.path ?? null);
 
 	useEffect(() => {
 		if (!jumpOpen) return;
@@ -775,15 +810,21 @@ export function ChangesPanel({ changes, onRefresh, onStageHunks, onUnstage, disa
 		requestAnimationFrame(() => jumpToFile(path));
 	}, []);
 
-	const selectJumpFile = useCallback((path: string): void => {
-		selectFile(path);
-		setJumpOpen(false);
-		setJumpFilter("");
-	}, [selectFile]);
+	const selectJumpFile = useCallback(
+		(path: string): void => {
+			selectFile(path);
+			setJumpOpen(false);
+			setJumpFilter("");
+		},
+		[selectFile],
+	);
 
-	const stageFile = useCallback((path: string): void => {
-		onStageHunks([{ path, hunks: { type: "all" } }]);
-	}, [onStageHunks]);
+	const stageFile = useCallback(
+		(path: string): void => {
+			onStageHunks([{ path, hunks: { type: "all" } }]);
+		},
+		[onStageHunks],
+	);
 
 	const stageAll = useCallback((): void => {
 		if (visibleChanges.length === 0) return;
@@ -893,7 +934,11 @@ export function ChangesPanel({ changes, onRefresh, onStageHunks, onUnstage, disa
 						<GitCommitHorizontal size={15} strokeWidth={1.8} />
 						Commit or push
 					</button>
-					<button type="button" className="changes-pill-action changes-pill-action--disabled" disabled={disabled || visibleChanges.length === 0}>
+					<button
+						type="button"
+						className="changes-pill-action changes-pill-action--disabled"
+						disabled={disabled || visibleChanges.length === 0}
+					>
 						<GitPullRequestCreate size={15} strokeWidth={1.8} />
 						Create PR
 					</button>
@@ -922,7 +967,11 @@ export function ChangesPanel({ changes, onRefresh, onStageHunks, onUnstage, disa
 					<aside className="review-file-navigator">
 						<div className="review-filter">
 							<Search size={16} />
-							<input value={navigatorFilter} onChange={event => setNavigatorFilter(event.currentTarget.value)} placeholder="Filter files..." />
+							<input
+								value={navigatorFilter}
+								onChange={event => setNavigatorFilter(event.currentTarget.value)}
+								placeholder="Filter files..."
+							/>
 						</div>
 						{fileTree.length === 0 ? (
 							<div className="review-tree-empty">No files to show.</div>

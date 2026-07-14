@@ -1,6 +1,6 @@
 import { Folder, Globe, MessageCircle, PanelRightClose, Plus, SquarePen, Terminal } from "lucide-react";
-import { useEffect, useState } from "react";
 import type { ComponentType, PointerEvent as ReactPointerEvent } from "react";
+import { useEffect, useState } from "react";
 import type { HunkSelection, WorkspaceFileChange } from "../lib/rpc-protocol";
 import { ChangesPanel } from "./ChangesPanel";
 
@@ -51,7 +51,12 @@ function FeatureMenu({ onSelectView }: { onSelectView: (view: WorkspaceToolView)
 			{TOOLS.map(tool => {
 				const Icon = tool.icon;
 				return (
-					<button key={tool.view} type="button" className="tools-feature-item" onClick={() => onSelectView(tool.view)}>
+					<button
+						key={tool.view}
+						type="button"
+						className="tools-feature-item"
+						onClick={() => onSelectView(tool.view)}
+					>
 						<span className="tools-feature-left">
 							<Icon size={16} strokeWidth={1.8} />
 							<span>{tool.label}</span>
@@ -68,7 +73,9 @@ function PlaceholderView({ title }: { title: string }) {
 	return (
 		<div className="tools-placeholder">
 			<p className="tools-placeholder-title">{title}</p>
-			<p className="tools-placeholder-copy">This surface is ready in the panel, but the desktop host has not wired it yet.</p>
+			<p className="tools-placeholder-copy">
+				This surface is ready in the panel, but the desktop host has not wired it yet.
+			</p>
 		</div>
 	);
 }
@@ -143,7 +150,12 @@ export function WorkspaceToolsPanel({
 								<SquarePen size={15} strokeWidth={1.8} />
 								Review
 							</span>
-							<button type="button" className="tools-review-add" title="New review tab" aria-label="New review tab">
+							<button
+								type="button"
+								className="tools-review-add"
+								title="New review tab"
+								aria-label="New review tab"
+							>
 								<Plus size={17} strokeWidth={1.8} />
 							</button>
 						</>
@@ -157,7 +169,13 @@ export function WorkspaceToolsPanel({
 							All tools
 						</button>
 					) : null}
-					<button type="button" className="top-icon-button" title="Close side panel" aria-label="Close side panel" onClick={onClose}>
+					<button
+						type="button"
+						className="top-icon-button"
+						title="Close side panel"
+						aria-label="Close side panel"
+						onClick={onClose}
+					>
 						<PanelRightClose size={16} strokeWidth={1.8} />
 					</button>
 				</div>

@@ -1,11 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import {
-	appendUserMessage,
-	engineInterrupted,
-	initialViewModel,
-	reduce,
-	type ViewModel,
-} from "../src/lib/reducer";
+import { appendUserMessage, engineInterrupted, initialViewModel, reduce, type ViewModel } from "../src/lib/reducer";
 import type { EngineEvent, EngineMessage } from "../src/lib/rpc-protocol";
 
 function assistant(text: string, extra: Partial<EngineMessage> = {}): EngineMessage {

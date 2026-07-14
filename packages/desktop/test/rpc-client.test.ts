@@ -83,7 +83,13 @@ describe("request/response correlation", () => {
 		const client = await startedClient();
 		const p = client.getState();
 		const id = lastRequestId();
-		bridge.emitFrame({ type: "response", command: "get_state", id, success: true, data: { sessionId: "s1", isStreaming: false } });
+		bridge.emitFrame({
+			type: "response",
+			command: "get_state",
+			id,
+			success: true,
+			data: { sessionId: "s1", isStreaming: false },
+		});
 		const state = await p;
 		expect(state.sessionId).toBe("s1");
 		await client.stop();
@@ -211,8 +217,20 @@ describe("frame classification", () => {
 		expect(idState).not.toBe(idSessions);
 
 		// Resolve out of order: sessions first, then state.
-		bridge.emitFrame({ type: "response", command: "list_sessions", id: idSessions, success: true, data: { sessions: [] } });
-		bridge.emitFrame({ type: "response", command: "get_state", id: idState, success: true, data: { sessionId: "s", isStreaming: false } });
+		bridge.emitFrame({
+			type: "response",
+			command: "list_sessions",
+			id: idSessions,
+			success: true,
+			data: { sessions: [] },
+		});
+		bridge.emitFrame({
+			type: "response",
+			command: "get_state",
+			id: idState,
+			success: true,
+			data: { sessionId: "s", isStreaming: false },
+		});
 
 		const [state, sessions] = await Promise.all([pState, pSessions]);
 		expect(state.sessionId).toBe("s");
@@ -249,7 +267,13 @@ describe("lifecycle: crash / restart / workspace switch (1.4)", () => {
 		const second = await startedClient();
 		const p = second.getState();
 		const id = lastRequestId();
-		bridge.emitFrame({ type: "response", command: "get_state", id, success: true, data: { sessionId: "ws2", isStreaming: false } });
+		bridge.emitFrame({
+			type: "response",
+			command: "get_state",
+			id,
+			success: true,
+			data: { sessionId: "ws2", isStreaming: false },
+		});
 		expect((await p).sessionId).toBe("ws2");
 		await second.stop();
 	});

@@ -1,4 +1,4 @@
-import { ToolView, type ToolResultLike } from "@oh-my-pi/collab-web/src/tool-render";
+import { type ToolResultLike, ToolView } from "@oh-my-pi/collab-web/src/tool-render";
 import { useEffect, useRef } from "react";
 import type { ChatMessage } from "../lib/reducer";
 import { Markdown } from "./Markdown";

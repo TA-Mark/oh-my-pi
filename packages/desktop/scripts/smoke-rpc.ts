@@ -95,7 +95,8 @@ try {
 				send({ type: "get_state", id: "s5" });
 			} else if (frame.id === "s5") {
 				const data = isRecord(frame.data) ? (frame.data as Record<string, unknown>) : {};
-				if (data.approvalMode !== "always-ask") fail(`approvalMode not applied: ${JSON.stringify(data.approvalMode)}`);
+				if (data.approvalMode !== "always-ask")
+					fail(`approvalMode not applied: ${JSON.stringify(data.approvalMode)}`);
 				console.log("OK: approval mode applied (approvalMode === 'always-ask')");
 				send({ type: "set_subagent_subscription", level: "progress", id: "s6" });
 			} else if (frame.id === "s6") {

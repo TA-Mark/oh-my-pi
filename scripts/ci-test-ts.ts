@@ -335,6 +335,16 @@ async function commandsForMode(mode: Mode): Promise<TestCommand[]> {
 			return [
 				...fastWorkspacePackages.map(pkg => workspaceTestCommand(pkg, 8)),
 				{
+					// Desktop unit + protocol-drift guard. Scoped to test/ so the
+					// WebView-dependent e2e/ suite (packaged tauri-driver launch test,
+					// release-only) is never pulled into the headless CI bucket. The
+					// static drift guard here fails CI if rpc-protocol.ts drifts from
+					// the engine rpc-types.ts contract.
+					label: "packages/desktop (unit + drift)",
+					cwd: "packages/desktop",
+					command: ["bun", "test", "--parallel=8", ...onlyFailuresArgs, "test/"],
+				},
+				{
 					label: "scripts",
 					cwd: ".",
 					command: ["bun", "test", "--parallel=4", ...onlyFailuresArgs, "scripts/ci-concurrency.test.ts"],
@@ -373,6 +383,13 @@ async function commandsForMode(mode: Mode): Promise<TestCommand[]> {
 				...fastWorkspacePackages.map(pkg => workspaceTestCommand(pkg, 8, { extraArgs: onlyFailuresArgs })),
 				...nativeAndIntegrationPackages.map(pkg => workspaceTestCommand(pkg, 4, { extraArgs: onlyFailuresArgs })),
 				...localOnlyWorkspacePackages.map(pkg => workspaceTestCommand(pkg, 4, { extraArgs: onlyFailuresArgs })),
+				{
+					// Desktop unit + protocol-drift guard (test/ only; e2e/ is WebView-
+					// dependent and release-only). Mirrors the CI `workspace` bucket.
+					label: "packages/desktop (unit + drift)",
+					cwd: "packages/desktop",
+					command: ["bun", "test", "--parallel=8", ...onlyFailuresArgs, "test/"],
+				},
 				...(await commandsForMode("coding-agent-heavy")),
 				{
 					label: "scripts",

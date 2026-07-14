@@ -14,7 +14,12 @@ export function Toasts({ toasts, onDismiss }: ToastsProps) {
 	return (
 		<div className="toasts">
 			{toasts.map(toast => (
-				<button key={toast.id} type="button" className={`toast toast-${toast.type}`} onClick={() => onDismiss(toast.id)}>
+				<button
+					key={toast.id}
+					type="button"
+					className={`toast toast-${toast.type}`}
+					onClick={() => onDismiss(toast.id)}
+				>
 					{toast.message}
 				</button>
 			))}

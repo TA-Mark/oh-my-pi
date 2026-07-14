@@ -1,5 +1,5 @@
-import { useState } from "react";
 import type { MouseEvent } from "react";
+import { useState } from "react";
 import type { SessionSummary } from "../lib/rpc-protocol";
 
 export interface ChatContextActions {
