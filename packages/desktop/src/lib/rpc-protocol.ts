@@ -32,6 +32,7 @@ export type RpcCommand =
 	| { id?: string; type: "follow_up"; message: string }
 	| { id?: string; type: "abort" }
 	| { id?: string; type: "new_session"; parentSession?: string }
+	| { id?: string; type: "set_workspace"; cwd: string }
 	| { id?: string; type: "get_state" }
 	| { id?: string; type: "get_available_models" }
 	| { id?: string; type: "set_model"; provider: string; modelId: string }

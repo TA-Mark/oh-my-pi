@@ -141,6 +141,16 @@ export class DesktopRpcClient {
 		await this.#send({ type: "new_session" });
 	}
 
+	/**
+	 * Re-root the live engine at a new project directory and open a fresh task,
+	 * WITHOUT respawning the engine. Used when the user switches projects so the
+	 * process, credentials, and RPC stream stay alive (Codex/Claude-style).
+	 */
+	async setWorkspace(cwd: string): Promise<{ cwd: string }> {
+		const response = await this.#send({ type: "set_workspace", cwd });
+		return this.#data<{ cwd: string }>(response);
+	}
+
 	async getState(): Promise<SessionState> {
 		const response = await this.#send({ type: "get_state" });
 		return this.#data<SessionState>(response);

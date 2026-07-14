@@ -18,6 +18,7 @@
 //   16. get_workspace_diff -> { files: [...] } (bounded scan; must not hang)
 //   17. unstage -> success (safe no-op; desktop-added staging command; core-touchpoints.md)
 //   18. stage_hunks [] -> success:false (empty-selection guard; core-touchpoints.md)
+//   19. set_workspace <cwd> -> { cwd: string } (in-place project switch; no respawn)
 // Exits non-zero on any drift. Keep in sync with src/lib/rpc-protocol.ts.
 import * as path from "node:path";
 
@@ -169,6 +170,16 @@ try {
 			} else if (frame.id === "s17") {
 				if (frame.success !== false) fail(`stage_hunks empty selection should fail: ${line}`);
 				console.log("OK: stage_hunks rejects empty selection (guard holds)");
+				// Re-root at the current cwd: a same-directory switch makes moveTo a
+				// no-op, so this exercises the command contract (fresh task + reroot +
+				// { cwd } reply) without chdir'ing the engine into an unrelated tree.
+				send({ type: "set_workspace", cwd: process.cwd(), id: "s18" });
+			} else if (frame.id === "s18") {
+				if (frame.success !== true || !isRecord(frame.data)) fail(`set_workspace failed: ${line}`);
+				if (typeof (frame.data as Record<string, unknown>).cwd !== "string") {
+					fail("set_workspace.data.cwd is not a string");
+				}
+				console.log("OK: set_workspace contract holds (reroot without respawn, { cwd })");
 				clearTimeout(timeout);
 				child.kill();
 				process.exit(0);

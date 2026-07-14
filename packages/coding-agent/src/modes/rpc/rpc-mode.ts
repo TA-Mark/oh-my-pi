@@ -16,8 +16,9 @@ import * as path from "node:path";
 import { getOAuthProviders } from "@oh-my-pi/pi-ai/oauth";
 import { PROVIDER_REGISTRY } from "@oh-my-pi/pi-ai/registry";
 import { isZodSchema, zodToWireSchema } from "@oh-my-pi/pi-ai/utils/schema";
-import { $env, isEnoent, isRecord, readJsonl, Snowflake } from "@oh-my-pi/pi-utils";
+import { $env, isEnoent, isRecord, readJsonl, setProjectDir, Snowflake } from "@oh-my-pi/pi-utils";
 import { reset as resetCapabilities } from "../../capability";
+import { applyProviderGlobalsFromSettings } from "../../config/provider-globals";
 import { clearPluginRootsAndCaches, resolveActiveProjectRegistryPath } from "../../discovery/helpers";
 import {
 	type ExtensionUIContext,
@@ -1165,6 +1166,40 @@ export async function runRpcMode(
 				const result = await handleRpcSessionChange(session, command, subagentRegistry);
 				if (!result.data.cancelled) await emitAvailableCommandsUpdate();
 				return success(id, result.type, result.data);
+			}
+
+			case "set_workspace": {
+				// Re-root the live engine at a new project directory WITHOUT respawning
+				// (mirrors the TUI `/move` + `applyCwdChange` path). The desktop app
+				// calls this when the user switches projects so a fresh task opens in
+				// the new directory while the process, credentials, and RPC stream all
+				// stay alive.
+				if (session.isStreaming) {
+					return error(id, "set_workspace", "Cannot switch workspace while a response is in progress");
+				}
+				const newCwd = path.resolve(command.cwd);
+				try {
+					const stat = await fs.stat(newCwd);
+					if (!stat.isDirectory()) {
+						return error(id, "set_workspace", `Not a directory: ${newCwd}`);
+					}
+				} catch {
+					return error(id, "set_workspace", `Directory does not exist: ${newCwd}`);
+				}
+				// Open a fresh task first, then anchor it to the new project directory.
+				// The new (empty) session file has not been written to disk yet, so
+				// moveTo just re-points cwd/sessionDir — the previous session stays put
+				// in its own project.
+				await session.newSession();
+				await session.sessionManager.moveTo(newCwd);
+				subagentRegistry?.clear();
+				setProjectDir(newCwd);
+				await session.settings.reloadForCwd(newCwd);
+				applyProviderGlobalsFromSettings(session.settings);
+				await reloadPluginState();
+				output({ type: "session_info_update", title: session.sessionName, sessionId: session.sessionId });
+				output({ type: "config_update", model: session.model, thinkingLevel: session.thinkingLevel });
+				return success(id, "set_workspace", { cwd: session.sessionManager.getCwd() });
 			}
 
 			// =================================================================

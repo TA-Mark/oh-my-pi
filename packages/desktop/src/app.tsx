@@ -15,7 +15,7 @@ import {
 	seedMessages,
 	type ViewModel,
 } from "./lib/reducer";
-import { DesktopRpcClient, type EngineStatus, RpcError } from "./lib/rpc-client";
+import { DesktopRpcClient, type EngineStatus, RpcError, RpcTransportError } from "./lib/rpc-client";
 import type {
 	ApprovalMode,
 	EngineEvent,
@@ -113,6 +113,13 @@ export function App() {
 	const clientRef = useRef<DesktopRpcClient | null>(null);
 	const injectNonce = useRef(0);
 	const loginProviderRef = useRef<string | undefined>(undefined);
+	// Latest workspace the engine should boot against. Set imperatively before the
+	// boot effect runs so the (once-only) engine start reads the correct directory
+	// without re-subscribing on every project switch.
+	const workspaceRef = useRef<string | null>(workspace);
+	// Set while the app intentionally reaps the engine (unmount / update install) so
+	// the in-flight requests it rejects don't surface as "Login failed" style toasts.
+	const userStoppingRef = useRef(false);
 
 	const refreshState = useCallback(async () => {
 		const client = clientRef.current;
@@ -267,8 +274,15 @@ export function App() {
 		};
 	}, []);
 
+	// Boot the engine exactly ONCE, when a workspace first exists. Switching
+	// projects afterwards re-roots the live engine over RPC (see `openFolder`)
+	// instead of tearing this client down — so the process, credentials, and RPC
+	// stream survive, matching how Codex/Claude keep running across project
+	// switches. The effect keys off a boolean, not the path, so folder→folder
+	// changes never re-run it.
+	const engineShouldRun = workspace !== null;
 	useEffect(() => {
-		if (!workspace) return;
+		if (!engineShouldRun) return;
 		let cancelled = false;
 
 		const client = new DesktopRpcClient({
@@ -300,7 +314,7 @@ export function App() {
 
 		void (async () => {
 			try {
-				await client.start(workspace);
+				await client.start(workspaceRef.current ?? undefined);
 				if (cancelled) return;
 				const [availableModels] = await Promise.all([
 					client.getAvailableModels(),
@@ -325,7 +339,7 @@ export function App() {
 			void client.stop();
 		};
 	}, [
-		workspace,
+		engineShouldRun,
 		refreshState,
 		refreshSubagents,
 		refreshLoginProviders,
@@ -346,12 +360,23 @@ export function App() {
 		dispatch({ kind: "stderr", line: `${label}: ${detail}` });
 	}, []);
 
+	// A transport failure while the app is intentionally reaping the engine
+	// (update install / unmount) is user-initiated, not an engine fault — stay
+	// silent per "im lặng khi do người dùng chủ động". Genuine engine errors and
+	// timeouts still surface.
+	const isUserInitiatedStop = useCallback(
+		(err: unknown) => userStoppingRef.current && err instanceof RpcTransportError,
+		[],
+	);
+
 	const onInstallUpdate = useCallback(async () => {
 		if (!update) return;
 		setUpdateInstalling(true);
 		try {
 			// Reap the engine before the installer swaps binaries; relaunch happens
-			// inside installUpdate.
+			// inside installUpdate. Flag the stop as user-initiated so the in-flight
+			// requests it rejects stay silent (no false "…failed" toasts).
+			userStoppingRef.current = true;
 			await clientRef.current?.stop().catch(() => {});
 			await installUpdate(update.update);
 		} catch (err) {
@@ -391,6 +416,11 @@ export function App() {
 	const openFolder = useCallback(async () => {
 		const folder = await pickWorkspaceFolder();
 		if (!folder) return;
+
+		// Clear per-workspace UI so the destination project starts on a fresh task.
+		// Transcript/subagents/dialogs/injection reset either way; account (login
+		// providers) and models are re-fetched below since credentials are shared
+		// but availability can differ per project settings.
 		dispatch({ kind: "reset" });
 		setModels([]);
 		setSession(EMPTY_SESSION);
@@ -407,11 +437,33 @@ export function App() {
 		setDocTitle(undefined);
 		setPlanMode(undefined);
 		loginProviderRef.current = undefined;
-		setStatus("idle");
-		setStatusDetail(undefined);
+
+		const client = clientRef.current;
+		workspaceRef.current = folder;
 		saveLastWorkspace(folder);
 		setWorkspace(folder);
-	}, []);
+
+		// Engine already running: re-root it in place (no respawn, no "Waiting for
+		// engine…"), then refresh state for the new project. Only the first-ever
+		// open (no client yet) falls through to the boot effect via setWorkspace.
+		if (client) {
+			try {
+				await client.setWorkspace(folder);
+				await Promise.all([
+					refreshState(),
+					refreshSessions(),
+					refreshLoginProviders(),
+					refreshWorkspaceDiff(),
+				]);
+				setModels(await client.getAvailableModels().catch(() => []));
+			} catch (err) {
+				reportError("switch workspace failed", err);
+			}
+		} else {
+			setStatus("idle");
+			setStatusDetail(undefined);
+		}
+	}, [refreshState, refreshSessions, refreshLoginProviders, refreshWorkspaceDiff, reportError]);
 
 	const onSend = useCallback(
 		(text: string, images: ImageContent[]) => {
@@ -528,6 +580,7 @@ export function App() {
 					await refreshAuth();
 				})
 				.catch(err => {
+					if (isUserInitiatedStop(err)) return;
 					reportError("login failed", err);
 					addToast(`Login failed: ${err instanceof Error ? err.message : String(err)}`, "error");
 				})
@@ -536,7 +589,7 @@ export function App() {
 					loginProviderRef.current = undefined;
 				});
 		},
-		[addToast, refreshAuth, reportError],
+		[addToast, refreshAuth, reportError, isUserInitiatedStop],
 	);
 
 	const onSetApiKey = useCallback(
@@ -549,11 +602,12 @@ export function App() {
 					await refreshAuth();
 				})
 				.catch(err => {
+					if (isUserInitiatedStop(err)) return;
 					reportError("set api key failed", err);
 					addToast(`API key failed: ${err instanceof Error ? err.message : String(err)}`, "error");
 				});
 		},
-		[addToast, refreshAuth, reportError],
+		[addToast, refreshAuth, reportError, isUserInitiatedStop],
 	);
 
 	const onLogout = useCallback(
