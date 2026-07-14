@@ -1479,7 +1479,16 @@ export async function runRpcMode(
 
 			case "get_login_providers": {
 				const oauthProviders = new Map(getOAuthProviders().map(provider => [provider.id, provider]));
-				const providers = PROVIDER_REGISTRY.map(provider => {
+				// Mirror the TUI oauth-selector: hide a login entry when either its
+				// own id or the provider id it stores credentials under is disabled,
+				// so alias logins (e.g. `openai-codex-device` ⇒ `openai-codex`)
+				// disappear alongside the model provider they authenticate.
+				const disabled = new Set(session.settings.get("disabledProviders"));
+				const providers = PROVIDER_REGISTRY.filter(
+					provider =>
+						!disabled.has(provider.id) &&
+						!(provider.storeCredentialsAs && disabled.has(provider.storeCredentialsAs)),
+				).map(provider => {
 					const oauthProvider = oauthProviders.get(provider.id);
 					const origin = session.modelRegistry.authStorage.getCredentialOrigin(provider.id);
 					return {
