@@ -11,10 +11,12 @@
  * - Extension UI: Extension UI requests are emitted, client responds with extension_ui_response
  */
 
+import * as fs from "node:fs/promises";
+import * as path from "node:path";
 import { getOAuthProviders } from "@oh-my-pi/pi-ai/oauth";
 import { PROVIDER_REGISTRY } from "@oh-my-pi/pi-ai/registry";
 import { isZodSchema, zodToWireSchema } from "@oh-my-pi/pi-ai/utils/schema";
-import { $env, isRecord, readJsonl, Snowflake } from "@oh-my-pi/pi-utils";
+import { $env, isEnoent, isRecord, readJsonl, Snowflake } from "@oh-my-pi/pi-utils";
 import { reset as resetCapabilities } from "../../capability";
 import { clearPluginRootsAndCaches, resolveActiveProjectRegistryPath } from "../../discovery/helpers";
 import {
@@ -26,12 +28,17 @@ import {
 } from "../../extensibility/extensions";
 import { buildSkillPromptMessage, parseSkillInvocation } from "../../extensibility/skills";
 import { loadSlashCommands } from "../../extensibility/slash-commands";
+import { resolveLocalUrlToPath } from "../../internal-urls";
 import { type Theme, theme } from "../../modes/theme/theme";
+import { type PlanApprovalDetails, resolveApprovedPlan } from "../../plan-mode/approved-plan";
 import type { AgentSession } from "../../session/agent-session";
 import { SKILL_PROMPT_MESSAGE_TYPE, USER_INTERRUPT_LABEL } from "../../session/messages";
 import { SessionManager } from "../../session/session-manager";
 import { executeAcpBuiltinSlashCommand } from "../../slash-commands/acp-builtins";
 import { buildAvailableSlashCommands } from "../../slash-commands/available-commands";
+import { normalizeLocalScheme } from "../../tools/path-utils";
+import { runResolveInvocation } from "../../tools/resolve";
+import { ToolError } from "../../tools/tool-errors";
 import type { EventBus } from "../../utils/event-bus";
 import * as git from "../../utils/git";
 import { initializeExtensions } from "../runtime-init";
@@ -50,6 +57,7 @@ import type {
 	RpcHostUriCancelRequest,
 	RpcHostUriRequest,
 	RpcHostUriResult,
+	RpcPlanModeState,
 	RpcResponse,
 	RpcSessionState,
 	RpcSessionSummary,
@@ -89,6 +97,16 @@ export type RpcSessionChangeResult =
 /** Skip inlining untracked-file content past this size (still listed as a change). */
 const MAX_UNTRACKED_DIFF_BYTES = 256 * 1024;
 
+/**
+ * Bound the workspace-diff scan. When a project folder lives inside a repository
+ * whose root is huge (e.g. the user's home directory is itself a git repo), the
+ * untracked enumeration + per-file reads can otherwise run for minutes and stall
+ * the sequential RPC loop. These caps make the scan return promptly with a
+ * best-effort (possibly partial) result instead of hanging.
+ */
+const WORKSPACE_DIFF_TIMEOUT_MS = 10_000;
+const MAX_UNTRACKED_FILES = 1000;
+
 /** Count `+`/`-` body lines in a unified diff (ignoring `+++`/`---` headers). */
 function countDiffLines(diff: string): { additions: number; deletions: number } {
 	let additions = 0;
@@ -115,19 +133,22 @@ function untrackedDiff(relPath: string, content: string): string {
  * Returns `[]` when `cwd` is not inside a git repository.
  */
 async function buildWorkspaceDiff(cwd: string): Promise<RpcWorkspaceFileChange[]> {
-	const root = await git.repo.root(cwd).catch(() => null);
+	// Bound every git subprocess so a repo rooted at a huge directory (e.g. the
+	// home dir) can't stall the sequential RPC loop for minutes.
+	const signal = AbortSignal.timeout(WORKSPACE_DIFF_TIMEOUT_MS);
+	const root = await git.repo.root(cwd, signal).catch(() => null);
 	if (!root) return [];
 
 	const out: RpcWorkspaceFileChange[] = [];
 
 	// Tracked changes vs HEAD (falls back to the index diff when there is no HEAD yet).
 	try {
-		let raw = await git.diff(root, { base: "HEAD", allowFailure: true });
+		let raw = await git.diff(root, { base: "HEAD", allowFailure: true, signal });
 		if (!raw.trim()) {
 			// No commits yet, or nothing vs HEAD — combine unstaged + staged.
 			const [unstaged, staged] = await Promise.all([
-				git.diff(root, { allowFailure: true }),
-				git.diff(root, { cached: true, allowFailure: true }),
+				git.diff(root, { allowFailure: true, signal }),
+				git.diff(root, { cached: true, allowFailure: true, signal }),
 			]);
 			raw = [staged, unstaged].filter(part => part.trim()).join("\n");
 		}
@@ -144,15 +165,20 @@ async function buildWorkspaceDiff(cwd: string): Promise<RpcWorkspaceFileChange[]
 			});
 		}
 	} catch {
-		// Diff failed unexpectedly — fall through with whatever tracked entries we have.
+		// Diff failed unexpectedly (or timed out) — fall through with whatever tracked entries we have.
 	}
 
 	// Untracked files: git diff omits them, so synthesize new-file diffs.
 	try {
-		const untracked = await git.ls.untracked(root);
+		const untracked = await git.ls.untracked(root, signal);
 		const known = new Set(out.map(entry => entry.path));
+		// Cap the count: an accidentally huge root (home dir) can list tens of
+		// thousands of files, and inlining each one's content is prohibitive.
+		let scanned = 0;
 		for (const relPath of untracked) {
 			if (known.has(relPath)) continue;
+			if (scanned >= MAX_UNTRACKED_FILES || signal.aborted) break;
+			scanned += 1;
 			let diff = "";
 			let additions = 0;
 			let truncated = false;
@@ -171,7 +197,7 @@ async function buildWorkspaceDiff(cwd: string): Promise<RpcWorkspaceFileChange[]
 			out.push({ path: relPath, status: "untracked", diff, additions, deletions: 0, truncated });
 		}
 	} catch {
-		// ls-files failed — skip untracked enumeration.
+		// ls-files failed (or timed out) — skip untracked enumeration.
 	}
 
 	out.sort((a, b) => a.path.localeCompare(b.path));
@@ -912,6 +938,126 @@ export async function runRpcMode(
 		output(event);
 	});
 
+	// ── Plan mode ────────────────────────────────────────────────────────────
+	// Mirrors AcpAgent's headless plan-mode wiring (acp-agent.ts). The engine
+	// primitives (setPlanModeState/setStandingResolveHandler/setPlanReferencePath)
+	// are shared; only the approval surface differs — here it routes to the host's
+	// confirm dialog via rpcUiContext instead of ACP elicitation.
+	const DEFAULT_PLAN_FILE_URL = "local://PLAN.md";
+
+	const toRpcPlanMode = (): RpcPlanModeState | undefined => {
+		const state = session.getPlanModeState();
+		if (!state?.enabled) return undefined;
+		return { enabled: true, planFilePath: state.planFilePath, workflow: state.workflow };
+	};
+
+	const emitPlanModeChanged = (): void => {
+		output({ type: "plan_mode_changed", planMode: toRpcPlanMode() });
+	};
+
+	const resolvePlanFilePath = (planFilePath: string): string => {
+		if (planFilePath.startsWith("local:")) {
+			const normalized = normalizeLocalScheme(planFilePath);
+			return resolveLocalUrlToPath(normalized, {
+				getArtifactsDir: () => session.sessionManager.getArtifactsDir(),
+				getSessionId: () => session.sessionManager.getSessionId(),
+			});
+		}
+		return path.resolve(session.sessionManager.getCwd(), planFilePath);
+	};
+
+	const readPlanFile = async (planFilePath: string): Promise<string | null> => {
+		try {
+			return await Bun.file(resolvePlanFilePath(planFilePath)).text();
+		} catch (err) {
+			if (isEnoent(err)) return null;
+			throw err;
+		}
+	};
+
+	/** `local://` URLs of plan files in the session-local root, newest first —
+	 *  the `resolveApprovedPlan` fallback for a dropped `extra.title`. */
+	const listLocalPlanFiles = async (): Promise<string[]> => {
+		const localRoot = resolvePlanFilePath("local://");
+		try {
+			const entries = await fs.readdir(localRoot, { withFileTypes: true });
+			const plans = await Promise.all(
+				entries
+					.filter(entry => entry.isFile() && /plan\.md$/i.test(entry.name))
+					.map(async entry => {
+						const stat = await fs.stat(path.join(localRoot, entry.name)).catch(() => null);
+						return { url: `local://${entry.name}`, mtime: stat?.mtimeMs ?? 0 };
+					}),
+			);
+			return plans.sort((a, b) => b.mtime - a.mtime).map(plan => plan.url);
+		} catch {
+			return [];
+		}
+	};
+
+	/** Ask the host to approve the finalized plan. Returns true only on explicit
+	 *  confirmation; dismissal/cancel/timeout falls through to refine semantics so
+	 *  closing the dialog can never grant write access. */
+	const requestPlanApprovalChoice = async (title: string, planContent: string): Promise<boolean> => {
+		const previewLines = planContent.split("\n").slice(0, 12).join("\n");
+		const ellipsis = planContent.split("\n").length > 12 ? "\n…" : "";
+		const message = `Approve plan "${title}" and start implementation?\n\n${previewLines}${ellipsis}`;
+		return rpcUiContext.confirm(`Plan ready: ${title}`, message);
+	};
+
+	/** Standing resolve handler installed while plan mode is active. The agent
+	 *  submits the finalized plan via `resolve { action: "apply", extra: { title } }`;
+	 *  this validates the plan file, asks the host to confirm, and on approval sets
+	 *  the plan reference and exits plan mode so the agent regains full tools. On
+	 *  refine, plan mode stays active so the agent keeps iterating. */
+	const runPlanApprovalResolve = (input: unknown): Promise<unknown> =>
+		runResolveInvocation(input as Parameters<typeof runResolveInvocation>[0], {
+			sourceToolName: "plan_approval",
+			label: "Plan ready for approval",
+			apply: async (_reason, extra) => {
+				const state = session.getPlanModeState();
+				if (!state?.enabled) {
+					throw new ToolError("Plan mode is not active.");
+				}
+				const { planFilePath, planContent, title } = await resolveApprovedPlan({
+					suppliedTitle: extra?.title,
+					statePlanFilePath: state.planFilePath,
+					readPlan: url => readPlanFile(url),
+					listPlanFiles: () => listLocalPlanFiles(),
+				});
+				const details: PlanApprovalDetails = { planFilePath, title, planExists: true };
+				const approved = await requestPlanApprovalChoice(title, planContent);
+				if (!approved) {
+					// Refine: leave plan mode active so the agent keeps the read-only
+					// toolset and can iterate on the plan file.
+					return {
+						content: [
+							{
+								type: "text" as const,
+								text: 'Plan refinement requested. Update the plan file, then call `resolve { action: "apply" }` again when ready.',
+							},
+						],
+						details,
+					};
+				}
+				// Approved: record the plan reference (injected as context next turn),
+				// clear the standing handler, and exit plan mode.
+				session.setPlanReferencePath(planFilePath);
+				session.setStandingResolveHandler?.(null);
+				session.setPlanModeState(undefined);
+				emitPlanModeChanged();
+				return {
+					content: [
+						{
+							type: "text" as const,
+							text: `Plan approved at ${planFilePath}. Plan mode exited; proceed with the implementation.`,
+						},
+					],
+					details,
+				};
+			},
+		});
+
 	const getAvailableCommands = async () => buildAvailableSlashCommands(session);
 	const reloadPluginState = async () => {
 		const cwd = session.sessionManager.getCwd();
@@ -1050,6 +1196,7 @@ export async function runRpcMode(
 						examples: tool.examples,
 					})),
 					contextUsage: session.getContextUsage(),
+					planMode: toRpcPlanMode(),
 				};
 				return success(id, "get_state", state);
 			}
@@ -1402,6 +1549,31 @@ export async function runRpcMode(
 					return success(id, "logout", { providerId: command.providerId });
 				} catch (err: unknown) {
 					return error(id, "logout", err instanceof Error ? err.message : String(err));
+				}
+			}
+
+			case "set_plan_mode": {
+				if (!session.settings.get("plan.enabled")) {
+					return error(id, "set_plan_mode", "Plan mode is disabled (plan.enabled = false).");
+				}
+				try {
+					if (command.enabled) {
+						const previous = session.getPlanModeState();
+						session.setPlanModeState({
+							enabled: true,
+							planFilePath: previous?.planFilePath ?? DEFAULT_PLAN_FILE_URL,
+							workflow: command.workflow ?? previous?.workflow ?? "parallel",
+							reentry: previous !== undefined,
+						});
+						session.setStandingResolveHandler?.(input => runPlanApprovalResolve(input));
+					} else {
+						session.setStandingResolveHandler?.(null);
+						session.setPlanModeState(undefined);
+					}
+					emitPlanModeChanged();
+					return success(id, "set_plan_mode", { planMode: toRpcPlanMode() });
+				} catch (err: unknown) {
+					return error(id, "set_plan_mode", err instanceof Error ? err.message : String(err));
 				}
 			}
 

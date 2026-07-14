@@ -48,7 +48,8 @@ export type RpcCommand =
 	| { id?: string; type: "get_login_providers" }
 	| { id?: string; type: "login"; providerId: string }
 	| { id?: string; type: "set_api_key"; providerId: string; apiKey: string }
-	| { id?: string; type: "logout"; providerId: string };
+	| { id?: string; type: "logout"; providerId: string }
+	| { id?: string; type: "set_plan_mode"; enabled: boolean; workflow?: "parallel" | "iterative" };
 
 /**
  * Session thinking levels accepted by `set_thinking_level`
@@ -84,6 +85,15 @@ export interface SessionState {
 	sessionId: string;
 	sessionName?: string;
 	messageCount: number;
+	/** Plan-mode snapshot when active (undefined = plan mode off). */
+	planMode?: PlanModeState;
+}
+
+/** Plan-mode snapshot (mirrors engine `RpcPlanModeState`). */
+export interface PlanModeState {
+	enabled: boolean;
+	planFilePath: string;
+	workflow?: "parallel" | "iterative";
 }
 
 /** One changed file from `get_workspace_diff` (mirrors engine `RpcWorkspaceFileChange`). */
@@ -250,6 +260,7 @@ export const SESSION_EVENT_TYPES = [
 	"notice",
 	"thinking_level_changed",
 	"goal_updated",
+	"plan_mode_changed",
 ] as const;
 
 // ── Event shapes the reducer reads (mirrors AgentEvent + a few session events) ─
@@ -285,4 +296,5 @@ export type EngineEvent =
 	| { type: "tool_execution_start"; toolCallId: string; toolName: string; args?: unknown; intent?: string }
 	| { type: "tool_execution_update"; toolCallId: string; toolName: string; args?: unknown; partialResult?: unknown }
 	| { type: "tool_execution_end"; toolCallId: string; toolName: string; result?: unknown; isError?: boolean }
-	| { type: "notice"; message?: string; text?: string; level?: "info" | "warning" | "error" };
+	| { type: "notice"; message?: string; text?: string; level?: "info" | "warning" | "error" }
+	| { type: "plan_mode_changed"; planMode?: PlanModeState };

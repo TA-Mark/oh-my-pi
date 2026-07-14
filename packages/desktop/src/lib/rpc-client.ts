@@ -162,6 +162,12 @@ export class DesktopRpcClient {
 		await this.#send({ type: "logout", providerId });
 	}
 
+	/** Toggle plan mode. When enabling, the engine makes the working tree read-only
+	 *  until the agent submits a plan for approval (surfaced via a confirm dialog). */
+	async setPlanMode(enabled: boolean, workflow?: "parallel" | "iterative"): Promise<void> {
+		await this.#send(workflow ? { type: "set_plan_mode", enabled, workflow } : { type: "set_plan_mode", enabled });
+	}
+
 	/** Reply to an extension UI dialog request (select/confirm/input/editor). Side-channel frame, not a command. */
 	async respondExtensionUI(response: ExtensionUIResponse): Promise<void> {
 		await sendRpcLine(JSON.stringify(response));

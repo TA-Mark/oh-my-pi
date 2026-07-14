@@ -90,7 +90,13 @@ export type RpcCommand =
 	| { id?: string; type: "get_login_providers" }
 	| { id?: string; type: "login"; providerId: string }
 	| { id?: string; type: "set_api_key"; providerId: string; apiKey: string }
-	| { id?: string; type: "logout"; providerId: string };
+	| { id?: string; type: "logout"; providerId: string }
+
+	// Plan mode (desktop-added core command; core-touchpoints.md).
+	// Approval is handled agent-driven: the agent submits the finalized plan via
+	// `resolve { action: "apply" }`, which a standing handler routes to the host's
+	// confirm dialog. No separate client-driven resolve command is needed.
+	| { id?: string; type: "set_plan_mode"; enabled: boolean; workflow?: "parallel" | "iterative" };
 
 // ============================================================================
 // RPC State
@@ -117,6 +123,15 @@ export interface RpcSessionState {
 	dumpTools?: Array<{ name: string; description: string; parameters: unknown; examples?: readonly ToolExample[] }>;
 	/** Current context window usage. */
 	contextUsage?: ContextUsage;
+	/** Plan-mode snapshot when active (undefined = plan mode off). Mirrors {@link RpcPlanModeState}. */
+	planMode?: RpcPlanModeState;
+}
+
+/** Plan-mode snapshot exposed over RPC (subset of the engine's {@link PlanModeState}). */
+export interface RpcPlanModeState {
+	enabled: boolean;
+	planFilePath: string;
+	workflow?: "parallel" | "iterative";
 }
 
 /** Compact session descriptor for the `list_sessions` picker (subset of {@link SessionInfo}). */
@@ -158,6 +173,13 @@ export interface RpcAvailableSlashCommand {
 export interface RpcAvailableCommandsUpdateFrame {
 	type: "available_commands_update";
 	commands: RpcAvailableSlashCommand[];
+}
+
+/** Emitted whenever plan mode is toggled (set/clear) so the client updates
+ *  without polling get_state. `planMode` is undefined when plan mode is off. */
+export interface RpcPlanModeChangedFrame {
+	type: "plan_mode_changed";
+	planMode?: RpcPlanModeState;
 }
 
 export interface RpcPromptResultFrame {
@@ -350,6 +372,9 @@ export type RpcResponse =
 	| { id?: string; type: "response"; command: "login"; success: true; data: { providerId: string } }
 	| { id?: string; type: "response"; command: "set_api_key"; success: true; data: { providerId: string } }
 	| { id?: string; type: "response"; command: "logout"; success: true; data: { providerId: string } }
+
+	// Plan mode
+	| { id?: string; type: "response"; command: "set_plan_mode"; success: true; data: { planMode?: RpcPlanModeState } }
 
 	// Error response (any command can fail)
 	| { id?: string; type: "response"; command: string; success: false; error: string };

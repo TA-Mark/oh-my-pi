@@ -36,3 +36,29 @@ Additive only (new union arm + new case + one interface). No existing behavior c
 desktop pairs this with the pre-existing `switch_session` + `get_messages` to switch sessions
 and re-seed the transcript. If upstream adds its own list command, drop this during sync.
 Verified by the runtime probe in `scripts/smoke-rpc.ts` (list_sessions step).
+
+## `packages/coding-agent/src/modes/rpc/` — `set_plan_mode` RPC command
+
+The engine already had every plan-mode primitive (`AgentSession.getPlanModeState()` /
+`setPlanModeState()` / `setStandingResolveHandler()` / `setPlanReferencePath()`), and the
+ACP mode (`acp-agent.ts`) uses them headlessly. But the RPC layer never surfaced plan mode,
+so the desktop couldn't toggle it. We mirrored the ACP wiring:
+
+- `rpc-types.ts`: `RpcCommand` gains
+  `{ type: "set_plan_mode"; enabled: boolean; workflow?: "parallel" | "iterative" }`;
+  new `RpcPlanModeState` interface (enabled/planFilePath/workflow); `RpcResponse` gains the
+  matching `command: "set_plan_mode"` success variant; `RpcSessionState` gains an optional
+  `planMode`; and a new `RpcPlanModeChangedFrame` (`type: "plan_mode_changed"`) event.
+- `rpc-mode.ts`: a `case "set_plan_mode"` (gated on the `plan.enabled` setting) toggles
+  `session.setPlanModeState(...)` and installs a **standing resolve handler** that routes the
+  agent's finalized plan through `rpcUiContext.confirm()` — the same host-dialog path the
+  desktop already handles via `extension_ui_request`. `get_state` now reports `planMode`, and
+  every toggle emits `plan_mode_changed`.
+
+Approval is **agent-driven** (the agent submits the plan via `resolve { action: "apply" }`,
+which the standing handler surfaces as a confirm dialog), so **no separate client-side
+`resolve_plan` command is needed** — this deliberately reuses the existing confirm path
+rather than inventing a new UI surface. Additive only (new union arms + one case + one
+interface + one event frame). No existing behavior changed. If upstream adds its own plan-mode
+RPC, drop this during sync. Verified by the runtime probe in `scripts/smoke-rpc.ts`
+(set_plan_mode enable/disable + get_state steps).

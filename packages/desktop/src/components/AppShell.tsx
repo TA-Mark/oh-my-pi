@@ -10,6 +10,7 @@ import {
 	ChevronLeft,
 	ChevronRight,
 	CirclePlus,
+	ClipboardList,
 	FolderOpen,
 	FolderPlus,
 	GitBranchPlus,
@@ -44,6 +45,7 @@ import type {
 	ImageContent,
 	LoginProvider,
 	ModelInfo,
+	PlanModeState,
 	SessionSummary,
 	SubagentSnapshot,
 	ThinkingLevel,
@@ -83,6 +85,8 @@ interface AppShellProps {
 	sessions: SessionSummary[];
 	statuses: Record<string, string>;
 	widgets: Record<string, WidgetEntry>;
+	planMode?: PlanModeState;
+	onTogglePlanMode: (enabled: boolean) => void;
 	changes: WorkspaceFileChange[];
 	onRefreshChanges: () => void;
 	historyLoading: boolean;
@@ -492,6 +496,8 @@ export function AppShell(props: AppShellProps) {
 		sessions,
 		statuses,
 		widgets,
+		planMode,
+		onTogglePlanMode,
 		changes,
 		onRefreshChanges,
 		historyLoading,
@@ -1178,6 +1184,17 @@ export function AppShell(props: AppShellProps) {
 						</div>
 						<div className="app-controls">
 							<div className="window-tool-controls">
+								<button
+									type="button"
+									className={`top-icon-button${planMode?.enabled ? " top-icon-button--active" : ""}`}
+									title={planMode?.enabled ? "Plan mode on — click to exit" : "Enter plan mode"}
+									aria-label="Toggle plan mode"
+									aria-pressed={planMode?.enabled ?? false}
+									disabled={disabled}
+									onClick={() => onTogglePlanMode(!planMode?.enabled)}
+								>
+									<ClipboardList size={15} strokeWidth={1.8} />
+								</button>
 								<button type="button" className="top-icon-button" title="Focus mode" aria-label="Focus mode">
 									<Maximize2 size={15} strokeWidth={1.8} />
 								</button>
@@ -1251,6 +1268,17 @@ export function AppShell(props: AppShellProps) {
 						{isEmptySession ? null : (
 							<footer className="app-footer">
 								<StatusBar statuses={statuses} />
+								{planMode?.enabled ? (
+									<div className="plan-mode-banner" role="status">
+										<ClipboardList size={14} strokeWidth={1.9} />
+										<span>
+											Plan mode active — the workspace is read-only until the agent submits a plan for approval.
+										</span>
+										<button type="button" className="plan-mode-banner__exit" onClick={() => onTogglePlanMode(false)}>
+											Exit
+										</button>
+									</div>
+								) : null}
 								<WidgetArea widgets={widgets} placement="aboveEditor" />
 								{composerNode}
 								<WidgetArea widgets={widgets} placement="belowEditor" />

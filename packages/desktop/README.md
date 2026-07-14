@@ -40,9 +40,10 @@ Session history/switch is implemented via a left **History drawer**: an additive
 lists the workspace's sessions, and picking one switches the engine and re-seeds the
 transcript from its persisted messages (see `docs/core-touchpoints.md`).
 
-All five roadmap phases are implemented. Remaining optional work: auto-update, macOS
-build/signing verification on a mac host, and the currently-ignored
-`setStatus`/`setWidget`/`setTitle` extension-UI methods.
+All five roadmap phases are implemented. The `setStatus` / `setWidget` / `setTitle`
+extension-UI methods are wired end-to-end (engine emit → `handleExtensionUI` →
+`StatusBar` / `WidgetArea` / `document.title`). Remaining optional work: auto-update and
+macOS build/signing verification on a mac host.
 
 ## Architecture (short)
 

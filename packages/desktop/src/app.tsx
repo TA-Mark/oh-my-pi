@@ -15,6 +15,7 @@ import type {
 	ImageContent,
 	LoginProvider,
 	ModelInfo,
+	PlanModeState,
 	SessionMessage,
 	SessionSummary,
 	SubagentSnapshot,
@@ -92,6 +93,7 @@ export function App() {
 	const [statuses, setStatuses] = useState<Record<string, string>>({});
 	const [widgets, setWidgets] = useState<Record<string, WidgetEntry>>({});
 	const [docTitle, setDocTitle] = useState<string | undefined>();
+	const [planMode, setPlanMode] = useState<PlanModeState | undefined>();
 	const clientRef = useRef<DesktopRpcClient | null>(null);
 	const injectNonce = useRef(0);
 	const loginProviderRef = useRef<string | undefined>(undefined);
@@ -108,6 +110,7 @@ export function App() {
 				messageCount: state.messageCount,
 				approvalMode: state.approvalMode,
 			});
+			setPlanMode(state.planMode);
 		} catch {
 			// transient; ignore
 		}
@@ -238,6 +241,9 @@ export function App() {
 		const client = new DesktopRpcClient({
 			onEvent: event => {
 				dispatch({ kind: "event", event });
+				if (event.type === "plan_mode_changed") {
+					setPlanMode(event.planMode);
+				}
 				if (REFRESH_EVENTS.has(event.type)) {
 					void refreshState();
 					void refreshWorkspaceDiff();
@@ -263,11 +269,13 @@ export function App() {
 					refreshState(),
 					refreshLoginProviders(),
 					refreshSessions(),
-					refreshWorkspaceDiff(),
 				]);
 				if (cancelled) return;
 				setModels(availableModels);
 				await client.setSubagentSubscription("progress").catch(() => {});
+				// Workspace diff can be slow on large repos; run it after the core
+				// state is live so a slow scan never delays models/account/history.
+				void refreshWorkspaceDiff();
 			} catch {
 				// status/detail already surfaced via onStatus("error", …)
 			}
@@ -309,6 +317,7 @@ export function App() {
 		setStatuses({});
 		setWidgets({});
 		setDocTitle(undefined);
+		setPlanMode(undefined);
 		loginProviderRef.current = undefined;
 		setStatus("idle");
 		setStatusDetail(undefined);
@@ -354,6 +363,16 @@ export function App() {
 				.catch(err => reportError("set thinking failed", err));
 		},
 		[refreshState, reportError],
+	);
+
+	const onTogglePlanMode = useCallback(
+		(enabled: boolean) => {
+			// The engine emits `plan_mode_changed`, which updates `planMode` state.
+			clientRef.current
+				?.setPlanMode(enabled)
+				.catch(err => reportError("set plan mode failed", err));
+		},
+		[reportError],
 	);
 
 	const onNewSession = useCallback(() => {
@@ -498,6 +517,8 @@ export function App() {
 			sessions={sessions}
 			statuses={statuses}
 			widgets={widgets}
+			planMode={planMode}
+			onTogglePlanMode={onTogglePlanMode}
 			changes={changes}
 			onRefreshChanges={refreshWorkspaceDiff}
 			historyLoading={historyLoading}
