@@ -393,6 +393,69 @@
 	cursor: pointer;
 }
 
+.thinking-indicator {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	color: var(--text-dim);
+	font-size: 13px;
+	padding: 2px 0;
+}
+
+.switching-indicator {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	justify-content: center;
+	gap: 12px;
+	flex: 1;
+	min-height: 40vh;
+	color: var(--text-dim);
+	font-size: 13px;
+}
+
+.thinking-dots {
+	display: inline-flex;
+	gap: 4px;
+}
+
+.thinking-dots span {
+	width: 6px;
+	height: 6px;
+	border-radius: 50%;
+	background: var(--text-dim);
+	opacity: 0.4;
+	animation: thinking-bounce 1.2s ease-in-out infinite;
+}
+
+.thinking-dots span:nth-child(2) {
+	animation-delay: 0.18s;
+}
+
+.thinking-dots span:nth-child(3) {
+	animation-delay: 0.36s;
+}
+
+@keyframes thinking-bounce {
+	0%,
+	60%,
+	100% {
+		opacity: 0.4;
+		transform: translateY(0);
+	}
+	30% {
+		opacity: 1;
+		transform: translateY(-3px);
+	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.thinking-dots span {
+		animation: none;
+		opacity: 0.7;
+	}
+}
+
 .tr-md {
 	line-height: 1.62;
 	word-break: break-word;

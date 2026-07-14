@@ -96,6 +96,8 @@ interface AppShellProps {
 	updateInstalling: boolean;
 	onInstallUpdate: () => void;
 	historyLoading: boolean;
+	/** A session switch is in flight — the transcript shows an "opening…" state. */
+	switching: boolean;
 	dialog: ExtensionUIRequest | null;
 	toasts: Toast[];
 	injection?: ComposerInjection;
@@ -512,6 +514,7 @@ export function AppShell(props: AppShellProps) {
 		updateInstalling,
 		onInstallUpdate,
 		historyLoading,
+		switching,
 		dialog,
 		toasts,
 		injection,
@@ -1249,7 +1252,16 @@ export function AppShell(props: AppShellProps) {
 					<div className="app-center">
 						<div className={`app-content${isEmptySession ? " app-content--home" : ""}`}>
 							<SubagentPanel subagents={subagents} />
-							{isEmptySession ? (
+							{switching ? (
+								<div className="switching-indicator" role="status" aria-live="polite">
+									<span className="thinking-dots" aria-hidden="true">
+										<span />
+										<span />
+										<span />
+									</span>
+									<span className="thinking-label">Opening task…</span>
+								</div>
+							) : isEmptySession ? (
 								<div className="home-start">
 									<div className="home-mark" aria-hidden="true">
 										<Badge size={62} strokeWidth={1.55} />
@@ -1276,7 +1288,7 @@ export function AppShell(props: AppShellProps) {
 									{composerNode}
 								</div>
 							) : (
-								<Transcript messages={vm.messages} />
+								<Transcript messages={vm.messages} streaming={vm.streaming} />
 							)}
 							{status === "error" && vm.stderr.length > 0 ? (
 								<details className="stderr-panel">

@@ -38,6 +38,7 @@ import { checkForUpdate, installUpdate, type UpdateInfo } from "./lib/updater";
 type Action =
 	| { kind: "event"; event: EngineEvent }
 	| { kind: "user"; text: string; images?: ImageContent[] }
+	| { kind: "streaming"; value: boolean }
 	| { kind: "stderr"; line: string }
 	| { kind: "seed"; messages: SessionMessage[] }
 	| { kind: "interrupted"; reason: string }
@@ -49,6 +50,11 @@ function rootReducer(state: ViewModel, action: Action): ViewModel {
 			return reduce(state, action.event);
 		case "user":
 			return appendUserMessage(state, action.text, action.images);
+		case "streaming":
+			// Optimistic streaming flag: flipped on send so the UI shows the agent is
+			// working before the engine's `agent_start` arrives. `agent_start`/`agent_end`
+			// (and `interrupted`) remain the source of truth afterwards.
+			return state.streaming === action.value ? state : { ...state, streaming: action.value };
 		case "stderr":
 			return appendStderr(state, action.line);
 		case "seed":
@@ -101,6 +107,10 @@ export function App() {
 	const [loginProviders, setLoginProviders] = useState<LoginProvider[]>([]);
 	const [sessions, setSessions] = useState<SessionSummary[]>([]);
 	const [historyLoading, setHistoryLoading] = useState(false);
+	// True from the instant a history session is clicked until its messages are
+	// seeded. Drives an immediate "opening…" indicator so the switch never looks
+	// frozen while the engine tears down the in-flight turn (serial RPC dispatch).
+	const [switching, setSwitching] = useState(false);
 	const [changes, setChanges] = useState<WorkspaceFileChange[]>([]);
 	const [update, setUpdate] = useState<{ info: UpdateInfo; update: UpdateHandle } | null>(null);
 	const [updateInstalling, setUpdateInstalling] = useState(false);
@@ -110,6 +120,10 @@ export function App() {
 	const [widgets, setWidgets] = useState<Record<string, WidgetEntry>>({});
 	const [docTitle, setDocTitle] = useState<string | undefined>();
 	const [planMode, setPlanMode] = useState<PlanModeState | undefined>();
+	// Mirror of planMode read synchronously in the optimistic toggle, so a failed
+	// `set_plan_mode` reverts to the exact prior snapshot without a stale closure.
+	const planModeRef = useRef<PlanModeState | undefined>(undefined);
+	planModeRef.current = planMode;
 	const clientRef = useRef<DesktopRpcClient | null>(null);
 	const injectNonce = useRef(0);
 	const loginProviderRef = useRef<string | undefined>(undefined);
@@ -449,12 +463,7 @@ export function App() {
 		if (client) {
 			try {
 				await client.setWorkspace(folder);
-				await Promise.all([
-					refreshState(),
-					refreshSessions(),
-					refreshLoginProviders(),
-					refreshWorkspaceDiff(),
-				]);
+				await Promise.all([refreshState(), refreshSessions(), refreshLoginProviders(), refreshWorkspaceDiff()]);
 				setModels(await client.getAvailableModels().catch(() => []));
 			} catch (err) {
 				reportError("switch workspace failed", err);
@@ -468,7 +477,26 @@ export function App() {
 	const onSend = useCallback(
 		(text: string, images: ImageContent[]) => {
 			dispatch({ kind: "user", text, images });
-			clientRef.current?.prompt(text, images).catch(err => reportError("send failed", err));
+			// Flip the streaming flag optimistically so the composer shows Stop and the
+			// transcript shows a working indicator immediately, without waiting for the
+			// engine's `agent_start` to round-trip. The real `agent_start`/`agent_end`
+			// events reconcile it afterwards; if the prompt resolved without invoking the
+			// agent (a local-only slash command) or the send failed, clear it back.
+			dispatch({ kind: "streaming", value: true });
+			const client = clientRef.current;
+			if (!client) {
+				dispatch({ kind: "streaming", value: false });
+				return;
+			}
+			client
+				.prompt(text, images)
+				.then(result => {
+					if (result?.agentInvoked === false) dispatch({ kind: "streaming", value: false });
+				})
+				.catch(err => {
+					dispatch({ kind: "streaming", value: false });
+					reportError("send failed", err);
+				});
 		},
 		[reportError],
 	);
@@ -507,20 +535,39 @@ export function App() {
 
 	const onTogglePlanMode = useCallback(
 		(enabled: boolean) => {
-			// The engine emits `plan_mode_changed`, which updates `planMode` state.
-			clientRef.current?.setPlanMode(enabled).catch(err => reportError("set plan mode failed", err));
+			const client = clientRef.current;
+			if (!client) return;
+			// Optimistic: flip the toggle immediately so the button responds without
+			// waiting for the engine's `plan_mode_changed` to round-trip (which can queue
+			// behind a streaming turn). The authoritative event reconciles the full state
+			// (planFilePath/workflow) when it arrives; on failure we revert.
+			const previous = planModeRef.current;
+			setPlanMode(prev => ({
+				planFilePath: prev?.planFilePath ?? "",
+				workflow: prev?.workflow,
+				enabled,
+			}));
+			client.setPlanMode(enabled).catch(err => {
+				setPlanMode(previous);
+				reportError("set plan mode failed", err);
+			});
 		},
 		[reportError],
 	);
 
 	const onNewSession = useCallback(() => {
-		clientRef.current
-			?.newSession()
-			.then(() => {
-				dispatch({ kind: "reset" });
-				setSubagents([]);
-				return Promise.all([refreshState(), refreshSessions(), refreshWorkspaceDiff()]);
-			})
+		const client = clientRef.current;
+		if (!client) return;
+		// Reset the view to the home screen immediately — the engine's
+		// `new_session` `await`s the in-flight turn's teardown (serial RPC
+		// dispatch), so waiting for the round-trip would leave the UI frozen on
+		// the old transcript for seconds. Refreshers run in the background; the
+		// engine's own events reconcile state once the switch lands.
+		dispatch({ kind: "reset" });
+		setSubagents([]);
+		client
+			.newSession()
+			.then(() => Promise.all([refreshState(), refreshSessions(), refreshWorkspaceDiff()]))
 			.catch(err => reportError("new session failed", err));
 	}, [refreshState, refreshSessions, refreshWorkspaceDiff, reportError]);
 
@@ -538,16 +585,30 @@ export function App() {
 		(session: SessionSummary) => {
 			const client = clientRef.current;
 			if (!client || session.active) return;
+			// Show the loading state instantly: clear the old transcript and flag
+			// the switch before the round-trip. `switch_session` `await`s the
+			// in-flight turn's teardown, so the UI would otherwise sit frozen on the
+			// previous session's messages until the engine settles.
+			dispatch({ kind: "reset" });
+			setSubagents([]);
+			setSwitching(true);
 			void (async () => {
 				try {
 					const { cancelled } = await client.switchSession(session.path);
-					if (cancelled) return;
+					if (cancelled) {
+						// A hook vetoed the switch — the engine stayed on the current
+						// session. Re-seed its transcript so the optimistic reset above
+						// doesn't strand the UI on a blank screen.
+						dispatch({ kind: "seed", messages: await client.getMessages() });
+						return;
+					}
 					const messages = await client.getMessages();
 					dispatch({ kind: "seed", messages });
-					setSubagents([]);
 					await Promise.all([refreshState(), refreshSessions()]);
 				} catch (err) {
 					reportError("switch session failed", err);
+				} finally {
+					setSwitching(false);
 				}
 			})();
 		},
@@ -667,6 +728,7 @@ export function App() {
 			updateInstalling={updateInstalling}
 			onInstallUpdate={onInstallUpdate}
 			historyLoading={historyLoading}
+			switching={switching}
 			dialog={dialogQueue.find(d => DIALOG_METHODS.has(d.method)) ?? null}
 			toasts={toasts}
 			injection={injection}

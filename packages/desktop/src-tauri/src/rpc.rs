@@ -151,6 +151,16 @@ pub fn start_engine(
         cmd.process_group(0);
     }
 
+    // On Windows a GUI app spawning a console subprocess gets an auto-created
+    // console window. CREATE_NO_WINDOW suppresses it; stdin/stdout stay piped so
+    // the NDJSON transport is unaffected.
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+
     let mut child = cmd
         .spawn()
         .map_err(|e| format!("failed to spawn engine '{program}': {e}"))?;

@@ -16,7 +16,7 @@ import * as path from "node:path";
 import { getOAuthProviders } from "@oh-my-pi/pi-ai/oauth";
 import { PROVIDER_REGISTRY } from "@oh-my-pi/pi-ai/registry";
 import { isZodSchema, zodToWireSchema } from "@oh-my-pi/pi-ai/utils/schema";
-import { $env, isEnoent, isRecord, readJsonl, setProjectDir, Snowflake } from "@oh-my-pi/pi-utils";
+import { $env, isEnoent, isRecord, readJsonl, Snowflake, setProjectDir } from "@oh-my-pi/pi-utils";
 import { reset as resetCapabilities } from "../../capability";
 import { applyProviderGlobalsFromSettings } from "../../config/provider-globals";
 import { clearPluginRootsAndCaches, resolveActiveProjectRegistryPath } from "../../discovery/helpers";
@@ -412,17 +412,41 @@ export function dispatchRpcInputFrame(parsed: unknown, deps: RpcInputFrameDeps):
 	// the union here.
 	const command = parsed as RpcCommand;
 
-	// `bash` can run for a long time. Dispatch it in the background so a
-	// subsequent `abort_bash` frame can be read and handled without waiting
-	// for the shell command to finish on its own. The response is emitted
-	// when `handleCommand` resolves; clients correlate via `command.id`.
-	if (command.type === "bash") {
+	// Commands dispatched in the background so the stdin loop can keep reading
+	// subsequent frames instead of blocking on `await handleCommand`. Two cases:
+	//
+	//   1. `bash` can run for a long time; backgrounding lets a follow-up
+	//      `abort_bash` frame be read and handled while the shell runs.
+	//
+	//   2. Read-only refreshers that neither read the live turn/session state nor
+	//      mutate anything. `new_session`/`switch_session` `await abort()` (which
+	//      `await`s `waitForIdle()` — the in-flight LLM turn tearing down), and the
+	//      serial loop would otherwise wedge these behind that teardown, freezing
+	//      the sidebar for seconds. They query the session-file listing, the git
+	//      diff, model/command catalogs, and login providers — none of which depend
+	//      on which session is active — so answering them concurrently is safe.
+	//      NB: `get_messages`/`get_state` are deliberately NOT here: they read the
+	//      *current* session's messages/state and must stay serialized behind a
+	//      switch so they never observe a half-swapped session.
+	//
+	// The response is emitted when `handleCommand` resolves; clients correlate via
+	// `command.id` (not stream order), so out-of-order completion is fine.
+	const backgroundable =
+		command.type === "bash" ||
+		command.type === "list_sessions" ||
+		command.type === "get_workspace_diff" ||
+		command.type === "get_available_models" ||
+		command.type === "get_available_commands" ||
+		command.type === "get_login_providers" ||
+		command.type === "get_session_stats";
+	if (backgroundable) {
+		const commandType = command.type;
 		const task = (async () => {
 			try {
 				deps.output(await deps.handleCommand(command));
 			} catch (err: unknown) {
 				const message = err instanceof Error ? err.message : String(err);
-				deps.output(deps.errorResponse(command.id, "bash", message));
+				deps.output(deps.errorResponse(command.id, commandType, message));
 			}
 		})();
 		deps.trackBackgroundTask?.(task);

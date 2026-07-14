@@ -129,8 +129,14 @@ export class DesktopRpcClient {
 
 	// ── Commands ────────────────────────────────────────────────────────────
 
-	async prompt(message: string, images?: ImageContent[]): Promise<void> {
-		await this.#send(images && images.length > 0 ? { type: "prompt", message, images } : { type: "prompt", message });
+	async prompt(message: string, images?: ImageContent[]): Promise<{ agentInvoked: boolean }> {
+		const response = await this.#send(
+			images && images.length > 0 ? { type: "prompt", message, images } : { type: "prompt", message },
+		);
+		// The engine returns `{ agentInvoked: false }` only for local-only commands
+		// (slash commands that never start a turn); a real prompt returns no data.
+		const data = this.#data<{ agentInvoked?: boolean }>(response);
+		return { agentInvoked: data.agentInvoked !== false };
 	}
 
 	async abort(): Promise<void> {

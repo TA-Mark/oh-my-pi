@@ -5,6 +5,8 @@ import { Markdown } from "./Markdown";
 
 interface TranscriptProps {
 	messages: ChatMessage[];
+	/** Agent turn is in flight — show a working indicator until output appears. */
+	streaming?: boolean;
 }
 
 function ToolBubble({ message }: { message: ChatMessage }) {
@@ -36,7 +38,7 @@ function findScrollParent(element: HTMLElement | null): HTMLElement | null {
 /** Distance in px from the bottom of the scroll container's viewport. */
 const NEAR_BOTTOM_PX = 120;
 
-export function Transcript({ messages }: TranscriptProps) {
+export function Transcript({ messages, streaming = false }: TranscriptProps) {
 	const bottomRef = useRef<HTMLDivElement>(null);
 	// Track whether the user is pinned to the bottom. We only auto-scroll on new
 	// content when they already are — scrolling up to read mid-stream must not be
@@ -57,7 +59,13 @@ export function Transcript({ messages }: TranscriptProps) {
 
 	useEffect(() => {
 		if (atBottomRef.current) bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-	}, [messages]);
+	}, [messages, streaming]);
+
+	// Show a working indicator only in the gap between sending and the first
+	// output of the turn: once assistant text streams or a tool card appears, the
+	// last message is no longer the user's and those rows carry their own progress.
+	const lastRole = messages.length > 0 ? messages[messages.length - 1].role : undefined;
+	const showThinking = streaming && (messages.length === 0 || lastRole === "user");
 
 	if (messages.length === 0) {
 		return (
@@ -97,6 +105,16 @@ export function Transcript({ messages }: TranscriptProps) {
 					</div>
 				);
 			})}
+			{showThinking ? (
+				<div className="thinking-indicator" role="status" aria-live="polite">
+					<span className="thinking-dots" aria-hidden="true">
+						<span />
+						<span />
+						<span />
+					</span>
+					<span className="thinking-label">OMP is working…</span>
+				</div>
+			) : null}
 			<div ref={bottomRef} />
 		</div>
 	);
