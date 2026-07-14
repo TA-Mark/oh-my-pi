@@ -19,11 +19,13 @@ import {
 } from "lucide-react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import type { WorkspaceFileChange } from "../lib/rpc-protocol";
+import type { HunkSelection, WorkspaceFileChange } from "../lib/rpc-protocol";
 
 interface ChangesPanelProps {
 	changes: WorkspaceFileChange[];
 	onRefresh: () => void;
+	onStageHunks: (selections: HunkSelection[]) => void;
+	onUnstage: (files?: string[]) => void;
 	disabled: boolean;
 }
 
@@ -446,8 +448,12 @@ function DiffView({ change, mode }: { change: WorkspaceFileChange; mode: DiffMod
 
 function FileActions({
 	change,
+	disabled,
+	onStageFile,
 }: {
 	change: WorkspaceFileChange;
+	disabled: boolean;
+	onStageFile: (path: string) => void;
 }): ReactNode {
 	return (
 		<span className="changes-file-actions">
@@ -456,7 +462,16 @@ function FileActions({
 			<button type="button" className="changes-icon-button changes-icon-button--compact" title="Revert file" disabled>
 				<Undo2 size={15} />
 			</button>
-			<button type="button" className="changes-icon-button changes-icon-button--compact" title="Stage file" disabled>
+			<button
+				type="button"
+				className="changes-icon-button changes-icon-button--compact"
+				title="Stage file"
+				disabled={disabled}
+				onClick={event => {
+					event.stopPropagation();
+					onStageFile(change.path);
+				}}
+			>
 				<Plus size={15} />
 			</button>
 			<button type="button" className="changes-icon-button changes-icon-button--compact" title="Jump to file" onClick={() => jumpToFile(change.path)}>
@@ -470,14 +485,18 @@ function FileChangeSection({
 	change,
 	mode,
 	collapsed,
+	disabled,
 	onToggleCollapsed,
 	onSelect,
+	onStageFile,
 }: {
 	change: WorkspaceFileChange;
 	mode: DiffMode;
 	collapsed: boolean;
+	disabled: boolean;
 	onToggleCollapsed: (path: string, autoCollapsed: boolean) => void;
 	onSelect: (path: string) => void;
+	onStageFile: (path: string) => void;
 }): ReactNode {
 	const label = statusLabel(change.status);
 	const sectionRef = useRef<HTMLElement>(null);
@@ -518,7 +537,7 @@ function FileChangeSection({
 				</button>
 				<span className="changes-file-meta">
 					{label ? <ChangeBadge tone={change.status === "deleted" ? "del" : "add"}>{label}</ChangeBadge> : null}
-					<FileActions change={change} />
+					<FileActions change={change} disabled={disabled} onStageFile={onStageFile} />
 				</span>
 			</div>
 			{!collapsed && isDiffNearViewport ? <DiffView change={change} mode={mode} /> : null}
@@ -569,18 +588,26 @@ function FileTree({
 
 function ReviewOptions({
 	hiddenCount,
+	stageDisabled,
 	onShowAll,
 	onRefresh,
+	onUnstageAll,
 }: {
 	hiddenCount: number;
+	stageDisabled: boolean;
 	onShowAll: () => void;
 	onRefresh: () => void;
+	onUnstageAll: () => void;
 }): ReactNode {
 	return (
 		<div className="review-options-menu">
 			<button type="button" onClick={onRefresh}>
 				<RefreshCw size={14} />
 				Refresh
+			</button>
+			<button type="button" onClick={onUnstageAll} disabled={stageDisabled}>
+				<Undo2 size={14} />
+				Unstage all
 			</button>
 			<button type="button" onClick={onShowAll} disabled={hiddenCount === 0}>
 				<PanelRightOpen size={14} />
@@ -650,7 +677,7 @@ function JumpToFileMenu({
 	);
 }
 
-export function ChangesPanel({ changes, onRefresh, disabled }: ChangesPanelProps) {
+export function ChangesPanel({ changes, onRefresh, onStageHunks, onUnstage, disabled }: ChangesPanelProps) {
 	const [mode, setMode] = useState<DiffMode>("split");
 	const [menuOpen, setMenuOpen] = useState(false);
 	const [jumpOpen, setJumpOpen] = useState(false);
@@ -754,6 +781,15 @@ export function ChangesPanel({ changes, onRefresh, disabled }: ChangesPanelProps
 		setJumpFilter("");
 	}, [selectFile]);
 
+	const stageFile = useCallback((path: string): void => {
+		onStageHunks([{ path, hunks: { type: "all" } }]);
+	}, [onStageHunks]);
+
+	const stageAll = useCallback((): void => {
+		if (visibleChanges.length === 0) return;
+		onStageHunks(visibleChanges.map(change => ({ path: change.path, hunks: { type: "all" } })));
+	}, [onStageHunks, visibleChanges]);
+
 	return (
 		<section className={`changes-panel${navigatorOpen ? " changes-panel--with-navigator" : ""}`}>
 			<div className="changes-head">
@@ -786,9 +822,14 @@ export function ChangesPanel({ changes, onRefresh, disabled }: ChangesPanelProps
 						{menuOpen ? (
 							<ReviewOptions
 								hiddenCount={hiddenPaths.size}
+								stageDisabled={disabled || visibleChanges.length === 0}
 								onShowAll={showAll}
 								onRefresh={() => {
 									onRefresh();
+									setMenuOpen(false);
+								}}
+								onUnstageAll={() => {
+									onUnstage();
 									setMenuOpen(false);
 								}}
 							/>
@@ -869,8 +910,10 @@ export function ChangesPanel({ changes, onRefresh, disabled }: ChangesPanelProps
 								change={change}
 								mode={mode}
 								collapsed={isCollapsed(change)}
+								disabled={disabled}
 								onToggleCollapsed={toggleCollapsed}
 								onSelect={selectPath}
+								onStageFile={stageFile}
 							/>
 						))
 					)}
@@ -901,7 +944,7 @@ export function ChangesPanel({ changes, onRefresh, disabled }: ChangesPanelProps
 						<RotateCcw size={15} />
 						Revert all
 					</button>
-					<button type="button" disabled>
+					<button type="button" disabled={disabled} onClick={stageAll}>
 						<Plus size={15} />
 						Stage all
 					</button>

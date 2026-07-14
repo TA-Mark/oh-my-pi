@@ -96,7 +96,13 @@ export type RpcCommand =
 	// Approval is handled agent-driven: the agent submits the finalized plan via
 	// `resolve { action: "apply" }`, which a standing handler routes to the host's
 	// confirm dialog. No separate client-driven resolve command is needed.
-	| { id?: string; type: "set_plan_mode"; enabled: boolean; workflow?: "parallel" | "iterative" };
+	| { id?: string; type: "set_plan_mode"; enabled: boolean; workflow?: "parallel" | "iterative" }
+
+	// Staging (desktop-added core command; core-touchpoints.md). Non-destructive:
+	// stage/unstage only touch the git index, never the working tree, so a mistaken
+	// selection is fully reversible with the inverse command.
+	| { id?: string; type: "stage_hunks"; selections: RpcHunkSelection[] }
+	| { id?: string; type: "unstage"; files?: string[] };
 
 // ============================================================================
 // RPC State
@@ -159,6 +165,16 @@ export interface RpcWorkspaceFileChange {
 	oldPath?: string;
 	/** True when the diff was omitted (binary or too large); path/status still shown. */
 	truncated?: boolean;
+}
+
+/**
+ * Hunk selection for `stage_hunks` (mirrors the engine's {@link HunkSelection} in
+ * utils/git.ts). `all` stages the whole file; `indices` stages specific hunks by
+ * their 0-based position in the file's unified diff.
+ */
+export interface RpcHunkSelection {
+	path: string;
+	hunks: { type: "all" } | { type: "indices"; indices: number[] };
 }
 
 export interface RpcAvailableSlashCommand {
@@ -375,6 +391,10 @@ export type RpcResponse =
 
 	// Plan mode
 	| { id?: string; type: "response"; command: "set_plan_mode"; success: true; data: { planMode?: RpcPlanModeState } }
+
+	// Staging (desktop-added core command; core-touchpoints.md)
+	| { id?: string; type: "response"; command: "stage_hunks"; success: true; data: { staged: number } }
+	| { id?: string; type: "response"; command: "unstage"; success: true }
 
 	// Error response (any command can fail)
 	| { id?: string; type: "response"; command: string; success: false; error: string };

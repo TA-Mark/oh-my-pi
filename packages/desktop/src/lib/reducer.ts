@@ -28,12 +28,21 @@ export interface ViewModel {
 	messages: ChatMessage[];
 	streaming: boolean;
 	stderr: string[];
+	/**
+	 * Id of the assistant message currently being streamed (between `message_start`
+	 * and `message_end`), or undefined when no assistant turn is open. Streaming
+	 * `message_update`/`message_end` frames carry no stable engine id, so the reducer
+	 * owns this correlation: it targets the open assistant by id instead of blindly
+	 * patching the last one, so interleaved streams can't overwrite each other.
+	 */
+	streamingAssistantId?: string;
 }
 
 export const initialViewModel: ViewModel = {
 	messages: [],
 	streaming: false,
 	stderr: [],
+	streamingAssistantId: undefined,
 };
 
 let seq = 0;
@@ -84,21 +93,50 @@ function assistantView(message: EngineMessage): { text: string; error: boolean }
 	return { text, error };
 }
 
-function updateLastAssistant(messages: ChatMessage[], view: { text: string; error: boolean }): ChatMessage[] {
-	const next = [...messages];
-	for (let i = next.length - 1; i >= 0; i--) {
-		if (next[i].role === "assistant") {
-			next[i] = { ...next[i], text: view.text, error: view.error };
-			return next;
+/**
+ * Update the streaming assistant identified by `id`. When the id is unknown
+ * (update/end arrived without a matching `message_start`), append a fresh
+ * assistant row so a snapshot is never silently dropped.
+ */
+function updateAssistantById(
+	messages: ChatMessage[],
+	id: string,
+	view: { text: string; error: boolean },
+): ChatMessage[] {
+	let found = false;
+	const next = messages.map(message => {
+		if (message.id === id && message.role === "assistant") {
+			found = true;
+			return { ...message, text: view.text, error: view.error };
 		}
-	}
-	next.push({ id: newId("a"), role: "assistant", text: view.text, error: view.error });
+		return message;
+	});
+	if (!found) next.push({ id, role: "assistant", text: view.text, error: view.error });
 	return next;
 }
 
-function patchTool(messages: ChatMessage[], toolCallId: string, patch: Partial<ChatMessage>): ChatMessage[] {
+/**
+ * Patch the tool card keyed by `toolCallId`, creating one from `seed` if none
+ * exists yet (an update/end arriving before/without its `start`). This mirrors
+ * the persisted-replay path, which also synthesizes a fallback card.
+ */
+function patchTool(
+	messages: ChatMessage[],
+	toolCallId: string,
+	patch: Partial<ChatMessage>,
+	seed: Partial<ChatMessage>,
+): ChatMessage[] {
 	const id = `t_${toolCallId}`;
-	return messages.map(message => (message.id === id ? { ...message, ...patch } : message));
+	let found = false;
+	const next = messages.map(message => {
+		if (message.id === id) {
+			found = true;
+			return { ...message, ...patch };
+		}
+		return message;
+	});
+	if (!found) next.push({ id, role: "tool", text: "", ...seed, ...patch });
+	return next;
 }
 
 export function reduce(state: ViewModel, event: EngineEvent): ViewModel {
@@ -106,52 +144,73 @@ export function reduce(state: ViewModel, event: EngineEvent): ViewModel {
 		case "agent_start":
 			return { ...state, streaming: true };
 		case "agent_end":
-			return { ...state, streaming: false };
+			return { ...state, streaming: false, streamingAssistantId: undefined };
 		case "message_start": {
 			if (event.message.role !== "assistant") return state;
 			const view = assistantView(event.message);
+			const id = newId("a");
 			return {
 				...state,
-				messages: [...state.messages, { id: newId("a"), role: "assistant", text: view.text, error: view.error }],
+				streamingAssistantId: id,
+				messages: [...state.messages, { id, role: "assistant", text: view.text, error: view.error }],
 			};
 		}
 		case "message_update":
 		case "message_end": {
 			if (event.message.role !== "assistant") return state;
-			return { ...state, messages: updateLastAssistant(state.messages, assistantView(event.message)) };
-		}
-		case "tool_execution_start":
+			// Target the open streaming assistant by id; fall back to opening a new
+			// one if no message_start was seen (updateAssistantById appends).
+			const id = state.streamingAssistantId ?? newId("a");
+			const messages = updateAssistantById(state.messages, id, assistantView(event.message));
 			return {
 				...state,
-				messages: [
-					...state.messages,
+				messages,
+				streamingAssistantId: event.type === "message_end" ? undefined : id,
+			};
+		}
+		case "tool_execution_start":
+			// Dedupe: a repeated start for the same toolCallId updates the existing
+			// card in place instead of appending a duplicate that later patches hit.
+			return {
+				...state,
+				messages: patchTool(
+					state.messages,
+					event.toolCallId,
 					{
-						id: `t_${event.toolCallId}`,
-						role: "tool",
-						text: "",
 						toolName: event.toolName,
 						toolArgs: event.args,
 						toolIntent: event.intent,
 						toolRunning: true,
 					},
-				],
+					{ toolName: event.toolName, toolArgs: event.args, toolIntent: event.intent, toolRunning: true },
+				),
 			};
 		case "tool_execution_update":
 			return {
 				...state,
-				messages: patchTool(state.messages, event.toolCallId, {
-					...(event.args !== undefined ? { toolArgs: event.args } : {}),
-					toolPartial: resultText(event.partialResult) || undefined,
-				}),
+				messages: patchTool(
+					state.messages,
+					event.toolCallId,
+					{
+						...(event.args !== undefined ? { toolArgs: event.args } : {}),
+						toolPartial: resultText(event.partialResult) || undefined,
+					},
+					{ toolName: event.toolName, toolRunning: true },
+				),
 			};
 		case "tool_execution_end":
 			return {
 				...state,
-				messages: patchTool(state.messages, event.toolCallId, {
-					toolResult: finalResult(event.result, event.isError),
-					toolRunning: false,
-					toolPartial: undefined,
-				}),
+				messages: patchTool(
+					state.messages,
+					event.toolCallId,
+					{
+						toolResult: finalResult(event.result, event.isError),
+						toolRunning: false,
+						toolPartial: undefined,
+					},
+					{ toolName: event.toolName, toolRunning: false },
+				),
 			};
 		case "notice": {
 			const text = event.message ?? event.text ?? "";
@@ -175,6 +234,30 @@ export function appendUserMessage(state: ViewModel, text: string, images?: Image
 
 export function appendStderr(state: ViewModel, line: string): ViewModel {
 	return { ...state, stderr: [...state.stderr, line].slice(-200) };
+}
+
+/**
+ * Transport-level interruption (engine exited or errored) with no `agent_end`.
+ * Clears the streaming flag so the UI doesn't hang on a spinner, finalizes any
+ * still-running tool cards as interrupted, and appends a system notice.
+ */
+export function engineInterrupted(state: ViewModel, reason: string): ViewModel {
+	const messages = state.messages.map(message =>
+		message.role === "tool" && message.toolRunning
+			? {
+					...message,
+					toolRunning: false,
+					toolPartial: undefined,
+					toolResult: message.toolResult ?? { content: [{ type: "text", text: reason }], isError: true },
+				}
+			: message,
+	);
+	return {
+		...state,
+		streaming: false,
+		streamingAssistantId: undefined,
+		messages: [...messages, { id: newId("n"), role: "system", text: reason }],
+	};
 }
 
 /** Concatenate the text parts of a persisted message's content. */

@@ -21,7 +21,17 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": {
+        "default-src": "'self'",
+        "img-src": "'self' data: asset: http://asset.localhost blob:",
+        "style-src": "'self' 'unsafe-inline'",
+        "script-src": "'self'",
+        "connect-src": "'self' ipc: http://ipc.localhost https://github.com https://objects.githubusercontent.com https://*.githubusercontent.com",
+        "font-src": "'self' data:",
+        "object-src": "'none'",
+        "base-uri": "'self'",
+        "frame-src": "'none'"
+      }
     }
   },
   "bundle": {
@@ -34,6 +44,22 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "windows": {
+      "digestAlgorithm": "sha256",
+      "timestampUrl": "http://timestamp.digicert.com"
+    },
+    "macOS": {
+      "hardenedRuntime": true
+    },
+    "createUpdaterArtifacts": true
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEIzOEY4NTdENEU1NjZGClJXUnZWazU5aFkrekFHVG1Vd3ZQb2t2dVBsVnlzcXdQK1VQMWVtUVJwWno5WitsMVZMRFJHRlRUCg==",
+      "endpoints": [
+        "https://github.com/TA-Mark/oh-my-pi/releases/latest/download/latest.json"
+      ]
+    }
   }
 }

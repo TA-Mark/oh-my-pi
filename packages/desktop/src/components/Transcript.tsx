@@ -22,11 +22,41 @@ function ToolBubble({ message }: { message: ChatMessage }) {
 	);
 }
 
+/** Nearest scrollable ancestor (the `.app-content` container), or null. */
+function findScrollParent(element: HTMLElement | null): HTMLElement | null {
+	let current = element?.parentElement ?? null;
+	while (current) {
+		const overflowY = window.getComputedStyle(current).overflowY;
+		if (overflowY === "auto" || overflowY === "scroll") return current;
+		current = current.parentElement;
+	}
+	return null;
+}
+
+/** Distance in px from the bottom of the scroll container's viewport. */
+const NEAR_BOTTOM_PX = 120;
+
 export function Transcript({ messages }: TranscriptProps) {
 	const bottomRef = useRef<HTMLDivElement>(null);
+	// Track whether the user is pinned to the bottom. We only auto-scroll on new
+	// content when they already are — scrolling up to read mid-stream must not be
+	// yanked back down. Recomputed on every scroll event.
+	const atBottomRef = useRef(true);
 
 	useEffect(() => {
-		bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+		const scroller = findScrollParent(bottomRef.current);
+		if (!scroller) return;
+		const onScroll = (): void => {
+			const distance = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
+			atBottomRef.current = distance <= NEAR_BOTTOM_PX;
+		};
+		onScroll(); // seed initial state
+		scroller.addEventListener("scroll", onScroll, { passive: true });
+		return () => scroller.removeEventListener("scroll", onScroll);
+	}, []);
+
+	useEffect(() => {
+		if (atBottomRef.current) bottomRef.current?.scrollIntoView({ behavior: "smooth" });
 	}, [messages]);
 
 	if (messages.length === 0) {

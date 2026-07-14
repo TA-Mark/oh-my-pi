@@ -1403,6 +1403,30 @@ export async function runRpcMode(
 				return success(id, "get_workspace_diff", { files });
 			}
 
+			// Non-destructive: stage/unstage only mutate the git index, never the
+			// working tree. `git.stage.hunks` builds a patch from the current diff
+			// and applies it with --cached. Desktop-added; see core-touchpoints.md.
+			case "stage_hunks": {
+				if (command.selections.length === 0) return error(id, "stage_hunks", "No selections provided");
+				const cwd = session.sessionManager.getCwd();
+				try {
+					await git.stage.hunks(cwd, command.selections);
+					return success(id, "stage_hunks", { staged: command.selections.length });
+				} catch (err) {
+					return error(id, "stage_hunks", err instanceof Error ? err.message : String(err));
+				}
+			}
+
+			case "unstage": {
+				const cwd = session.sessionManager.getCwd();
+				try {
+					await git.stage.reset(cwd, command.files ?? []);
+					return success(id, "unstage");
+				} catch (err) {
+					return error(id, "unstage", err instanceof Error ? err.message : String(err));
+				}
+			}
+
 			case "export_html": {
 				const path = await session.exportToHtml(command.outputPath);
 				return success(id, "export_html", { path });

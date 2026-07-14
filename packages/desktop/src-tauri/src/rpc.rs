@@ -117,10 +117,10 @@ pub fn start_engine(
 ) -> Result<(), String> {
     let mut guard = state.inner.lock().map_err(|e| e.to_string())?;
     // Replace any running engine (e.g. when the user switches workspace) so a
-    // restart never races against a not-yet-reaped previous child.
+    // restart never races against a not-yet-reaped previous child. Reap the whole
+    // tree, not just the direct child, or LSP/bash grandchildren leak per switch.
     if let Some(mut existing) = guard.take() {
-        let _ = existing.child.kill();
-        let _ = existing.child.wait();
+        reap_process_tree(&mut existing.child);
     }
 
     let argv = engine_argv();
@@ -140,6 +140,16 @@ pub fn start_engine(
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+
+    // Put the engine in its own process group so shutdown can signal the whole
+    // tree (the engine spawns bash/eval/LSP children). On Unix the group id
+    // equals the child pid; `stop_engine` kills the negative pgid. Windows has
+    // no fork/pgid — there we reap the tree via `taskkill /T` in stop_engine.
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
 
     let mut child = cmd
         .spawn()
@@ -198,11 +208,109 @@ pub fn send_rpc(state: State<'_, EngineState>, line: String) -> Result<(), Strin
 pub fn stop_engine(state: State<'_, EngineState>) -> Result<(), String> {
     let mut guard = state.inner.lock().map_err(|e| e.to_string())?;
     if let Some(mut engine) = guard.take() {
-        // Phase 0: kill only the direct child. The engine may spawn its own
-        // subprocess tree (bash/eval/LSP); full descendant reaping is a
-        // Phase 5 packaging concern (see docs/design.md §5.3).
-        let _ = engine.child.kill();
-        let _ = engine.child.wait();
+        reap_process_tree(&mut engine.child);
     }
     Ok(())
+}
+
+/// Terminate the engine and its whole descendant tree (the engine spawns
+/// bash/eval/LSP children). Leaving them behind leaks processes on every
+/// workspace switch and app exit.
+fn reap_process_tree(child: &mut Child) {
+    let pid = child.id();
+
+    #[cfg(unix)]
+    {
+        // The child leads its own process group (set at spawn via process_group(0)),
+        // so a negative pid signals every process in the group. SIGTERM first for a
+        // graceful stop, then SIGKILL as a backstop — kill(2) on the group is
+        // cheaper and more reliable than walking the process table.
+        unsafe {
+            libc_kill(-(pid as i32), SIGTERM);
+        }
+        // Give the tree a brief moment to exit on SIGTERM before forcing.
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        unsafe {
+            libc_kill(-(pid as i32), SIGKILL);
+        }
+    }
+
+    #[cfg(windows)]
+    {
+        // No process groups on Windows; `taskkill /T` walks and kills the tree
+        // rooted at the engine pid. /F forces termination; errors (already-exited)
+        // are ignored.
+        let _ = Command::new("taskkill")
+            .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+
+    // Reap the direct child so it doesn't linger as a zombie (Unix) / handle
+    // (Windows). kill() is a no-op if the signal above already took it down.
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+// Minimal libc bindings for the Unix group-kill path. Avoids pulling the whole
+// `libc`/`nix` crate for two symbols. `kill(2)` with a negative pid targets the
+// process group; the constants match Linux/macOS/BSD (POSIX-fixed values).
+#[cfg(unix)]
+const SIGTERM: i32 = 15;
+#[cfg(unix)]
+const SIGKILL: i32 = 9;
+#[cfg(unix)]
+extern "C" {
+    #[link_name = "kill"]
+    fn libc_kill(pid: i32, sig: i32) -> i32;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // engine_argv() reads a process-global env var, so these assertions share one
+    // #[test] to avoid racing other tests that might read the environment.
+    #[test]
+    fn engine_argv_resolution() {
+        // OMP_ENGINE_ARGV override wins and is parsed as a JSON string array.
+        // SAFETY: single-threaded within this test; no other test touches this var.
+        unsafe {
+            std::env::set_var("OMP_ENGINE_ARGV", r#"["bun","cli.ts","--mode","rpc-ui"]"#);
+        }
+        assert_eq!(engine_argv(), vec!["bun", "cli.ts", "--mode", "rpc-ui"]);
+
+        // Malformed JSON falls through to the default resolution (never panics).
+        unsafe {
+            std::env::set_var("OMP_ENGINE_ARGV", "not json");
+        }
+        let argv = engine_argv();
+        assert_eq!(argv.last().map(String::as_str), Some("rpc-ui"));
+        assert!(argv.contains(&"--mode".to_string()));
+
+        // Empty array is ignored (treated as absent), same default fallthrough.
+        unsafe {
+            std::env::set_var("OMP_ENGINE_ARGV", "[]");
+        }
+        assert_eq!(engine_argv().last().map(String::as_str), Some("rpc-ui"));
+
+        unsafe {
+            std::env::remove_var("OMP_ENGINE_ARGV");
+        }
+    }
+
+    #[test]
+    fn resolve_engine_program_resolves_to_omp() {
+        // With no sibling binary next to the test harness exe, resolution falls
+        // through to the bare `omp` program name (found on PATH at runtime). When a
+        // sibling IS found (packaged app), it's an absolute path ending in the
+        // platform binary name.
+        let prog = resolve_engine_program();
+        let platform_name = if cfg!(windows) { "omp.exe" } else { "omp" };
+        assert!(
+            prog == "omp" || prog.ends_with(platform_name),
+            "unexpected engine program: {prog}"
+        );
+    }
 }

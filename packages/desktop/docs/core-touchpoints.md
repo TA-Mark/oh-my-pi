@@ -62,3 +62,25 @@ rather than inventing a new UI surface. Additive only (new union arms + one case
 interface + one event frame). No existing behavior changed. If upstream adds its own plan-mode
 RPC, drop this during sync. Verified by the runtime probe in `scripts/smoke-rpc.ts`
 (set_plan_mode enable/disable + get_state steps).
+
+## `packages/coding-agent/src/modes/rpc/` — `stage_hunks` + `unstage` RPC commands
+
+The RPC layer shipped `get_workspace_diff` (read-only) but no way to *act* on the diff, so
+the desktop Changes panel's Stage buttons were inert. The engine already had the full staging
+API (`git.stage.hunks` / `git.stage.reset` in `utils/git.ts`, used by the git tools); we
+exposed two additive commands that drive it:
+
+- `rpc-types.ts`: `RpcCommand` gains `{ type: "stage_hunks"; selections: RpcHunkSelection[] }`
+  and `{ type: "unstage"; files?: string[] }`; new `RpcHunkSelection` interface
+  (`path` + `hunks: { type: "all" } | { type: "indices"; indices: number[] }`, a DOM-safe
+  subset of the engine's `HunkSelection`); `RpcResponse` gains matching success arms
+  (`stage_hunks` → `{ staged: number }`, `unstage` → no data).
+- `rpc-mode.ts`: a `case "stage_hunks"` calls `git.stage.hunks(cwd, selections)` and a
+  `case "unstage"` calls `git.stage.reset(cwd, files ?? [])`.
+
+**Non-destructive by design:** both commands only mutate the git *index*, never the working
+tree — a mistaken stage is fully reversible with `unstage` (and vice versa). Revert (which
+*does* overwrite the working tree) was deliberately left out of scope; the Revert buttons
+stay disabled. Additive only (two union arms + one interface + one case each). No existing
+behavior changed. If upstream adds its own staging RPC, drop this during sync. Verified by
+the runtime probe in `scripts/smoke-rpc.ts` (stage_hunks + unstage steps).

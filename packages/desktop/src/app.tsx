@@ -5,13 +5,22 @@ import type { ComposerInjection } from "./components/Composer";
 import type { WidgetEntry } from "./components/ExtensionWidgets";
 import type { Toast } from "./components/Toasts";
 import { WelcomeScreen } from "./components/WelcomeScreen";
-import { appendStderr, appendUserMessage, initialViewModel, reduce, seedMessages, type ViewModel } from "./lib/reducer";
-import { DesktopRpcClient, type EngineStatus } from "./lib/rpc-client";
+import {
+	appendStderr,
+	appendUserMessage,
+	engineInterrupted,
+	initialViewModel,
+	reduce,
+	seedMessages,
+	type ViewModel,
+} from "./lib/reducer";
+import { DesktopRpcClient, type EngineStatus, RpcError } from "./lib/rpc-client";
 import type {
 	ApprovalMode,
 	EngineEvent,
 	ExtensionUIRequest,
 	ExtensionUIResponse,
+	HunkSelection,
 	ImageContent,
 	LoginProvider,
 	ModelInfo,
@@ -23,12 +32,15 @@ import type {
 	WorkspaceFileChange,
 } from "./lib/rpc-protocol";
 import { openExternalUrl, pickWorkspaceFolder } from "./lib/tauri-bridge";
+import { checkForUpdate, installUpdate, type UpdateInfo } from "./lib/updater";
+import type { Update as UpdateHandle } from "@tauri-apps/plugin-updater";
 
 type Action =
 	| { kind: "event"; event: EngineEvent }
 	| { kind: "user"; text: string; images?: ImageContent[] }
 	| { kind: "stderr"; line: string }
 	| { kind: "seed"; messages: SessionMessage[] }
+	| { kind: "interrupted"; reason: string }
 	| { kind: "reset" };
 
 function rootReducer(state: ViewModel, action: Action): ViewModel {
@@ -41,6 +53,8 @@ function rootReducer(state: ViewModel, action: Action): ViewModel {
 			return appendStderr(state, action.line);
 		case "seed":
 			return seedMessages(action.messages);
+		case "interrupted":
+			return engineInterrupted(state, action.reason);
 		case "reset":
 			return initialViewModel;
 	}
@@ -88,6 +102,8 @@ export function App() {
 	const [sessions, setSessions] = useState<SessionSummary[]>([]);
 	const [historyLoading, setHistoryLoading] = useState(false);
 	const [changes, setChanges] = useState<WorkspaceFileChange[]>([]);
+	const [update, setUpdate] = useState<{ info: UpdateInfo; update: UpdateHandle } | null>(null);
+	const [updateInstalling, setUpdateInstalling] = useState(false);
 	const [injection, setInjection] = useState<ComposerInjection | undefined>();
 	const [authPrompt, setAuthPrompt] = useState<AuthPrompt | null>(null);
 	const [statuses, setStatuses] = useState<Record<string, string>>({});
@@ -234,6 +250,20 @@ export function App() {
 		document.title = docTitle ? `${docTitle} — OMP` : "OMP";
 	}, [docTitle]);
 
+	// Check for an app update once on mount. The check is best-effort (no-ops in
+	// dev / offline); when an update exists we surface a banner and let the user
+	// choose to install — we never relaunch mid-session without consent.
+	useEffect(() => {
+		let cancelled = false;
+		void checkForUpdate().then(result => {
+			if (!cancelled && result) setUpdate(result);
+		});
+		return () => {
+			cancelled = true;
+		};
+	}, []);
+
+
 	useEffect(() => {
 		if (!workspace) return;
 		let cancelled = false;
@@ -253,6 +283,11 @@ export function App() {
 				if (cancelled) return;
 				setStatus(next);
 				setStatusDetail(detail);
+				// Engine died mid-turn without an agent_end: clear the streaming
+				// spinner and finalize any running tool cards as interrupted.
+				if (next === "stopped" || next === "error") {
+					dispatch({ kind: "interrupted", reason: detail ? `Engine stopped: ${detail}` : "Engine stopped" });
+				}
 			},
 			onStderr: line => dispatch({ kind: "stderr", line }),
 			onSubagentUpdate: () => void refreshSubagents(),
@@ -297,8 +332,58 @@ export function App() {
 	]);
 
 	const reportError = useCallback((label: string, err: unknown) => {
-		dispatch({ kind: "stderr", line: `${label}: ${err instanceof Error ? err.message : String(err)}` });
+		// Classify RPC failures so recovery hints differ: transport failures point
+		// at the engine, timeouts suggest a retry, engine errors carry a message.
+		const detail =
+			err instanceof RpcError
+				? `${err.message} (${err.kind}${err.kind === "transport" ? " — try restarting the engine" : ""})`
+				: err instanceof Error
+					? err.message
+					: String(err);
+		dispatch({ kind: "stderr", line: `${label}: ${detail}` });
 	}, []);
+
+	const onInstallUpdate = useCallback(async () => {
+		if (!update) return;
+		setUpdateInstalling(true);
+		try {
+			// Reap the engine before the installer swaps binaries; relaunch happens
+			// inside installUpdate.
+			await clientRef.current?.stop().catch(() => {});
+			await installUpdate(update.update);
+		} catch (err) {
+			setUpdateInstalling(false);
+			reportError("update failed", err);
+		}
+	}, [update, reportError]);
+
+	const onStageHunks = useCallback(
+		async (selections: HunkSelection[]) => {
+			const client = clientRef.current;
+			if (!client) return;
+			try {
+				await client.stageHunks(selections);
+				await refreshWorkspaceDiff();
+			} catch (err) {
+				reportError("stage failed", err);
+			}
+		},
+		[refreshWorkspaceDiff, reportError],
+	);
+
+	const onUnstage = useCallback(
+		async (files?: string[]) => {
+			const client = clientRef.current;
+			if (!client) return;
+			try {
+				await client.unstage(files);
+				await refreshWorkspaceDiff();
+			} catch (err) {
+				reportError("unstage failed", err);
+			}
+		},
+		[refreshWorkspaceDiff, reportError],
+	);
 
 	const openFolder = useCallback(async () => {
 		const folder = await pickWorkspaceFolder();
@@ -521,6 +606,11 @@ export function App() {
 			onTogglePlanMode={onTogglePlanMode}
 			changes={changes}
 			onRefreshChanges={refreshWorkspaceDiff}
+			onStageHunks={onStageHunks}
+			onUnstage={onUnstage}
+			updateVersion={update?.info.version ?? null}
+			updateInstalling={updateInstalling}
+			onInstallUpdate={onInstallUpdate}
 			historyLoading={historyLoading}
 			dialog={dialogQueue.find(d => DIALOG_METHODS.has(d.method)) ?? null}
 			toasts={toasts}

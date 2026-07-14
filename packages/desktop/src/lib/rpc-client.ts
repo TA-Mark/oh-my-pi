@@ -11,6 +11,7 @@ import {
 	type EngineEvent,
 	type ExtensionUIRequest,
 	type ExtensionUIResponse,
+	type HunkSelection,
 	type ImageContent,
 	type LoginProvider,
 	type ModelInfo,
@@ -53,6 +54,8 @@ interface PendingRequest {
 	resolve: (response: RpcResponse) => void;
 	reject: (error: Error) => void;
 	timer: ReturnType<typeof setTimeout>;
+	command: string;
+	requestId: string;
 }
 
 export class DesktopRpcClient {
@@ -74,7 +77,12 @@ export class DesktopRpcClient {
 		// Attach listeners before spawning so the `ready` frame can't be missed.
 		this.#unlisten.push(await onRpcFrame(line => this.#handleLine(line)));
 		this.#unlisten.push(await onRpcStderr(line => this.#handlers.onStderr?.(line)));
-		this.#unlisten.push(await onEngineExit(() => this.#handlers.onStatus?.("stopped")));
+		this.#unlisten.push(
+			await onEngineExit(() => {
+				this.#rejectPending("engine exited");
+				this.#handlers.onStatus?.("stopped");
+			}),
+		);
 
 		const ready = new Promise<void>(resolve => {
 			this.#readyResolve = resolve;
@@ -106,12 +114,17 @@ export class DesktopRpcClient {
 	async stop(): Promise<void> {
 		for (const unlisten of this.#unlisten) unlisten();
 		this.#unlisten = [];
+		this.#rejectPending("client stopped");
+		await stopEngine().catch(() => {});
+	}
+
+	/** Reject and clear every in-flight request with a transport error. */
+	#rejectPending(reason: string): void {
 		for (const pending of this.#pending.values()) {
 			clearTimeout(pending.timer);
-			pending.reject(new Error("client stopped"));
+			pending.reject(new RpcTransportError(reason, pending.command, pending.requestId));
 		}
 		this.#pending.clear();
-		await stopEngine().catch(() => {});
 	}
 
 	// ── Commands ────────────────────────────────────────────────────────────
@@ -219,6 +232,16 @@ export class DesktopRpcClient {
 		return this.#data<{ files?: WorkspaceFileChange[] }>(response).files ?? [];
 	}
 
+	/** Stage whole files or specific hunks (git index only; non-destructive). */
+	async stageHunks(selections: HunkSelection[]): Promise<void> {
+		await this.#send({ type: "stage_hunks", selections });
+	}
+
+	/** Unstage files (empty = unstage all). Reverses {@link stageHunks} on the index. */
+	async unstage(files?: string[]): Promise<void> {
+		await this.#send(files && files.length > 0 ? { type: "unstage", files } : { type: "unstage" });
+	}
+
 	// ── Internal ──────────────────────────────────────────────────────────────
 
 	#handleLine(line: string): void {
@@ -272,27 +295,66 @@ export class DesktopRpcClient {
 		const promise = new Promise<RpcResponse>((resolve, reject) => {
 			const timer = setTimeout(() => {
 				this.#pending.delete(id);
-				reject(new Error(`timeout waiting for response to ${command.type}`));
+				reject(new RpcTimeoutError(`timeout waiting for response to ${command.type}`, command.type, id));
 			}, timeoutMs);
-			this.#pending.set(id, { resolve, reject, timer });
+			this.#pending.set(id, { resolve, reject, timer, command: command.type, requestId: id });
 		});
 		void sendRpcLine(JSON.stringify({ ...command, id })).catch((err: unknown) => {
 			const pending = this.#pending.get(id);
 			if (!pending) return;
 			this.#pending.delete(id);
 			clearTimeout(pending.timer);
-			pending.reject(err instanceof Error ? err : new Error(String(err)));
+			pending.reject(new RpcTransportError(errorMessage(err), command.type, id));
 		});
-		return promise;
+		// Surface engine-side failures uniformly, so void commands (prompt, abort,
+		// …) that never call #data don't swallow a success:false response.
+		return promise.then(response => {
+			if (!response.success) {
+				throw new RpcEngineError(response.error, response.command, response.id ?? id);
+			}
+			return response;
+		});
 	}
 
 	#data<T>(response: RpcResponse): T {
-		if (!response.success) throw new Error(response.error);
-		return (response.data ?? {}) as T;
+		// #send already rejected non-success responses, so `data` is present here.
+		return (response.success ? (response.data ?? {}) : {}) as T;
 	}
 }
 
 function errorMessage(err: unknown): string {
 	if (err instanceof Error) return err.message;
 	return String(err);
+}
+
+/**
+ * Base for RPC request failures. Callers branch on the subclass to recover
+ * differently: timeout → offer retry, transport → suggest restarting the
+ * engine, engine → surface the message and keep the transcript.
+ */
+export abstract class RpcError extends Error {
+	abstract readonly kind: "timeout" | "transport" | "engine";
+	constructor(
+		message: string,
+		readonly command: string,
+		readonly requestId: string,
+	) {
+		super(message);
+		this.name = new.target.name;
+	}
+}
+
+/** No response arrived within the timeout window. */
+export class RpcTimeoutError extends RpcError {
+	readonly kind = "timeout" as const;
+}
+
+/** The command could not be delivered, or the client/engine stopped while awaiting it. */
+export class RpcTransportError extends RpcError {
+	readonly kind = "transport" as const;
+}
+
+/** The engine processed the command and returned `success: false`. */
+export class RpcEngineError extends RpcError {
+	readonly kind = "engine" as const;
 }

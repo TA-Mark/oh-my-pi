@@ -16,6 +16,8 @@
 //   14. set_plan_mode disabled -> success
 //   15. get_state -> planMode === undefined (cleared)
 //   16. get_workspace_diff -> { files: [...] } (bounded scan; must not hang)
+//   17. unstage -> success (safe no-op; desktop-added staging command; core-touchpoints.md)
+//   18. stage_hunks [] -> success:false (empty-selection guard; core-touchpoints.md)
 // Exits non-zero on any drift. Keep in sync with src/lib/rpc-protocol.ts.
 import * as path from "node:path";
 
@@ -153,6 +155,19 @@ try {
 					fail("get_workspace_diff.data.files is not an array");
 				}
 				console.log("OK: get_workspace_diff contract holds (files array)");
+				// Unstage-all is a safe no-op when nothing is staged; verifies the
+				// staging command path (desktop-added; core-touchpoints.md) without
+				// mutating the working tree.
+				send({ type: "unstage", id: "s16" });
+			} else if (frame.id === "s16") {
+				if (frame.success !== true) fail(`unstage failed: ${line}`);
+				console.log("OK: unstage accepted");
+				// stage_hunks with an empty selection is rejected by the engine
+				// (nothing to stage) — assert that guard rather than staging real hunks.
+				send({ type: "stage_hunks", selections: [], id: "s17" });
+			} else if (frame.id === "s17") {
+				if (frame.success !== false) fail(`stage_hunks empty selection should fail: ${line}`);
+				console.log("OK: stage_hunks rejects empty selection (guard holds)");
 				clearTimeout(timeout);
 				child.kill();
 				process.exit(0);

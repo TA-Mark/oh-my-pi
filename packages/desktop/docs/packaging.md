@@ -55,14 +55,17 @@ Unsigned builds run locally but trigger OS warnings (SmartScreen / Gatekeeper) f
 
 ### Windows (Authenticode)
 
-Configure in `tauri.conf.json` under `bundle.windows` (`certificateThumbprint`,
-`digestAlgorithm`, `timestampUrl`) or a custom `signCommand`. In CI, import the PFX and
-set the thumbprint. Tauri signs the NSIS/MSI during `tauri build`.
+`bundle.windows` is pre-configured with `digestAlgorithm: "sha256"` and a DigiCert
+`timestampUrl` — these are inert until a cert is supplied, so unsigned builds still
+succeed. To sign, add `certificateThumbprint` (or a custom `signCommand`) in
+`tauri.conf.json`; in CI, import the PFX and set the thumbprint. Tauri signs the NSIS/MSI
+during `tauri build`. Timestamping (already wired) keeps signatures valid past cert expiry.
 
 ### macOS (sign + notarize)
 
-Set the signing identity in `bundle.macOS.signingIdentity` (Developer ID Application),
-and provide notarization credentials to `tauri build` via env:
+`bundle.macOS.hardenedRuntime` is enabled (required for notarization). Add the signing
+identity in `bundle.macOS.signingIdentity` (Developer ID Application), and provide
+notarization credentials to `tauri build` via env:
 
 ```
 APPLE_CERTIFICATE            # base64 .p12
@@ -79,10 +82,35 @@ signs bundled `externalBin` as part of the app signing pass.
 
 ## Auto-update (optional, not yet enabled)
 
-Add `@tauri-apps/plugin-updater` + `tauri-plugin-updater`, a keypair
-(`tauri signer generate`), the public key + update endpoints in `tauri.conf.json`
-(`plugins.updater`), and publish `latest.json` + signed artifacts. Deferred until a
-release channel exists.
+**Deliberately not wired into `tauri.conf.json` yet** — the updater plugin *requires* a
+real public key at build time, and a bad/placeholder key fails `tauri build`. Enabling it
+is a config-only change once a keypair and release channel exist:
+
+1. `bun add @tauri-apps/plugin-updater` + `tauri-plugin-updater` (Cargo).
+2. `tauri signer generate` → private key (CI secret `TAURI_SIGNING_PRIVATE_KEY`) + public key.
+3. Add to `tauri.conf.json`:
+   ```json
+   "plugins": { "updater": { "pubkey": "<public key>", "endpoints": ["https://.../latest.json"] } }
+   ```
+   and grant `updater:default` in `capabilities/default.json`.
+4. The release workflow signs artifacts with the private key and publishes `latest.json`.
+
+Update signing (this key) is separate from install signing (Authenticode / Developer ID).
+
+## Security hardening (Phase 3)
+
+- **CSP** — `app.security.csp` is an explicit allowlist (was `null`). `default-src 'self'`;
+  `img-src` adds `data:`/`asset:`/`blob:` for base64 attachments and Tauri asset URLs;
+  `style-src` keeps `'unsafe-inline'` (Vite injects a `<style>` tag and the diff virtualizer
+  uses inline `style={{height}}`); `connect-src` allows `ipc:` for the bridge. `object-src`
+  and `frame-src` are `'none'`. If a future feature loads a remote resource, widen the
+  matching directive rather than reverting to `null`.
+- **Capabilities** — `capabilities/default.json` is least-privilege; its `description`
+  documents why each permission is needed. No fs/shell/http is granted to the WebView.
+- **Process-tree reaping** — `stop_engine` (and workspace-switch replace) terminate the
+  engine's whole descendant tree, not just the direct child: Unix spawns the engine in its
+  own process group (`process_group(0)`) and kills the negative pgid (SIGTERM → SIGKILL);
+  Windows uses `taskkill /T /F`. Prevents LSP/bash grandchildren leaking on every switch.
 
 ## CI
 

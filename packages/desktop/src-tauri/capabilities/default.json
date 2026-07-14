@@ -1,6 +1,14 @@
 {
   "identifier": "default",
-  "description": "Core capability for the main window: invoke bridge commands and receive engine events.",
+  "description": "Main-window capability, least-privilege. core:default = IPC to the 3 bridge commands (start/send/stop) + event listen for rpc:// frames. dialog:default = the workspace folder picker (pickWorkspaceFolder). The three opener grants are each used: allow-open-url (OAuth/external links via openExternalUrl), allow-open-path + allow-reveal-item-in-dir (reveal workspace/session in the OS file manager, AppShell). updater:default = check/download signed updates; process:allow-restart = relaunch after an update installs. No fs/shell/http capability is granted — all filesystem and process work happens in the engine sidecar, never the WebView.",
   "windows": ["main"],
-  "permissions": ["core:default", "dialog:default", "opener:allow-open-url", "opener:allow-open-path", "opener:allow-reveal-item-in-dir"]
+  "permissions": [
+    "core:default",
+    "dialog:default",
+    "opener:allow-open-url",
+    "opener:allow-open-path",
+    "opener:allow-reveal-item-in-dir",
+    "updater:default",
+    "process:allow-restart"
+  ]
 }

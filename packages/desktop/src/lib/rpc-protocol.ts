@@ -49,7 +49,18 @@ export type RpcCommand =
 	| { id?: string; type: "login"; providerId: string }
 	| { id?: string; type: "set_api_key"; providerId: string; apiKey: string }
 	| { id?: string; type: "logout"; providerId: string }
-	| { id?: string; type: "set_plan_mode"; enabled: boolean; workflow?: "parallel" | "iterative" };
+	| { id?: string; type: "set_plan_mode"; enabled: boolean; workflow?: "parallel" | "iterative" }
+	| { id?: string; type: "stage_hunks"; selections: HunkSelection[] }
+	| { id?: string; type: "unstage"; files?: string[] };
+
+/**
+ * Hunk selection for `stage_hunks` (mirrors engine `RpcHunkSelection`). `all`
+ * stages the whole file; `indices` stages hunks by 0-based diff position.
+ */
+export interface HunkSelection {
+	path: string;
+	hunks: { type: "all" } | { type: "indices"; indices: number[] };
+}
 
 /**
  * Session thinking levels accepted by `set_thinking_level`

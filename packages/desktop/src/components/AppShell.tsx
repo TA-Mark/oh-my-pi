@@ -42,6 +42,7 @@ import type {
 	ApprovalMode,
 	ExtensionUIRequest,
 	ExtensionUIResponse,
+	HunkSelection,
 	ImageContent,
 	LoginProvider,
 	ModelInfo,
@@ -89,6 +90,11 @@ interface AppShellProps {
 	onTogglePlanMode: (enabled: boolean) => void;
 	changes: WorkspaceFileChange[];
 	onRefreshChanges: () => void;
+	onStageHunks: (selections: HunkSelection[]) => void;
+	onUnstage: (files?: string[]) => void;
+	updateVersion: string | null;
+	updateInstalling: boolean;
+	onInstallUpdate: () => void;
 	historyLoading: boolean;
 	dialog: ExtensionUIRequest | null;
 	toasts: Toast[];
@@ -500,6 +506,11 @@ export function AppShell(props: AppShellProps) {
 		onTogglePlanMode,
 		changes,
 		onRefreshChanges,
+		onStageHunks,
+		onUnstage,
+		updateVersion,
+		updateInstalling,
+		onInstallUpdate,
 		historyLoading,
 		dialog,
 		toasts,
@@ -1225,6 +1236,15 @@ export function AppShell(props: AppShellProps) {
 
 				{statusDetail && status === "error" ? <div className="error-banner">{statusDetail}</div> : null}
 
+				{updateVersion ? (
+					<div className="update-banner">
+						<span>Update available: v{updateVersion}</span>
+						<button type="button" onClick={onInstallUpdate} disabled={updateInstalling}>
+							{updateInstalling ? "Installing…" : "Install & restart"}
+						</button>
+					</div>
+				) : null}
+
 				<main className="app-main">
 					<div className="app-center">
 						<div className={`app-content${isEmptySession ? " app-content--home" : ""}`}>
@@ -1291,6 +1311,8 @@ export function AppShell(props: AppShellProps) {
 							changes={changes}
 							disabled={disabled}
 							onRefreshChanges={onRefreshChanges}
+							onStageHunks={onStageHunks}
+							onUnstage={onUnstage}
 							onSelectView={setToolsView}
 							onClose={() => setToolsOpen(false)}
 						/>

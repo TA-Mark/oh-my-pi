@@ -1,7 +1,7 @@
 import { Folder, Globe, MessageCircle, PanelRightClose, Plus, SquarePen, Terminal } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { ComponentType, PointerEvent as ReactPointerEvent } from "react";
-import type { WorkspaceFileChange } from "../lib/rpc-protocol";
+import type { HunkSelection, WorkspaceFileChange } from "../lib/rpc-protocol";
 import { ChangesPanel } from "./ChangesPanel";
 
 export type WorkspaceToolView = "menu" | "review" | "terminal" | "browser" | "files" | "side-chat";
@@ -12,6 +12,8 @@ interface WorkspaceToolsPanelProps {
 	disabled: boolean;
 	onClose: () => void;
 	onRefreshChanges: () => void;
+	onStageHunks: (selections: HunkSelection[]) => void;
+	onUnstage: (files?: string[]) => void;
 	onSelectView: (view: WorkspaceToolView) => void;
 }
 
@@ -94,6 +96,8 @@ export function WorkspaceToolsPanel({
 	disabled,
 	onClose,
 	onRefreshChanges,
+	onStageHunks,
+	onUnstage,
 	onSelectView,
 }: WorkspaceToolsPanelProps) {
 	const isReview = view === "review";
@@ -161,7 +165,13 @@ export function WorkspaceToolsPanel({
 			<div className="tools-panel-body">
 				{view === "menu" ? <FeatureMenu onSelectView={onSelectView} /> : null}
 				{view === "review" ? (
-					<ChangesPanel changes={changes} onRefresh={onRefreshChanges} disabled={disabled} />
+					<ChangesPanel
+						changes={changes}
+						onRefresh={onRefreshChanges}
+						onStageHunks={onStageHunks}
+						onUnstage={onUnstage}
+						disabled={disabled}
+					/>
 				) : null}
 				{view === "terminal" ? <PlaceholderView title="Terminal" /> : null}
 				{view === "browser" ? <PlaceholderView title="Browser" /> : null}

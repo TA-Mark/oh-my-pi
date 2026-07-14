@@ -114,6 +114,33 @@
 	font-size: 13px;
 }
 
+.update-banner {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 12px;
+	padding: 8px 18px;
+	border-bottom: 1px solid var(--color-accent-soft);
+	background: var(--color-accent-soft);
+	color: var(--color-accent);
+	font-size: 13px;
+}
+
+.update-banner button {
+	padding: 4px 12px;
+	border: 1px solid var(--color-accent);
+	border-radius: var(--radius-md);
+	background: transparent;
+	color: var(--color-accent);
+	font-size: 12px;
+	cursor: pointer;
+}
+
+.update-banner button:disabled {
+	opacity: 0.6;
+	cursor: default;
+}
+
 .plan-mode-banner {
 	display: flex;
 	align-items: center;
