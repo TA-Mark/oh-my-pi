@@ -1336,6 +1336,7 @@ export function AppShell(props: AppShellProps) {
 							onStageHunks={onStageHunks}
 							onUnstage={onUnstage}
 							ptyController={ptyController}
+							workspace={workspace}
 							onSelectView={setToolsView}
 							onClose={() => setToolsOpen(false)}
 						/>

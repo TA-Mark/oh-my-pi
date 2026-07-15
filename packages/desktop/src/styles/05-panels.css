@@ -478,6 +478,18 @@
 	cursor: pointer;
 }
 
+.terminal-tab-rename {
+	min-width: 0;
+	max-width: 120px;
+	padding: 4px 4px 4px 9px;
+	border: 1px solid var(--border-soft);
+	border-radius: 5px;
+	background: var(--color-bg-primary);
+	color: var(--text);
+	font: inherit;
+	outline: none;
+}
+
 .terminal-tab-close {
 	flex: 0 0 auto;
 	width: 20px;

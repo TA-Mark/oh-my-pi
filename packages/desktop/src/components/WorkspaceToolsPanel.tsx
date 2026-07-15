@@ -19,6 +19,8 @@ interface WorkspaceToolsPanelProps {
 	onUnstage: (files?: string[]) => void;
 	onSelectView: (view: WorkspaceToolView) => void;
 	ptyController: PtyController;
+	/** Active project directory; drives terminal re-rooting on project switch. */
+	workspace: string;
 }
 
 interface ToolItem {
@@ -90,6 +92,24 @@ let ptyCounter = 0;
 // escape, not a raw control byte, so noControlCharactersInRegex is satisfied).
 const CPR_REPLY = /\x1b\[[0-9]+;[0-9]+R/g;
 
+/** Copy the terminal's current selection to the clipboard (no-op if empty). */
+function copySelection(term: Xterm): void {
+	const selection = term.getSelection();
+	if (selection.length === 0) return;
+	void navigator.clipboard?.writeText(selection).catch(() => {});
+}
+
+/** Paste clipboard text into the PTY as if typed. Silently ignores denials. */
+function pasteInto(ptyId: string, ptyController: PtyController, started: boolean): void {
+	if (!started) return;
+	void navigator.clipboard
+		?.readText()
+		.then(text => {
+			if (text.length > 0) ptyController.input(ptyId, text);
+		})
+		.catch(() => {});
+}
+
 /** Mint a process-unique id so multiple terminal sessions never collide. */
 function nextPtyId(): string {
 	ptyCounter += 1;
@@ -106,7 +126,10 @@ function nextPtyId(): string {
 interface TerminalSession {
 	id: string;
 	ptyId: string;
-	title: string;
+	/** Auto-assigned label ("PS 1"); shown unless the user renamed the tab. */
+	autoTitle: string;
+	/** User-chosen label, or null to fall back to {@link autoTitle}. */
+	userTitle: string | null;
 	term: Xterm;
 	fit: FitAddon;
 	container: HTMLDivElement;
@@ -116,13 +139,18 @@ interface TerminalSession {
 	dispose: () => void;
 }
 
+/** The label a tab shows: user-chosen name if set, else the auto one. */
+function tabTitle(session: TerminalSession): string {
+	return session.userTitle ?? session.autoTitle;
+}
+
 /** Snapshot of the tab strip the view renders from. */
 interface TerminalTabsState {
 	tabs: Array<{ id: string; title: string; exited: boolean }>;
 	activeId: string | null;
 }
 
-function buildTerminalSession(ptyController: PtyController, title: string, onChange: () => void): TerminalSession {
+function buildTerminalSession(ptyController: PtyController, autoTitle: string, onChange: () => void): TerminalSession {
 	const container = document.createElement("div");
 	container.className = "terminal-xterm";
 
@@ -144,7 +172,8 @@ function buildTerminalSession(ptyController: PtyController, title: string, onCha
 	const session: TerminalSession = {
 		id: ptyId,
 		ptyId,
-		title,
+		autoTitle,
+		userTitle: null,
 		term,
 		fit,
 		container,
@@ -153,6 +182,37 @@ function buildTerminalSession(ptyController: PtyController, title: string, onCha
 		attach: () => {},
 		dispose: () => {},
 	};
+
+	// Terminal shortcuts (Linux-style, so Ctrl+C stays SIGINT and Ctrl+V stays a
+	// literal byte). Returning false tells xterm to swallow the key instead of
+	// forwarding it to the PTY. Tab management keys act on the live manager.
+	term.attachCustomKeyEventHandler((event): boolean => {
+		if (event.type !== "keydown" || !event.ctrlKey || !event.shiftKey) return true;
+		switch (event.code) {
+			case "KeyC":
+				copySelection(term);
+				return false;
+			case "KeyV":
+				pasteInto(ptyId, ptyController, session.started);
+				return false;
+			case "KeyT":
+				terminalManager.open(ptyController);
+				return false;
+			case "KeyW":
+				terminalManager.close(session.id);
+				return false;
+			default:
+				return true;
+		}
+	});
+
+	// Right-click: copy when there's a selection, otherwise paste — the familiar
+	// Windows Terminal / conhost behaviour.
+	container.addEventListener("contextmenu", event => {
+		event.preventDefault();
+		if (term.hasSelection()) copySelection(term);
+		else pasteInto(ptyId, ptyController, session.started);
+	});
 
 	const unsubscribe = ptyController.subscribe(ptyId, {
 		onData: chunk => term.write(chunk),
@@ -233,6 +293,7 @@ class TerminalManager {
 	#activeId: string | null = null;
 	#seq = 0;
 	#listeners = new Set<() => void>();
+	#workspace: string | null = null;
 
 	subscribe(listener: () => void): () => void {
 		this.#listeners.add(listener);
@@ -245,7 +306,7 @@ class TerminalManager {
 
 	getState(): TerminalTabsState {
 		return {
-			tabs: this.#sessions.map(s => ({ id: s.id, title: s.title, exited: s.exitReason !== null })),
+			tabs: this.#sessions.map(s => ({ id: s.id, title: tabTitle(s), exited: s.exitReason !== null })),
 			activeId: this.#activeId,
 		};
 	}
@@ -287,16 +348,48 @@ class TerminalManager {
 		this.#emit();
 	}
 
-	/** Restart a tab in place: drop the dead PTY, spawn a fresh one under a new tab. */
+	/**
+	 * Restart a tab in place: drop the dead PTY, spawn a fresh one. The tab keeps
+	 * its position and label (auto or user-renamed) so a restart is invisible in
+	 * the strip beyond the terminal clearing.
+	 */
 	restart(ptyController: PtyController, id: string): void {
 		const index = this.#sessions.findIndex(s => s.id === id);
 		if (index === -1) return;
-		this.#sessions[index].dispose();
-		this.#seq += 1;
-		const session = buildTerminalSession(ptyController, `PS ${this.#seq}`, () => this.#emit());
+		const old = this.#sessions[index];
+		old.dispose();
+		const session = buildTerminalSession(ptyController, old.autoTitle, () => this.#emit());
+		session.userTitle = old.userTitle;
 		this.#sessions.splice(index, 1, session);
 		this.#activeId = session.id;
 		this.#emit();
+	}
+
+	/** Rename a tab. A blank name clears the override back to the auto label. */
+	rename(id: string, title: string): void {
+		const session = this.#sessions.find(s => s.id === id);
+		if (!session) return;
+		const trimmed = title.trim();
+		session.userTitle = trimmed.length > 0 ? trimmed : null;
+		this.#emit();
+	}
+
+	/**
+	 * Re-root terminals when the app switches project. The engine already killed
+	 * its PTYs on `set_workspace`, so the tabs here point at dead sessions; tear
+	 * them all down and open one fresh tab in the new project's cwd. A no-op when
+	 * the workspace is unchanged (e.g. merely toggling the panel).
+	 */
+	setWorkspace(ptyController: PtyController, cwd: string): void {
+		if (this.#workspace === cwd) return;
+		const firstOpen = this.#workspace === null;
+		this.#workspace = cwd;
+		if (firstOpen) return;
+		for (const session of this.#sessions) session.dispose();
+		this.#sessions = [];
+		this.#activeId = null;
+		this.#seq = 0;
+		this.open(ptyController);
 	}
 }
 
@@ -309,18 +402,30 @@ const terminalManager = new TerminalManager();
  * work with line editing, colors, and job control. Tabs live in a module-level
  * {@link TerminalManager}, so they persist across panel toggles.
  */
-function TerminalView({ ptyController, disabled }: { ptyController: PtyController; disabled: boolean }) {
+function TerminalView({
+	ptyController,
+	disabled,
+	workspace,
+}: {
+	ptyController: PtyController;
+	disabled: boolean;
+	workspace: string;
+}) {
 	const hostRef = useRef<HTMLDivElement>(null);
 	const [state, setState] = useState<TerminalTabsState>(() => terminalManager.getState());
+	// The tab currently being renamed, plus the draft text in its input.
+	const [editing, setEditing] = useState<{ id: string; draft: string } | null>(null);
 
 	// Keep the tab strip in sync with the manager.
 	useEffect(() => terminalManager.subscribe(() => setState(terminalManager.getState())), []);
 
-	// Ensure a tab exists whenever the panel opens with a ready engine.
+	// Re-root terminals on project switch (kills stale tabs, opens one in the new
+	// cwd), then make sure at least one tab exists.
 	useEffect(() => {
 		if (disabled) return;
+		terminalManager.setWorkspace(ptyController, workspace);
 		terminalManager.ensure(ptyController);
-	}, [ptyController, disabled]);
+	}, [ptyController, disabled, workspace]);
 
 	// Attach the active tab's terminal into the host; refit on resize.
 	useEffect(() => {
@@ -361,6 +466,11 @@ function TerminalView({ ptyController, disabled }: { ptyController: PtyControlle
 
 	const activeExited = state.tabs.find(t => t.id === state.activeId)?.exited ?? false;
 
+	const commitRename = (): void => {
+		if (editing) terminalManager.rename(editing.id, editing.draft);
+		setEditing(null);
+	};
+
 	return (
 		<div className="terminal-view">
 			<div className="terminal-tabs">
@@ -372,14 +482,30 @@ function TerminalView({ ptyController, disabled }: { ptyController: PtyControlle
 								tab.exited ? " terminal-tab--exited" : ""
 							}`}
 						>
-							<button
-								type="button"
-								className="terminal-tab-label"
-								onClick={() => terminalManager.activate(tab.id)}
-								title={tab.title}
-							>
-								{tab.title}
-							</button>
+							{editing?.id === tab.id ? (
+								<input
+									type="text"
+									className="terminal-tab-rename"
+									autoFocus
+									value={editing.draft}
+									onChange={event => setEditing({ id: tab.id, draft: event.target.value })}
+									onBlur={commitRename}
+									onKeyDown={event => {
+										if (event.key === "Enter") commitRename();
+										else if (event.key === "Escape") setEditing(null);
+									}}
+								/>
+							) : (
+								<button
+									type="button"
+									className="terminal-tab-label"
+									onClick={() => terminalManager.activate(tab.id)}
+									onDoubleClick={() => setEditing({ id: tab.id, draft: tab.title })}
+									title={`${tab.title} (double-click to rename)`}
+								>
+									{tab.title}
+								</button>
+							)}
 							<button
 								type="button"
 								className="terminal-tab-close"
@@ -448,6 +574,7 @@ export function WorkspaceToolsPanel({
 	onUnstage,
 	onSelectView,
 	ptyController,
+	workspace,
 }: WorkspaceToolsPanelProps) {
 	const isReview = view === "review";
 	// Both the review and terminal panels can be dragged wider; the rest use their
@@ -536,7 +663,9 @@ export function WorkspaceToolsPanel({
 						disabled={disabled}
 					/>
 				) : null}
-				{view === "terminal" ? <TerminalView ptyController={ptyController} disabled={disabled} /> : null}
+				{view === "terminal" ? (
+					<TerminalView ptyController={ptyController} disabled={disabled} workspace={workspace} />
+				) : null}
 				{view === "browser" ? <PlaceholderView title="Browser" /> : null}
 				{view === "files" ? <PlaceholderView title="Files" /> : null}
 				{view === "side-chat" ? <PlaceholderView title="Side chat" /> : null}
