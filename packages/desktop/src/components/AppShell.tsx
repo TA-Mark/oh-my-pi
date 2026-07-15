@@ -1172,28 +1172,27 @@ export function AppShell(props: AppShellProps) {
 
 			<section className={`app-workspace${isEmptySession ? " app-workspace--empty" : ""}`}>
 				{isEmptySession ? (
-					<div className="empty-window-controls">
-						<button
-							type="button"
-							className="top-icon-button"
-							title="Toggle bottom panel"
-							aria-label="Toggle bottom panel"
-						>
-							<PanelBottom size={16} strokeWidth={1.8} />
-						</button>
-						<button
-							type="button"
-							className={`top-icon-button${toolsOpen ? " top-icon-button--active" : ""}`}
-							title="Toggle side panel"
-							aria-label="Toggle side panel"
-							onClick={() => {
-								if (toolsOpen) setToolsOpen(false);
-								else openTools("menu");
-							}}
-						>
-							<PanelRight size={16} strokeWidth={1.8} />
-						</button>
-					</div>
+					toolsOpen ? null : (
+						<div className="empty-window-controls">
+							<button
+								type="button"
+								className="top-icon-button"
+								title="Toggle bottom panel"
+								aria-label="Toggle bottom panel"
+							>
+								<PanelBottom size={16} strokeWidth={1.8} />
+							</button>
+							<button
+								type="button"
+								className="top-icon-button"
+								title="Open side panel"
+								aria-label="Open side panel"
+								onClick={() => openTools("menu")}
+							>
+								<PanelRight size={16} strokeWidth={1.8} />
+							</button>
+						</div>
+					)
 				) : (
 					<header className="app-header">
 						<div className="app-heading">
@@ -1224,18 +1223,17 @@ export function AppShell(props: AppShellProps) {
 								>
 									<PanelBottom size={16} strokeWidth={1.8} />
 								</button>
-								<button
-									type="button"
-									className={`top-icon-button${toolsOpen ? " top-icon-button--active" : ""}`}
-									title="Toggle side panel"
-									aria-label="Toggle side panel"
-									onClick={() => {
-										if (toolsOpen) setToolsOpen(false);
-										else openTools("menu");
-									}}
-								>
-									<PanelRight size={16} strokeWidth={1.8} />
-								</button>
+								{toolsOpen ? null : (
+									<button
+										type="button"
+										className="top-icon-button"
+										title="Open side panel"
+										aria-label="Open side panel"
+										onClick={() => openTools("menu")}
+									>
+										<PanelRight size={16} strokeWidth={1.8} />
+									</button>
+								)}
 							</div>
 						</div>
 					</header>
