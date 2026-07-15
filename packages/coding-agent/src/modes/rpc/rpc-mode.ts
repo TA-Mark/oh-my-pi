@@ -45,6 +45,7 @@ import * as git from "../../utils/git";
 import { initializeExtensions } from "../runtime-init";
 import { isRpcHostToolResult, isRpcHostToolUpdate, RpcHostToolBridge } from "./host-tools";
 import { isRpcHostUriResult, RpcHostUriBridge } from "./host-uris";
+import { RpcPtyRegistry } from "./rpc-pty";
 import { RpcSubagentRegistry, readRpcSubagentTranscript } from "./rpc-subagents";
 import type {
 	RpcCommand,
@@ -84,6 +85,11 @@ type RpcOutput = (
 		| RpcHostUriCancelRequest
 		| object,
 ) => void;
+
+/** POSIX single-quote escaping for embedding a path in a shell command line. */
+function shellQuote(value: string): string {
+	return `'${value.replace(/'/g, "'\\''")}'`;
+}
 
 export type RpcSessionChangeCommand = Extract<
 	RpcCommand,
@@ -699,6 +705,7 @@ export async function runRpcMode(
 	const pendingExtensionRequests = new Map<string, PendingExtensionRequest>();
 	const hostToolBridge = new RpcHostToolBridge(output);
 	const hostUriBridge = new RpcHostUriBridge(output);
+	const ptyRegistry = new RpcPtyRegistry(output);
 	const subagentRegistry = eventBus ? new RpcSubagentRegistry(eventBus, output) : undefined;
 
 	// Shutdown request flag (wrapped in object to allow mutation with const)
@@ -1216,6 +1223,9 @@ export async function runRpcMode(
 				// in its own project.
 				await session.newSession();
 				await session.sessionManager.moveTo(newCwd);
+				// PTY sessions are rooted in the old project's cwd; kill them so the
+				// new workspace starts with no stale terminals pointing elsewhere.
+				ptyRegistry.killAll();
 				subagentRegistry?.clear();
 				setProjectDir(newCwd);
 				await session.settings.reloadForCwd(newCwd);
@@ -1431,6 +1441,51 @@ export async function runRpcMode(
 			case "abort_bash": {
 				session.abortBash();
 				return success(id, "abort_bash");
+			}
+
+			// =================================================================
+			// Interactive PTY (desktop terminal)
+			// =================================================================
+
+			case "pty_start": {
+				const shellConfig = session.settings.getShellConfig();
+				// The native PTY always runs `<shell> -c "<command>"`, so we hand it
+				// the resolved shell and let `command` `exec` the real interactive
+				// shell in the same ConPTY (replacing the wrapper, so no stray parent).
+				//
+				// Windows: `exec powershell.exe` — a native Windows PowerShell REPL
+				// (its profile loads a real PATH so tools like codex resolve). We keep
+				// the git-bash wrapper only to launch it; PowerShell has no `-l -i`.
+				// Elsewhere: an interactive login shell — login (`-l`) loads the user's
+				// profile so PATH matches a real terminal, interactive (`-i`) starts a
+				// REPL reading from the TTY.
+				const startCommand =
+					process.platform === "win32"
+						? "exec powershell.exe -NoLogo"
+						: `exec ${shellQuote(shellConfig.shell)} -l -i`;
+				ptyRegistry.start(command.ptyId, {
+					command: startCommand,
+					cwd: command.cwd ?? session.sessionManager.getCwd(),
+					cols: command.cols,
+					rows: command.rows,
+					shell: shellConfig.shell,
+				});
+				return success(id, "pty_start");
+			}
+
+			case "pty_input": {
+				ptyRegistry.write(command.ptyId, command.data);
+				return success(id, "pty_input");
+			}
+
+			case "pty_resize": {
+				ptyRegistry.resize(command.ptyId, command.cols, command.rows);
+				return success(id, "pty_resize");
+			}
+
+			case "pty_kill": {
+				ptyRegistry.kill(command.ptyId);
+				return success(id, "pty_kill");
 			}
 
 			// =================================================================
@@ -1730,6 +1785,7 @@ export async function runRpcMode(
 	// stdin closed — RPC client is gone, exit cleanly
 	hostToolBridge.rejectAllPending("RPC client disconnected before host tool execution completed");
 	hostUriBridge.clear("RPC client disconnected before host URI request completed");
+	ptyRegistry.killAll();
 	subagentRegistry?.dispose();
 	process.exit(0);
 }

@@ -47,6 +47,7 @@ import type {
 	LoginProvider,
 	ModelInfo,
 	PlanModeState,
+	PtyController,
 	SessionSummary,
 	SubagentSnapshot,
 	ThinkingLevel,
@@ -92,6 +93,7 @@ interface AppShellProps {
 	onRefreshChanges: () => void;
 	onStageHunks: (selections: HunkSelection[]) => void;
 	onUnstage: (files?: string[]) => void;
+	ptyController: PtyController;
 	updateVersion: string | null;
 	updateInstalling: boolean;
 	onInstallUpdate: () => void;
@@ -512,6 +514,7 @@ export function AppShell(props: AppShellProps) {
 		onRefreshChanges,
 		onStageHunks,
 		onUnstage,
+		ptyController,
 		updateVersion,
 		updateInstalling,
 		onInstallUpdate,
@@ -1332,6 +1335,7 @@ export function AppShell(props: AppShellProps) {
 							onRefreshChanges={onRefreshChanges}
 							onStageHunks={onStageHunks}
 							onUnstage={onUnstage}
+							ptyController={ptyController}
 							onSelectView={setToolsView}
 							onClose={() => setToolsOpen(false)}
 						/>

@@ -1,5 +1,5 @@
 import type { Update as UpdateHandle } from "@tauri-apps/plugin-updater";
-import { useCallback, useEffect, useReducer, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { AppShell, type SessionInfo } from "./components/AppShell";
 import type { AuthPrompt } from "./components/AuthDialog";
 import type { ComposerInjection } from "./components/Composer";
@@ -26,6 +26,8 @@ import type {
 	LoginProvider,
 	ModelInfo,
 	PlanModeState,
+	PtyController,
+	PtySubscriber,
 	SessionMessage,
 	SessionSummary,
 	SubagentSnapshot,
@@ -130,6 +132,10 @@ export function App() {
 	const planModeRef = useRef<PlanModeState | undefined>(undefined);
 	planModeRef.current = planMode;
 	const clientRef = useRef<DesktopRpcClient | null>(null);
+	// Live interactive-terminal subscribers, keyed by ptyId. The engine pushes
+	// pty_data/pty_exit frames with no request id, so the client's onPtyData/
+	// onPtyExit handlers route them here to the owning TerminalView.
+	const ptySubscribersRef = useRef<Map<string, PtySubscriber>>(new Map());
 	const injectNonce = useRef(0);
 	const loginProviderRef = useRef<string | undefined>(undefined);
 	// Latest workspace the engine should boot against. Set imperatively before the
@@ -328,6 +334,8 @@ export function App() {
 			onStderr: line => dispatch({ kind: "stderr", line }),
 			onSubagentUpdate: () => void refreshSubagents(),
 			onExtensionUI: request => handleExtensionUI(request),
+			onPtyData: frame => ptySubscribersRef.current.get(frame.ptyId)?.onData(frame.chunk),
+			onPtyExit: frame => ptySubscribersRef.current.get(frame.ptyId)?.onExit(frame),
 		});
 		clientRef.current = client;
 
@@ -430,6 +438,35 @@ export function App() {
 			}
 		},
 		[refreshWorkspaceDiff, reportError],
+	);
+
+	// Facade the interactive TerminalView drives. Stable identity (empty deps):
+	// it reads the live client/registry through refs, so it never needs to change
+	// as the engine restarts across workspace switches.
+	const ptyController = useMemo<PtyController>(
+		() => ({
+			subscribe: (ptyId, subscriber) => {
+				ptySubscribersRef.current.set(ptyId, subscriber);
+				return () => {
+					ptySubscribersRef.current.delete(ptyId);
+				};
+			},
+			start: (ptyId, cols, rows) => {
+				const client = clientRef.current;
+				if (!client) return Promise.reject(new Error("engine not ready"));
+				return client.ptyStart(ptyId, cols, rows);
+			},
+			input: (ptyId, data) => {
+				clientRef.current?.ptyInput(ptyId, data).catch(() => {});
+			},
+			resize: (ptyId, cols, rows) => {
+				clientRef.current?.ptyResize(ptyId, cols, rows).catch(() => {});
+			},
+			kill: ptyId => {
+				clientRef.current?.ptyKill(ptyId).catch(() => {});
+			},
+		}),
+		[],
 	);
 
 	const openFolder = useCallback(async () => {
@@ -740,6 +777,7 @@ export function App() {
 			onRefreshChanges={refreshWorkspaceDiff}
 			onStageHunks={onStageHunks}
 			onUnstage={onUnstage}
+			ptyController={ptyController}
 			updateVersion={update?.info.version ?? null}
 			updateInstalling={updateInstalling}
 			onInstallUpdate={onInstallUpdate}

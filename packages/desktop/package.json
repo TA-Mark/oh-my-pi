@@ -24,17 +24,19 @@
     "fmt": "biome format --write ."
   },
   "dependencies": {
-    "react": "catalog:",
-    "react-dom": "catalog:",
-    "marked": "catalog:",
-    "lucide-react": "catalog:",
     "@oh-my-pi/collab-web": "workspace:*",
     "@oh-my-pi/pi-wire": "catalog:",
     "@tauri-apps/api": "^2.9.0",
     "@tauri-apps/plugin-dialog": "^2.4.0",
     "@tauri-apps/plugin-opener": "^2.5.0",
     "@tauri-apps/plugin-process": "^2.3.0",
-    "@tauri-apps/plugin-updater": "^2.9.0"
+    "@tauri-apps/plugin-updater": "^2.9.0",
+    "@xterm/addon-fit": "0.11.0",
+    "@xterm/xterm": "6.0.0",
+    "lucide-react": "catalog:",
+    "marked": "catalog:",
+    "react": "catalog:",
+    "react-dom": "catalog:"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.11.0",

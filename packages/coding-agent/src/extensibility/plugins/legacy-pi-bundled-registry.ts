@@ -673,6 +673,7 @@ import * as bundledPiCodingAgentModesRpcHostTools from "@oh-my-pi/pi-coding-agen
 import * as bundledPiCodingAgentModesRpcHostUris from "@oh-my-pi/pi-coding-agent/modes/rpc/host-uris";
 import * as bundledPiCodingAgentModesRpcRpcClient from "@oh-my-pi/pi-coding-agent/modes/rpc/rpc-client";
 import * as bundledPiCodingAgentModesRpcRpcMode from "@oh-my-pi/pi-coding-agent/modes/rpc/rpc-mode";
+import * as bundledPiCodingAgentModesRpcRpcPty from "@oh-my-pi/pi-coding-agent/modes/rpc/rpc-pty";
 import * as bundledPiCodingAgentModesRpcRpcSubagents from "@oh-my-pi/pi-coding-agent/modes/rpc/rpc-subagents";
 import * as bundledPiCodingAgentModesRpcRpcTypes from "@oh-my-pi/pi-coding-agent/modes/rpc/rpc-types";
 import * as bundledPiCodingAgentModesRunningSubagentBadge from "@oh-my-pi/pi-coding-agent/modes/running-subagent-badge";
@@ -2631,6 +2632,9 @@ export const BUNDLED_PI_REGISTRY: Readonly<Record<string, Readonly<Record<string
 		Record<string, unknown>
 	>,
 	"@oh-my-pi/pi-coding-agent/modes/rpc/rpc-mode": bundledPiCodingAgentModesRpcRpcMode as unknown as Readonly<
+		Record<string, unknown>
+	>,
+	"@oh-my-pi/pi-coding-agent/modes/rpc/rpc-pty": bundledPiCodingAgentModesRpcRpcPty as unknown as Readonly<
 		Record<string, unknown>
 	>,
 	"@oh-my-pi/pi-coding-agent/modes/rpc/rpc-subagents": bundledPiCodingAgentModesRpcRpcSubagents as unknown as Readonly<

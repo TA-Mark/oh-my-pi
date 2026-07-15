@@ -72,6 +72,16 @@ export type RpcCommand =
 	| { id?: string; type: "bash"; command: string }
 	| { id?: string; type: "abort_bash" }
 
+	// Interactive PTY (desktop terminal). Unlike `bash` (a one-shot,
+	// non-interactive command runner), these drive a persistent pseudo-terminal
+	// with a real TTY, so REPLs/TUIs (claude, python, vim, …) work. Output and
+	// exit are pushed asynchronously as `pty_data`/`pty_exit` frames keyed by the
+	// client-supplied `ptyId`; the command responses are bare acks.
+	| { id?: string; type: "pty_start"; ptyId: string; cwd?: string; cols: number; rows: number }
+	| { id?: string; type: "pty_input"; ptyId: string; data: string }
+	| { id?: string; type: "pty_resize"; ptyId: string; cols: number; rows: number }
+	| { id?: string; type: "pty_kill"; ptyId: string }
+
 	// Session
 	| { id?: string; type: "get_session_stats" }
 	| { id?: string; type: "get_workspace_diff" }
@@ -205,6 +215,25 @@ export interface RpcPromptResultFrame {
 	agentInvoked: boolean;
 }
 
+/** Unsolicited PTY output chunk, keyed by the `ptyId` from `pty_start`. Raw
+ *  terminal bytes (ANSI escapes intact) for the client to feed to xterm. */
+export interface RpcPtyDataFrame {
+	type: "pty_data";
+	ptyId: string;
+	chunk: string;
+}
+
+/** Terminal session ended (process exit, kill, timeout, or spawn error). */
+export interface RpcPtyExitFrame {
+	type: "pty_exit";
+	ptyId: string;
+	exitCode?: number;
+	cancelled: boolean;
+	timedOut: boolean;
+	/** Set when the session failed to start rather than exiting normally. */
+	error?: string;
+}
+
 export interface RpcHandoffResult {
 	savedPath?: string;
 }
@@ -334,6 +363,12 @@ export type RpcResponse =
 	// Bash
 	| { id?: string; type: "response"; command: "bash"; success: true; data: BashResult }
 	| { id?: string; type: "response"; command: "abort_bash"; success: true }
+
+	// Interactive PTY — bare acks; output/exit arrive as pty_data/pty_exit frames.
+	| { id?: string; type: "response"; command: "pty_start"; success: true }
+	| { id?: string; type: "response"; command: "pty_input"; success: true }
+	| { id?: string; type: "response"; command: "pty_resize"; success: true }
+	| { id?: string; type: "response"; command: "pty_kill"; success: true }
 
 	// Session
 	| { id?: string; type: "response"; command: "get_session_stats"; success: true; data: SessionStats }

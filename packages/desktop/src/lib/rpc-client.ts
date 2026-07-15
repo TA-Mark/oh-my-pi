@@ -8,6 +8,7 @@
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import {
 	type ApprovalMode,
+	type BashResult,
 	type EngineEvent,
 	type ExtensionUIRequest,
 	type ExtensionUIResponse,
@@ -15,6 +16,9 @@ import {
 	type ImageContent,
 	type LoginProvider,
 	type ModelInfo,
+	PTY_FRAME_TYPES,
+	type PtyDataFrame,
+	type PtyExitFrame,
 	type RpcCommand,
 	type RpcResponse,
 	SESSION_EVENT_TYPES,
@@ -30,6 +34,7 @@ import { onEngineExit, onRpcFrame, onRpcStderr, sendRpcLine, startEngine, stopEn
 
 const sessionEventTypes = new Set<string>(SESSION_EVENT_TYPES);
 const subagentFrameTypes = new Set<string>(SUBAGENT_FRAME_TYPES);
+const ptyFrameTypes = new Set<string>(PTY_FRAME_TYPES);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null;
@@ -37,6 +42,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 const READY_TIMEOUT_MS = 30_000;
 const REQUEST_TIMEOUT_MS = 30_000;
+/**
+ * Terminal commands can run far longer than a normal RPC round-trip, so they get
+ * their own ceiling instead of the 30s default. The engine already clamps bash
+ * to its own `clampTimeout("bash")`; this only guards the client-side pending map.
+ */
+const BASH_TIMEOUT_MS = 10 * 60_000;
 
 export type EngineStatus = "idle" | "starting" | "ready" | "error" | "stopped";
 
@@ -48,6 +59,10 @@ export interface DesktopRpcClientHandlers {
 	onSubagentUpdate?: () => void;
 	/** Fired for every extension UI request (dialogs, notify, open_url, …). */
 	onExtensionUI?: (request: ExtensionUIRequest) => void;
+	/** Fired for a PTY output chunk (raw terminal bytes) keyed by `ptyId`. */
+	onPtyData?: (frame: PtyDataFrame) => void;
+	/** Fired once when a PTY session ends (exit, kill, timeout, or spawn error). */
+	onPtyExit?: (frame: PtyExitFrame) => void;
 }
 
 interface PendingRequest {
@@ -258,6 +273,46 @@ export class DesktopRpcClient {
 		await this.#send(files && files.length > 0 ? { type: "unstage", files } : { type: "unstage" });
 	}
 
+	/**
+	 * Run a shell command in the session's persistent shell (same cwd/env as the
+	 * agent's bash tool) and return its captured output. Uses a longer timeout
+	 * than normal commands; call {@link abortBash} to cancel a running command.
+	 */
+	async runBash(command: string): Promise<BashResult> {
+		const response = await this.#send({ type: "bash", command }, BASH_TIMEOUT_MS);
+		return this.#data<BashResult>(response);
+	}
+
+	/** Cancel the bash command currently in flight (no-op if none is running). */
+	async abortBash(): Promise<void> {
+		await this.#send({ type: "abort_bash" });
+	}
+
+	/**
+	 * Start an interactive PTY session (a real terminal with a TTY, unlike the
+	 * one-shot {@link runBash}). Resolves once the engine acks the spawn; output
+	 * and exit stream via the `onPtyData`/`onPtyExit` handlers keyed by `ptyId`.
+	 * The caller owns `ptyId` (must be unique per live session).
+	 */
+	async ptyStart(ptyId: string, cols: number, rows: number, cwd?: string): Promise<void> {
+		await this.#send(cwd ? { type: "pty_start", ptyId, cols, rows, cwd } : { type: "pty_start", ptyId, cols, rows });
+	}
+
+	/** Forward raw input bytes (keystrokes, paste) to a PTY session's stdin. */
+	async ptyInput(ptyId: string, data: string): Promise<void> {
+		await this.#send({ type: "pty_input", ptyId, data });
+	}
+
+	/** Tell the engine the PTY's viewport changed (columns/rows). */
+	async ptyResize(ptyId: string, cols: number, rows: number): Promise<void> {
+		await this.#send({ type: "pty_resize", ptyId, cols, rows });
+	}
+
+	/** Terminate a PTY session; its `onPtyExit` handler still fires afterwards. */
+	async ptyKill(ptyId: string): Promise<void> {
+		await this.#send({ type: "pty_kill", ptyId });
+	}
+
 	// ── Internal ──────────────────────────────────────────────────────────────
 
 	#handleLine(line: string): void {
@@ -293,6 +348,15 @@ export class DesktopRpcClient {
 
 		if (typeof data.type === "string" && subagentFrameTypes.has(data.type)) {
 			this.#handlers.onSubagentUpdate?.();
+			return;
+		}
+
+		if (typeof data.type === "string" && ptyFrameTypes.has(data.type)) {
+			if (data.type === "pty_data") {
+				this.#handlers.onPtyData?.(data as unknown as PtyDataFrame);
+			} else {
+				this.#handlers.onPtyExit?.(data as unknown as PtyExitFrame);
+			}
 			return;
 		}
 

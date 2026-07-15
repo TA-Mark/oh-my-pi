@@ -52,7 +52,16 @@ export type RpcCommand =
 	| { id?: string; type: "logout"; providerId: string }
 	| { id?: string; type: "set_plan_mode"; enabled: boolean; workflow?: "parallel" | "iterative" }
 	| { id?: string; type: "stage_hunks"; selections: HunkSelection[] }
-	| { id?: string; type: "unstage"; files?: string[] };
+	| { id?: string; type: "unstage"; files?: string[] }
+	| { id?: string; type: "bash"; command: string }
+	| { id?: string; type: "abort_bash" }
+	// Interactive PTY (desktop terminal). Drives a persistent pseudo-terminal with
+	// a real TTY so REPLs/TUIs (claude, codex, python, vim, …) work. Output and
+	// exit arrive asynchronously as pty_data/pty_exit frames keyed by `ptyId`.
+	| { id?: string; type: "pty_start"; ptyId: string; cwd?: string; cols: number; rows: number }
+	| { id?: string; type: "pty_input"; ptyId: string; data: string }
+	| { id?: string; type: "pty_resize"; ptyId: string; cols: number; rows: number }
+	| { id?: string; type: "pty_kill"; ptyId: string };
 
 /**
  * Hunk selection for `stage_hunks` (mirrors engine `RpcHunkSelection`). `all`
@@ -120,6 +129,21 @@ export interface WorkspaceFileChange {
 	truncated?: boolean;
 }
 
+/**
+ * Result of a `bash` command (subset of engine `BashResult` in
+ * exec/bash-executor.ts). The desktop Terminal surface reads only these fields.
+ */
+export interface BashResult {
+	output: string;
+	/** Process exit code; undefined when the command was cancelled before exit. */
+	exitCode: number | undefined;
+	cancelled: boolean;
+	/** Output was clipped to fit the transport; totalLines shows the full count. */
+	truncated: boolean;
+	totalLines: number;
+	outputLines: number;
+}
+
 /** Session descriptor from `list_sessions` (mirrors engine `RpcSessionSummary`). */
 export interface SessionSummary {
 	path: string;
@@ -177,6 +201,47 @@ export interface SubagentSnapshot {
 
 /** Frame types the RPC server emits for subagents (after set_subagent_subscription). */
 export const SUBAGENT_FRAME_TYPES = ["subagent_lifecycle", "subagent_progress", "subagent_event"] as const;
+
+/** Unsolicited PTY output chunk (raw terminal bytes, ANSI intact), keyed by `ptyId`. */
+export interface PtyDataFrame {
+	type: "pty_data";
+	ptyId: string;
+	chunk: string;
+}
+
+/** PTY session ended (process exit, kill, timeout, or spawn error). */
+export interface PtyExitFrame {
+	type: "pty_exit";
+	ptyId: string;
+	exitCode?: number;
+	cancelled: boolean;
+	timedOut: boolean;
+	/** Set when the session failed to start rather than exiting normally. */
+	error?: string;
+}
+
+/** Frame types the RPC server pushes for interactive PTY sessions. */
+export const PTY_FRAME_TYPES = ["pty_data", "pty_exit"] as const;
+
+/** Per-session PTY callbacks a terminal view registers with {@link PtyController}. */
+export interface PtySubscriber {
+	onData: (chunk: string) => void;
+	onExit: (frame: PtyExitFrame) => void;
+}
+
+/**
+ * App-level facade the interactive terminal drives. The app owns frame routing
+ * (by `ptyId`) and the live engine client; a terminal view just picks a unique
+ * `ptyId`, subscribes, starts, and forwards keystrokes/resizes.
+ */
+export interface PtyController {
+	/** Register callbacks for a `ptyId`. Returns an unsubscribe function. */
+	subscribe: (ptyId: string, subscriber: PtySubscriber) => () => void;
+	start: (ptyId: string, cols: number, rows: number) => Promise<void>;
+	input: (ptyId: string, data: string) => void;
+	resize: (ptyId: string, cols: number, rows: number) => void;
+	kill: (ptyId: string) => void;
+}
 
 // ── Extension UI (engine -> frontend) ────────────────────────────────────────
 // Mirrors RpcExtensionUIRequest in coding-agent rpc-types.ts. The engine drives

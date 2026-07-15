@@ -691,6 +691,7 @@ export const BUNDLED_PI_REGISTRY_KEYS: ReadonlySet<string> = new Set([
 	"@oh-my-pi/pi-coding-agent/modes/rpc/host-uris",
 	"@oh-my-pi/pi-coding-agent/modes/rpc/rpc-client",
 	"@oh-my-pi/pi-coding-agent/modes/rpc/rpc-mode",
+	"@oh-my-pi/pi-coding-agent/modes/rpc/rpc-pty",
 	"@oh-my-pi/pi-coding-agent/modes/rpc/rpc-subagents",
 	"@oh-my-pi/pi-coding-agent/modes/rpc/rpc-types",
 	"@oh-my-pi/pi-coding-agent/modes/theme/mermaid-cache",
