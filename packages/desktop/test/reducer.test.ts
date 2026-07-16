@@ -11,6 +11,14 @@ function apply(state: ViewModel, ...events: EngineEvent[]): ViewModel {
 }
 
 describe("streaming assistant correlation (0.1)", () => {
+	test("caps rendered transcript memory while retaining the newest messages", () => {
+		let state = initialViewModel;
+		for (let index = 0; index < 2_050; index++) state = appendUserMessage(state, `message-${index}`);
+		expect(state.messages).toHaveLength(2_000);
+		expect(state.messages[0]?.text).toBe("message-50");
+		expect(state.messages.at(-1)?.text).toBe("message-2049");
+	});
+
 	test("single stream: start → update → end targets one message", () => {
 		const s = apply(
 			initialViewModel,
@@ -110,6 +118,82 @@ describe("engine interruption (0.4)", () => {
 		expect(tool?.toolRunning).toBe(false);
 		expect(s.messages.at(-1)?.role).toBe("system");
 		expect(s.messages.at(-1)?.text).toBe("Engine stopped");
+	});
+});
+
+describe("session event parity", () => {
+	test("renders compaction and retry outcomes with their exact result", () => {
+		const state = apply(
+			initialViewModel,
+			{ type: "auto_compaction_start", reason: "overflow", action: "shake" },
+			{ type: "auto_compaction_end", action: "shake", aborted: false, willRetry: true },
+			{ type: "auto_retry_start", attempt: 1, maxAttempts: 3, delayMs: 1_000, errorMessage: "rate limited" },
+			{ type: "auto_retry_end", success: false, attempt: 3, finalError: "quota exhausted" },
+		);
+		expect(state.messages.map(message => message.text)).toEqual([
+			"Auto-shake completed; retrying the turn.",
+			"Retry failed after 3 attempts: quota exhausted",
+		]);
+		expect(state.messages.at(-1)?.error).toBe(true);
+	});
+
+	test("renders fallback, TTSR, and todo payloads", () => {
+		const state = apply(
+			initialViewModel,
+			{ type: "retry_fallback_applied", from: "primary", to: "fallback", role: "worker" },
+			{ type: "retry_fallback_succeeded", model: "fallback", role: "worker" },
+			{ type: "ttsr_triggered", rules: [{ name: "no-secrets" }] },
+			{
+				type: "todo_reminder",
+				todos: [{ content: "Run tests", status: "pending" }],
+				attempt: 1,
+				maxAttempts: 2,
+			},
+		);
+		expect(state.messages.map(message => message.text)).toEqual([
+			"Fallback for worker: primary → fallback.",
+			"Fallback succeeded for worker on fallback.",
+			"TTSR interrupted the turn: no-secrets",
+			"Todo reminder (1/2). Run tests",
+		]);
+	});
+
+	test("renders visible IRC messages and ignores hidden ones", () => {
+		const state = apply(
+			initialViewModel,
+			{
+				type: "irc_message",
+				message: { role: "custom", customType: "irc", content: "Agent joined", display: true, timestamp: 1 },
+			},
+			{
+				type: "irc_message",
+				message: { role: "custom", customType: "irc", content: "hidden", display: false, timestamp: 2 },
+			},
+		);
+		expect(state.messages.map(message => message.text)).toEqual(["[irc] Agent joined"]);
+	});
+
+	test("renders goal lifecycle and todo auto-clear updates", () => {
+		const state = apply(
+			initialViewModel,
+			{
+				type: "goal_updated",
+				goal: {
+					id: "goal-1",
+					objective: "Finish desktop parity",
+					status: "active",
+					tokensUsed: 10,
+					timeUsedSeconds: 5,
+				},
+			},
+			{ type: "todo_auto_clear" },
+			{ type: "goal_updated", goal: null },
+		);
+		expect(state.messages.map(message => message.text)).toEqual([
+			"Goal active: Finish desktop parity",
+			"Completed todos were cleared automatically.",
+			"Goal mode cleared.",
+		]);
 	});
 });
 

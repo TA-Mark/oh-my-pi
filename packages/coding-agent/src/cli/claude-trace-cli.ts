@@ -642,7 +642,7 @@ export class ClaudeMessagesProxy {
 				this.#complete({ ...pending, response: toCapturedResponse(message) });
 			}
 		};
-		clientTls.on("data", chunk => {
+		clientTls.on("data", (chunk: Buffer) => {
 			if (!Buffer.isBuffer(chunk)) return;
 			const data = Buffer.from(chunk);
 			upstreamTls.write(data);
@@ -655,7 +655,7 @@ export class ClaudeMessagesProxy {
 				responseQueue.push({ target: target.display, request: toCapturedRequest(message) });
 			}
 		});
-		upstreamTls.on("data", chunk => {
+		upstreamTls.on("data", (chunk: Buffer) => {
 			if (!Buffer.isBuffer(chunk)) return;
 			const data = Buffer.from(chunk);
 			clientTls.write(data);

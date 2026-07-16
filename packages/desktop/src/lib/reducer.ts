@@ -45,6 +45,11 @@ export const initialViewModel: ViewModel = {
 	streamingAssistantId: undefined,
 };
 
+const MAX_RENDER_MESSAGES = 2000;
+function trimMessages(messages: ChatMessage[]): ChatMessage[] {
+	return messages.length > MAX_RENDER_MESSAGES ? messages.slice(-MAX_RENDER_MESSAGES) : messages;
+}
+
 let seq = 0;
 function newId(prefix: string): string {
 	seq += 1;
@@ -139,6 +144,26 @@ function patchTool(
 	return next;
 }
 
+function appendNoticeMessage(state: ViewModel, text: string, error = false): ViewModel {
+	return {
+		...state,
+		messages: trimMessages([...state.messages, { id: newId("n"), role: "system", text, error }]),
+	};
+}
+
+function maintenanceLabel(action: "context-full" | "handoff" | "shake" | "snapcompact"): string {
+	switch (action) {
+		case "handoff":
+			return "Auto-handoff";
+		case "shake":
+			return "Auto-shake";
+		case "snapcompact":
+			return "Auto-snapcompact";
+		case "context-full":
+			return "Auto context maintenance";
+	}
+}
+
 export function reduce(state: ViewModel, event: EngineEvent): ViewModel {
 	switch (event.type) {
 		case "agent_start":
@@ -152,7 +177,7 @@ export function reduce(state: ViewModel, event: EngineEvent): ViewModel {
 			return {
 				...state,
 				streamingAssistantId: id,
-				messages: [...state.messages, { id, role: "assistant", text: view.text, error: view.error }],
+				messages: trimMessages([...state.messages, { id, role: "assistant", text: view.text, error: view.error }]),
 			};
 		}
 		case "message_update":
@@ -164,7 +189,7 @@ export function reduce(state: ViewModel, event: EngineEvent): ViewModel {
 			const messages = updateAssistantById(state.messages, id, assistantView(event.message));
 			return {
 				...state,
-				messages,
+				messages: trimMessages(messages),
 				streamingAssistantId: event.type === "message_end" ? undefined : id,
 			};
 		}
@@ -212,10 +237,52 @@ export function reduce(state: ViewModel, event: EngineEvent): ViewModel {
 					{ toolName: event.toolName, toolRunning: false },
 				),
 			};
+		case "auto_compaction_start":
+		case "auto_retry_start":
+			return state;
+		case "auto_compaction_end": {
+			const label = maintenanceLabel(event.action);
+			if (event.aborted) return appendNoticeMessage(state, `${label} cancelled.`);
+			if (event.skipped) return appendNoticeMessage(state, `${label} skipped.`);
+			if (event.errorMessage) return appendNoticeMessage(state, `${label} failed: ${event.errorMessage}`, true);
+			return appendNoticeMessage(state, `${label} completed${event.willRetry ? "; retrying the turn" : ""}.`);
+		}
+		case "auto_retry_end":
+			return event.success
+				? appendNoticeMessage(state, `Retry succeeded on attempt ${event.attempt}.`)
+				: appendNoticeMessage(
+						state,
+						`Retry failed after ${event.attempt} attempt${event.attempt === 1 ? "" : "s"}: ${event.finalError ?? "Unknown error"}`,
+						true,
+					);
+		case "retry_fallback_applied":
+			return appendNoticeMessage(state, `Fallback for ${event.role}: ${event.from} → ${event.to}.`);
+		case "retry_fallback_succeeded":
+			return appendNoticeMessage(state, `Fallback succeeded for ${event.role} on ${event.model}.`);
+		case "ttsr_triggered": {
+			const names = event.rules.map(rule => rule.name).filter(Boolean);
+			return appendNoticeMessage(state, `TTSR interrupted the turn${names.length ? `: ${names.join(", ")}` : "."}`);
+		}
+		case "todo_reminder": {
+			const pending = event.todos.filter(todo => todo.status !== "completed" && todo.status !== "abandoned");
+			const details = pending.length ? ` ${pending.map(todo => todo.content).join("; ")}` : "";
+			return appendNoticeMessage(state, `Todo reminder (${event.attempt}/${event.maxAttempts}).${details}`);
+		}
+		case "todo_auto_clear":
+			return appendNoticeMessage(state, "Completed todos were cleared automatically.");
+		case "irc_message": {
+			if (!event.message.display) return state;
+			const text = partsText(event.message.content);
+			return text ? appendNoticeMessage(state, `[${event.message.customType}] ${text}`) : state;
+		}
+		case "goal_updated":
+			return event.goal
+				? appendNoticeMessage(state, `Goal ${event.goal.status}: ${event.goal.objective}`)
+				: appendNoticeMessage(state, "Goal mode cleared.");
 		case "notice": {
 			const text = event.message ?? event.text ?? "";
 			if (!text) return state;
-			return { ...state, messages: [...state.messages, { id: newId("n"), role: "system", text }] };
+			return { ...state, messages: trimMessages([...state.messages, { id: newId("n"), role: "system", text }]) };
 		}
 		default:
 			return state;
@@ -225,10 +292,10 @@ export function reduce(state: ViewModel, event: EngineEvent): ViewModel {
 export function appendUserMessage(state: ViewModel, text: string, images?: ImageContent[]): ViewModel {
 	return {
 		...state,
-		messages: [
+		messages: trimMessages([
 			...state.messages,
 			{ id: newId("u"), role: "user", text, images: images && images.length > 0 ? images : undefined },
-		],
+		]),
 	};
 }
 
@@ -256,7 +323,7 @@ export function engineInterrupted(state: ViewModel, reason: string): ViewModel {
 		...state,
 		streaming: false,
 		streamingAssistantId: undefined,
-		messages: [...messages, { id: newId("n"), role: "system", text: reason }],
+		messages: trimMessages([...messages, { id: newId("n"), role: "system", text: reason }]),
 	};
 }
 

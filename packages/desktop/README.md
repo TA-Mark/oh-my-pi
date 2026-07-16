@@ -1,6 +1,6 @@
 # @oh-my-pi/desktop
 
-Desktop GUI for OMP. A thin **Tauri v2** shell (Rust + OS WebView) that runs the
+Desktop GUI for OMP. A thin **Electron** shell (main/preload + React renderer) that runs the
 `omp` engine as an **RPC sidecar** (`omp --mode rpc-ui`) and talks to it over
 newline-delimited JSON via stdio. Frontend is **React + Vite**.
 
@@ -29,8 +29,8 @@ input / editor — this is also how tool-approval prompts surface), `notify` toa
 **OAuth login** (`get_login_providers` + `login`). `scripts/smoke-rpc.ts` probes the
 subagent and login-provider contracts.
 
-Phase 5 adds **packaging**: the `omp` engine is built and bundled as a Tauri
-**sidecar** (`scripts/build-sidecar.ts` → `src-tauri/binaries/omp-<triple>`), resolved
+Packaging builds the `omp` engine and bundles it as an Electron extra resource
+(`scripts/build-sidecar.ts` → `resources/omp[.exe]`), resolved
 next to the app binary at runtime. `bun --cwd=packages/desktop run bundle` produces the
 installer. Verified on Windows (MSI + NSIS, sidecar embedded); macOS DMG + signing/notary
 and a multi-platform release workflow are wired in CI. See [`docs/packaging.md`](docs/packaging.md).
@@ -52,11 +52,11 @@ React (WebView) ──invoke("send_rpc")──►  Rust bridge  ──stdin─�
              ◄──event("rpc://frame")───  (rpc.rs)     ◄─stdout──  (engine)
 ```
 
-- `src/lib/tauri-bridge.ts` — Tauri IPC wrapper.
+- `src/lib/desktop-bridge.ts` — Electron preload IPC wrapper.
 - `src/lib/rpc-client.ts` — request/response correlation + event routing.
 - `src/lib/rpc-protocol.ts` — standalone protocol types (drift guarded at runtime via `scripts/smoke-rpc.ts`).
 - `src/lib/reducer.ts` — folds engine events into the view model.
-- `src-tauri/src/rpc.rs` — owns the engine process, bridges stdio to WebView events.
+- `electron/main.ts` — owns the engine process and bridges stdio to renderer IPC events.
 
 ## Develop
 
@@ -66,14 +66,14 @@ the repo CLI via `OMP_ENGINE_ARGV` (JSON argv):
 ```sh
 # from repo root
 export OMP_ENGINE_ARGV='["bun","'"$PWD"'/packages/coding-agent/src/cli.ts","--mode","rpc-ui"]'
-bun --cwd packages/desktop run tauri:dev
+bun --cwd packages/desktop run electron:dev
 ```
 
 On Windows (PowerShell):
 
 ```powershell
 $env:OMP_ENGINE_ARGV = '["bun","' + (Resolve-Path .\packages\coding-agent\src\cli.ts) + '","--mode","rpc-ui"]'
-bun --cwd packages/desktop run tauri:dev
+bun --cwd packages/desktop run electron:dev
 ```
 
 Without `OMP_ENGINE_ARGV`, the bridge launches `omp --mode rpc-ui` from `PATH`

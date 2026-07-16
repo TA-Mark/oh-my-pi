@@ -37,6 +37,12 @@ export type RpcCommand =
 
 	// State
 	| { id?: string; type: "get_state" }
+	| { id?: string; type: "get_settings" }
+	| { id?: string; type: "set_setting"; path: string; value: unknown }
+	| { id?: string; type: "set_plugin_enabled"; name: string; enabled: boolean }
+	| { id?: string; type: "install_plugin"; spec: string }
+	| { id?: string; type: "update_plugin"; name: string }
+	| { id?: string; type: "uninstall_plugin"; name: string }
 	| { id?: string; type: "get_available_commands" }
 	| { id?: string; type: "set_todos"; phases: TodoPhase[] }
 	| { id?: string; type: "set_host_tools"; tools: RpcHostToolDefinition[] }
@@ -75,6 +81,28 @@ export type RpcCommand =
 	// Session
 	| { id?: string; type: "get_session_stats" }
 	| { id?: string; type: "get_workspace_diff" }
+	| { id?: string; type: "list_workspace_files"; query?: string; limit?: number }
+	| { id?: string; type: "read_workspace_file"; path: string; maxBytes?: number }
+	| { id?: string; type: "get_context_snapshot" }
+	| { id?: string; type: "get_mcp_status" }
+	| { id?: string; type: "reconnect_mcp"; serverName: string }
+	| { id?: string; type: "set_mcp_enabled"; serverName: string; enabled: boolean }
+	| { id?: string; type: "get_memory_status" }
+	| { id?: string; type: "search_memory"; query: string; limit?: number }
+	| { id?: string; type: "browser_open"; url: string; name?: string }
+	| { id?: string; type: "browser_close"; name?: string; all?: boolean }
+	| { id?: string; type: "browser_snapshot"; name?: string }
+	| { id?: string; type: "browser_navigate"; url: string; name?: string }
+	| { id?: string; type: "browser_history"; direction: "back" | "forward" | "reload"; name?: string }
+	| { id?: string; type: "browser_list_tabs" }
+	| { id?: string; type: "get_git_status" }
+	| { id?: string; type: "revert_files"; files: string[] }
+	| { id?: string; type: "commit"; message: string }
+	| { id?: string; type: "push"; remote?: string; refspec?: string }
+	| { id?: string; type: "create_pull_request"; title: string; body: string; base?: string; draft?: boolean }
+	| { id?: string; type: "list_worktrees" }
+	| { id?: string; type: "create_worktree"; path: string; ref: string; detach?: boolean }
+	| { id?: string; type: "remove_worktree"; path: string; force?: boolean }
 	| { id?: string; type: "export_html"; outputPath?: string }
 	| { id?: string; type: "list_sessions" }
 	| { id?: string; type: "switch_session"; sessionPath: string }
@@ -122,6 +150,7 @@ export interface RpcSessionState {
 	sessionId: string;
 	sessionName?: string;
 	autoCompactionEnabled: boolean;
+	autoRetryEnabled: boolean;
 	messageCount: number;
 	queuedMessageCount: number;
 	todoPhases: TodoPhase[];
@@ -132,6 +161,50 @@ export interface RpcSessionState {
 	contextUsage?: ContextUsage;
 	/** Plan-mode snapshot when active (undefined = plan mode off). Mirrors {@link RpcPlanModeState}. */
 	planMode?: RpcPlanModeState;
+}
+
+export type RpcSettingCategory =
+	| "providers"
+	| "tools"
+	| "mcp"
+	| "plugins"
+	| "skills"
+	| "memory"
+	| "retry"
+	| "compaction";
+export type RpcSettingType = "boolean" | "string" | "number" | "enum" | "array" | "record";
+
+export interface RpcSettingOption {
+	value: string;
+	label: string;
+	description?: string;
+}
+
+export interface RpcSettingDescriptor {
+	path: string;
+	category: Exclude<RpcSettingCategory, "plugins">;
+	type: RpcSettingType;
+	value: unknown;
+	configured: boolean;
+	label: string;
+	description: string;
+	group?: string;
+	options?: RpcSettingOption[];
+	activation: "immediate" | "next_engine_restart";
+}
+
+export interface RpcPluginDescriptor {
+	name: string;
+	version: string;
+	description?: string;
+	enabled: boolean;
+	enabledFeatures: string[];
+	availableFeatures: string[];
+}
+
+export interface RpcSettingsSnapshot {
+	settings: RpcSettingDescriptor[];
+	plugins: RpcPluginDescriptor[];
 }
 
 /** Plan-mode snapshot exposed over RPC (subset of the engine's {@link PlanModeState}). */
@@ -166,6 +239,35 @@ export interface RpcWorkspaceFileChange {
 	oldPath?: string;
 	/** True when the diff was omitted (binary or too large); path/status still shown. */
 	truncated?: boolean;
+}
+
+export interface RpcGitStatus {
+	branch: string | null;
+	staged: number;
+	unstaged: number;
+	untracked: number;
+}
+
+export interface RpcWorktree {
+	path: string;
+	branch: string | null;
+	detached: boolean;
+	head: string | null;
+}
+
+export interface RpcWorkspaceEntry {
+	path: string;
+	name: string;
+	type: "file" | "directory";
+	size: number | null;
+	mtimeMs: number | null;
+}
+
+export interface RpcWorkspaceFileContent {
+	path: string;
+	content: string;
+	size: number;
+	truncated: boolean;
 }
 
 /**
@@ -252,6 +354,12 @@ export type RpcResponse =
 
 	// State
 	| { id?: string; type: "response"; command: "get_state"; success: true; data: RpcSessionState }
+	| { id?: string; type: "response"; command: "get_settings"; success: true; data: RpcSettingsSnapshot }
+	| { id?: string; type: "response"; command: "set_setting"; success: true; data: RpcSettingDescriptor }
+	| { id?: string; type: "response"; command: "set_plugin_enabled"; success: true; data: RpcPluginDescriptor }
+	| { id?: string; type: "response"; command: "install_plugin"; success: true; data: RpcPluginDescriptor }
+	| { id?: string; type: "response"; command: "update_plugin"; success: true; data: RpcPluginDescriptor }
+	| { id?: string; type: "response"; command: "uninstall_plugin"; success: true; data: { name: string } }
 	| {
 			id?: string;
 			type: "response";
@@ -344,6 +452,121 @@ export type RpcResponse =
 			success: true;
 			data: { files: RpcWorkspaceFileChange[] };
 	  }
+	| {
+			id?: string;
+			type: "response";
+			command: "list_workspace_files";
+			success: true;
+			data: { entries: RpcWorkspaceEntry[]; truncated: boolean };
+	  }
+	| { id?: string; type: "response"; command: "read_workspace_file"; success: true; data: RpcWorkspaceFileContent }
+	| {
+			id?: string;
+			type: "response";
+			command: "get_context_snapshot";
+			success: true;
+			data: {
+				skills: string[];
+				memoryBackend: string | null;
+				skillDetails?: Array<{
+					name: string;
+					description: string;
+					filePath: string;
+					source: string;
+					hidden?: boolean;
+				}>;
+				skillWarnings?: Array<{ skillPath: string; message: string }>;
+			};
+	  }
+	| {
+			id?: string;
+			type: "response";
+			command: "get_mcp_status";
+			success: true;
+			data: {
+				servers: Array<{
+					name: string;
+					status: "connected" | "connecting" | "disconnected";
+					toolCount: number;
+					transport: "stdio" | "http" | "sse" | "unknown";
+					auth: { configured: boolean; oauth: boolean; credentialConfigured: boolean };
+				}>;
+			};
+	  }
+	| {
+			id?: string;
+			type: "response";
+			command: "reconnect_mcp";
+			success: true;
+			data: { serverName: string; status: string; toolCount: number };
+	  }
+	| {
+			id?: string;
+			type: "response";
+			command: "set_mcp_enabled";
+			success: true;
+			data: { serverName: string; enabled: boolean };
+	  }
+	| { id?: string; type: "response"; command: "get_memory_status"; success: true; data: unknown }
+	| { id?: string; type: "response"; command: "search_memory"; success: true; data: unknown }
+	| {
+			id?: string;
+			type: "response";
+			command: "browser_open";
+			success: true;
+			data: { name: string; url: string; text: string };
+	  }
+	| { id?: string; type: "response"; command: "browser_close"; success: true; data: { text: string } }
+	| {
+			id?: string;
+			type: "response";
+			command: "browser_snapshot";
+			success: true;
+			data: { name: string; url: string; snapshot: string };
+	  }
+	| {
+			id?: string;
+			type: "response";
+			command: "browser_navigate";
+			success: true;
+			data: { name: string; url: string; text: string };
+	  }
+	| {
+			id?: string;
+			type: "response";
+			command: "browser_history";
+			success: true;
+			data: { name: string; url: string; text: string };
+	  }
+	| {
+			id?: string;
+			type: "response";
+			command: "browser_list_tabs";
+			success: true;
+			data: {
+				tabs: Array<{
+					name: string;
+					url: string;
+					title?: string;
+					state: "alive" | "dead";
+					backend: "worker" | "cmux";
+				}>;
+			};
+	  }
+	| { id?: string; type: "response"; command: "get_git_status"; success: true; data: RpcGitStatus }
+	| { id?: string; type: "response"; command: "revert_files"; success: true; data: { files: string[] } }
+	| { id?: string; type: "response"; command: "commit"; success: true; data: { stdout: string; stderr: string } }
+	| {
+			id?: string;
+			type: "response";
+			command: "push";
+			success: true;
+			data: { remote: string | null; refspec: string | null };
+	  }
+	| { id?: string; type: "response"; command: "create_pull_request"; success: true; data: { url: string } }
+	| { id?: string; type: "response"; command: "list_worktrees"; success: true; data: { worktrees: RpcWorktree[] } }
+	| { id?: string; type: "response"; command: "create_worktree"; success: true; data: RpcWorktree }
+	| { id?: string; type: "response"; command: "remove_worktree"; success: true; data: { path: string } }
 	| { id?: string; type: "response"; command: "export_html"; success: true; data: { path: string } }
 	| { id?: string; type: "response"; command: "list_sessions"; success: true; data: { sessions: RpcSessionSummary[] } }
 	| { id?: string; type: "response"; command: "switch_session"; success: true; data: { cancelled: boolean } }

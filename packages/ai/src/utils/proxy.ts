@@ -238,12 +238,13 @@ export async function connectProxiedSocket(
 		resolveOnce(tunnelSocket);
 	};
 	const onProxyData = (chunk: Buffer): void => {
-		if (!rawSocket) return;
+		const proxySocket = rawSocket;
+		if (!proxySocket) return;
 		responseData += chunk.toString("binary");
 		if (!responseData.includes("\r\n\r\n")) return;
 
-		rawSocket.off("data", onProxyData);
-		rawSocket.off("error", onRawError);
+		proxySocket.off("data", onProxyData);
+		proxySocket.off("error", onRawError);
 
 		const firstLine = responseData.split("\r\n")[0];
 		if (!firstLine.includes(" 200 ")) {
@@ -251,13 +252,14 @@ export async function connectProxiedSocket(
 			return;
 		}
 
-		tunnelSocket = tls.connect({
-			socket: rawSocket,
+		const connectedTunnel = tls.connect({
+			socket: proxySocket,
 			servername: targetHost,
 			ALPNProtocols: ["h2"],
 		});
-		tunnelSocket.once("secureConnect", onTunnelReady);
-		tunnelSocket.once("error", onTunnelError);
+		tunnelSocket = connectedTunnel;
+		connectedTunnel.once("secureConnect", onTunnelReady);
+		connectedTunnel.once("error", onTunnelError);
 	};
 	const onProxyReady = (): void => {
 		if (!rawSocket) return;
@@ -284,7 +286,7 @@ export async function connectProxiedSocket(
 		timeout.unref?.();
 	}
 
-	rawSocket = useProxySsl
+	const connectedProxy = useProxySsl
 		? tls.connect({
 				host: proxyHost,
 				port: proxyPort,
@@ -293,8 +295,9 @@ export async function connectProxiedSocket(
 				host: proxyHost,
 				port: proxyPort,
 			});
-	rawSocket.once("error", onRawError);
-	rawSocket.once(readyEvent, onProxyReady);
+	rawSocket = connectedProxy;
+	connectedProxy.once("error", onRawError);
+	connectedProxy.once(readyEvent, onProxyReady);
 
 	return promise;
 }

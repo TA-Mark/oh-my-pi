@@ -19,6 +19,7 @@
 //   17. unstage -> success (safe no-op; desktop-added staging command; core-touchpoints.md)
 //   18. stage_hunks [] -> success:false (empty-selection guard; core-touchpoints.md)
 //   19. set_workspace <cwd> -> { cwd: string } (in-place project switch; no respawn)
+//   20. bash -> structured BashResult with captured output
 // Exits non-zero on any drift. Keep in sync with src/lib/rpc-protocol.ts.
 import * as path from "node:path";
 
@@ -68,6 +69,14 @@ try {
 			if (!isRecord(frame)) continue;
 
 			if (frame.type === "ready") {
+				if (frame.protocolVersion !== 1 || !Array.isArray(frame.capabilities))
+					fail(`ready handshake missing protocolVersion/capabilities: ${line}`);
+				if (
+					!(frame.capabilities as unknown[]).includes("prompt") ||
+					!(frame.capabilities as unknown[]).includes("get_state")
+				)
+					fail(`ready handshake missing required capabilities: ${line}`);
+				console.log("OK: ready handshake includes protocolVersion 1 and required capabilities");
 				console.log("OK: engine emitted `ready` frame");
 				send({ type: "get_state", id: "s1" });
 				continue;
@@ -79,6 +88,16 @@ try {
 				const data = frame.data as Record<string, unknown>;
 				if (typeof data.sessionId !== "string") fail("get_state.sessionId not a string");
 				if (typeof data.isStreaming !== "boolean") fail("get_state.isStreaming not a boolean");
+				if (typeof data.autoRetryEnabled !== "boolean") fail("get_state.autoRetryEnabled not a boolean");
+				if (typeof data.autoCompactionEnabled !== "boolean") fail("get_state.autoCompactionEnabled not a boolean");
+				if (!Array.isArray(data.todoPhases)) fail("get_state.todoPhases not an array");
+				if (
+					typeof data.steeringMode !== "string" ||
+					typeof data.followUpMode !== "string" ||
+					typeof data.interruptMode !== "string"
+				) {
+					fail("get_state queue modes missing");
+				}
 				console.log("OK: get_state contract holds (sessionId, isStreaming)");
 				send({ type: "set_thinking_level", level: "low", id: "s2" });
 			} else if (frame.id === "s2") {
@@ -180,6 +199,139 @@ try {
 					fail("set_workspace.data.cwd is not a string");
 				}
 				console.log("OK: set_workspace contract holds (reroot without respawn, { cwd })");
+				send({ type: "bash", command: "echo desktop-bash-smoke", id: "s19" });
+			} else if (frame.id === "s19") {
+				if (frame.success !== true || !isRecord(frame.data)) fail(`bash failed: ${line}`);
+				const data = frame.data as Record<string, unknown>;
+				if (typeof data.output !== "string" || !data.output.includes("desktop-bash-smoke")) {
+					fail(`bash output contract failed: ${line}`);
+				}
+				if (data.exitCode !== 0 || data.cancelled !== false) fail(`bash result contract failed: ${line}`);
+				console.log("OK: bash contract holds (output, exitCode, cancelled)");
+				send({ type: "get_session_stats", id: "s20" });
+			} else if (frame.id === "s20") {
+				if (frame.success !== true || !isRecord(frame.data)) fail(`get_session_stats failed: ${line}`);
+				const data = frame.data as Record<string, unknown>;
+				if (typeof data.sessionId !== "string" || !isRecord(data.tokens))
+					fail(`session stats contract failed: ${line}`);
+				console.log("OK: get_session_stats contract holds");
+				send({ type: "set_auto_retry", enabled: true, id: "s21" });
+			} else if (frame.id === "s21") {
+				if (frame.success !== true) fail(`set_auto_retry failed: ${line}`);
+				console.log("OK: set_auto_retry accepted");
+				send({ type: "abort_retry", id: "s22" });
+			} else if (frame.id === "s22") {
+				if (frame.success !== true) fail(`abort_retry failed: ${line}`);
+				console.log("OK: abort_retry accepted");
+				send({ type: "get_branch_messages", id: "s23" });
+			} else if (frame.id === "s23") {
+				if (frame.success !== true || !isRecord(frame.data) || !Array.isArray(frame.data.messages)) {
+					fail(`get_branch_messages failed: ${line}`);
+				}
+				console.log("OK: get_branch_messages contract holds");
+				send({ type: "get_last_assistant_text", id: "s24" });
+			} else if (frame.id === "s24") {
+				if (frame.success !== true || !isRecord(frame.data)) fail(`get_last_assistant_text failed: ${line}`);
+				if (frame.data.text !== null && typeof frame.data.text !== "string")
+					fail(`last assistant text contract failed: ${line}`);
+				console.log("OK: get_last_assistant_text contract holds");
+				send({ type: "get_available_commands", id: "s25" });
+			} else if (frame.id === "s25") {
+				if (frame.success !== true || !isRecord(frame.data) || !Array.isArray(frame.data.commands))
+					fail(`get_available_commands failed: ${line}`);
+				console.log("OK: get_available_commands contract holds");
+				send({ type: "set_host_tools", tools: [], id: "s26" });
+			} else if (frame.id === "s26") {
+				if (frame.success !== true || !isRecord(frame.data) || !Array.isArray(frame.data.toolNames))
+					fail(`set_host_tools failed: ${line}`);
+				console.log("OK: set_host_tools contract holds (empty allowlist)");
+				send({ type: "set_host_uri_schemes", schemes: [], id: "s27" });
+			} else if (frame.id === "s27") {
+				if (frame.success !== true || !isRecord(frame.data) || !Array.isArray(frame.data.schemes))
+					fail(`set_host_uri_schemes failed: ${line}`);
+				console.log("OK: set_host_uri_schemes contract holds (no URI schemes enabled)");
+				send({ type: "get_settings", id: "s28" });
+			} else if (frame.id === "s28") {
+				if (
+					frame.success !== true ||
+					!isRecord(frame.data) ||
+					!Array.isArray(frame.data.settings) ||
+					!Array.isArray(frame.data.plugins)
+				) {
+					fail(`get_settings failed: ${line}`);
+				}
+				const paths = frame.data.settings
+					.filter(isRecord)
+					.map(setting => setting.path)
+					.filter((path): path is string => typeof path === "string");
+				if (
+					!paths.includes("retry.enabled") ||
+					paths.some(path => /(api.?key|credential|password|secret|token)/i.test(path))
+				) {
+					fail(`settings allowlist/redaction contract failed: ${line}`);
+				}
+				console.log("OK: get_settings contract holds without secret paths");
+				send({ type: "set_setting", path: "not.real", value: true, id: "s29" });
+			} else if (frame.id === "s29") {
+				if (frame.success !== false || typeof frame.error !== "string")
+					fail(`set_setting validation failed: ${line}`);
+				console.log("OK: set_setting rejects unknown paths");
+				send({ type: "get_git_status", id: "s30" });
+			} else if (frame.id === "s30") {
+				if (frame.success !== true || !isRecord(frame.data)) fail(`get_git_status failed: ${line}`);
+				const data = frame.data as Record<string, unknown>;
+				if (!["staged", "unstaged", "untracked"].every(key => typeof data[key] === "number")) {
+					fail(`git status counts contract failed: ${line}`);
+				}
+				console.log("OK: get_git_status contract holds");
+				send({ type: "commit", message: "", id: "s31" });
+			} else if (frame.id === "s31") {
+				if (frame.success !== false || typeof frame.error !== "string") fail(`empty commit guard failed: ${line}`);
+				console.log("OK: commit rejects empty messages");
+				send({ type: "create_pull_request", title: "", body: "", id: "s32" });
+			} else if (frame.id === "s32") {
+				if (frame.success !== false || typeof frame.error !== "string")
+					fail(`empty PR title guard failed: ${line}`);
+				console.log("OK: create_pull_request rejects empty titles");
+				send({ type: "create_worktree", path: "relative-worktree", ref: "HEAD", id: "s33" });
+			} else if (frame.id === "s33") {
+				if (frame.success !== false || typeof frame.error !== "string")
+					fail(`relative worktree guard failed: ${line}`);
+				console.log("OK: create_worktree requires an absolute path");
+				send({ type: "list_worktrees", id: "s34" });
+			} else if (frame.id === "s34") {
+				if (frame.success !== true || !isRecord(frame.data) || !Array.isArray(frame.data.worktrees)) {
+					fail(`list_worktrees contract failed: ${line}`);
+				}
+				console.log("OK: list_worktrees contract holds");
+				send({ type: "list_workspace_files", query: "package.json", limit: 50, id: "s35" });
+			} else if (frame.id === "s35") {
+				if (frame.success !== true || !isRecord(frame.data) || !Array.isArray(frame.data.entries)) {
+					fail(`list_workspace_files contract failed: ${line}`);
+				}
+				console.log("OK: list_workspace_files contract holds");
+				send({ type: "read_workspace_file", path: "package.json", maxBytes: 4096, id: "s36" });
+			} else if (frame.id === "s36") {
+				if (frame.success !== true || !isRecord(frame.data) || typeof frame.data.content !== "string") {
+					fail(`read_workspace_file contract failed: ${line}`);
+				}
+				console.log("OK: read_workspace_file returns bounded text content");
+				send({ type: "read_workspace_file", path: "../package.json", id: "s37" });
+			} else if (frame.id === "s37") {
+				if (frame.success !== false || typeof frame.error !== "string") {
+					fail(`workspace traversal guard failed: ${line}`);
+				}
+				console.log("OK: read_workspace_file rejects paths outside the workspace");
+				send({ type: "get_context_snapshot", id: "s38" });
+			} else if (frame.id === "s38") {
+				if (frame.success !== true || !isRecord(frame.data) || !Array.isArray(frame.data.skills)) {
+					fail(`get_context_snapshot contract failed: ${line}`);
+				}
+				console.log("OK: get_context_snapshot exposes skills and memory backend");
+				send({ type: "browser_open", url: "javascript:alert(1)", id: "s39" });
+			} else if (frame.id === "s39") {
+				if (frame.success !== false || typeof frame.error !== "string") fail(`browser URL policy failed: ${line}`);
+				console.log("OK: browser_open rejects non-http(s) URLs");
 				clearTimeout(timeout);
 				child.kill();
 				process.exit(0);

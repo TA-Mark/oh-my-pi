@@ -1,0 +1,33 @@
+import { describe, expect, test } from "bun:test";
+import { Settings } from "../src/config/settings";
+import { setRpcSetting } from "../src/modes/rpc/rpc-settings";
+
+describe("RPC settings contract", () => {
+	test("updates an allowlisted setting and returns its normalized descriptor", async () => {
+		const settings = Settings.isolated();
+		const descriptor = await setRpcSetting(settings, "retry.enabled", false);
+		expect(descriptor).toMatchObject({
+			path: "retry.enabled",
+			category: "retry",
+			type: "boolean",
+			value: false,
+			configured: true,
+		});
+		expect(settings.get("retry.enabled")).toBe(false);
+	});
+
+	test("rejects values outside the canonical schema type", async () => {
+		const settings = Settings.isolated();
+		await expect(setRpcSetting(settings, "retry.maxRetries", "five")).rejects.toThrow(
+			"retry.maxRetries must be a finite number",
+		);
+	});
+
+	test("rejects paths outside the desktop configuration allowlist", async () => {
+		const settings = Settings.isolated();
+		await expect(setRpcSetting(settings, "setupVersion", "ignored")).rejects.toThrow(
+			"Setting is not available over RPC: setupVersion",
+		);
+		await expect(setRpcSetting(settings, "not.real", true)).rejects.toThrow("Unknown setting: not.real");
+	});
+});

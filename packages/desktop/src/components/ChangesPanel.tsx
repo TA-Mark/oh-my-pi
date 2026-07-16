@@ -19,14 +19,23 @@ import {
 } from "lucide-react";
 import type { ReactNode } from "react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { HunkSelection, WorkspaceFileChange } from "../lib/rpc-protocol";
+import type { GitStatus, HunkSelection, WorkspaceFileChange } from "../lib/rpc-protocol";
 
 interface ChangesPanelProps {
 	changes: WorkspaceFileChange[];
+	gitStatus: GitStatus;
 	onRefresh: () => void;
 	onStageHunks: (selections: HunkSelection[]) => void;
 	onUnstage: (files?: string[]) => void;
+	onRevertFiles: (files: string[]) => void;
+	onCommit: () => void;
+	onPush: () => void;
+	onCreatePullRequest: () => void;
 	disabled: boolean;
+}
+
+export function stageSelectionsForChanges(changes: readonly WorkspaceFileChange[]): HunkSelection[] {
+	return changes.map(change => ({ path: change.path, hunks: { type: "all" } }));
 }
 
 type DiffMode = "unified" | "split";
@@ -617,20 +626,22 @@ function FileTree({
 function ReviewOptions({
 	hiddenCount,
 	stageDisabled,
+	refreshDisabled,
 	onShowAll,
 	onRefresh,
 	onUnstageAll,
 }: {
 	hiddenCount: number;
 	stageDisabled: boolean;
+	refreshDisabled: boolean;
 	onShowAll: () => void;
 	onRefresh: () => void;
 	onUnstageAll: () => void;
 }): ReactNode {
 	return (
 		<div className="review-options-menu">
-			<button type="button" onClick={onRefresh}>
-				<RefreshCw size={14} />
+			<button type="button" onClick={onRefresh} disabled={refreshDisabled}>
+				<RefreshCw className={refreshDisabled ? "spin" : ""} size={14} />
 				Refresh
 			</button>
 			<button type="button" onClick={onUnstageAll} disabled={stageDisabled}>
@@ -706,7 +717,18 @@ function JumpToFileMenu({
 	);
 }
 
-export function ChangesPanel({ changes, onRefresh, onStageHunks, onUnstage, disabled }: ChangesPanelProps) {
+export function ChangesPanel({
+	changes,
+	gitStatus,
+	onRefresh,
+	onStageHunks,
+	onUnstage,
+	onRevertFiles,
+	onCommit,
+	onPush,
+	onCreatePullRequest,
+	disabled,
+}: ChangesPanelProps) {
 	const [mode, setMode] = useState<DiffMode>("split");
 	const [menuOpen, setMenuOpen] = useState(false);
 	const [jumpOpen, setJumpOpen] = useState(false);
@@ -717,6 +739,8 @@ export function ChangesPanel({ changes, onRefresh, onStageHunks, onUnstage, disa
 	const [hiddenPaths, setHiddenPaths] = useState<Set<string>>(() => new Set());
 	const [collapsedPaths, setCollapsedPaths] = useState<Set<string>>(() => new Set());
 	const [expandedPaths, setExpandedPaths] = useState<Set<string>>(() => new Set());
+	const [mutating, setMutating] = useState(false);
+	const [refreshing, setRefreshing] = useState(false);
 	const jumpMenuRef = useRef<HTMLDivElement>(null);
 	const additions = changes.reduce((sum, change) => sum + change.additions, 0);
 	const deletions = changes.reduce((sum, change) => sum + change.deletions, 0);
@@ -725,6 +749,10 @@ export function ChangesPanel({ changes, onRefresh, onStageHunks, onUnstage, disa
 	const visibleChanges = useMemo(
 		() => orderedChanges.filter(change => !hiddenPaths.has(change.path)),
 		[orderedChanges, hiddenPaths],
+	);
+	const revertibleChanges = useMemo(
+		() => visibleChanges.filter(change => change.status !== "untracked"),
+		[visibleChanges],
 	);
 	const navigatorChanges = useMemo(
 		() =>
@@ -738,6 +766,13 @@ export function ChangesPanel({ changes, onRefresh, onStageHunks, onUnstage, disa
 		selectedPath && visibleChanges.some(change => change.path === selectedPath)
 			? selectedPath
 			: (visibleChanges[0]?.path ?? null);
+
+	useEffect(() => {
+		const paths = new Set(changes.map(change => change.path));
+		setHiddenPaths(previous => new Set([...previous].filter(path => paths.has(path))));
+		setCollapsedPaths(previous => new Set([...previous].filter(path => paths.has(path))));
+		setExpandedPaths(previous => new Set([...previous].filter(path => paths.has(path))));
+	}, [changes]);
 
 	useEffect(() => {
 		if (!jumpOpen) return;
@@ -819,20 +854,42 @@ export function ChangesPanel({ changes, onRefresh, onStageHunks, onUnstage, disa
 		[selectFile],
 	);
 
+	const runMutation = useCallback(
+		(action: () => void): void => {
+			if (disabled || mutating) return;
+			setMutating(true);
+			Promise.resolve()
+				.then(action)
+				.finally(() => setMutating(false));
+		},
+		[disabled, mutating],
+	);
+
 	const stageFile = useCallback(
 		(path: string): void => {
-			onStageHunks([{ path, hunks: { type: "all" } }]);
+			runMutation(() => onStageHunks([{ path, hunks: { type: "all" } }]));
 		},
-		[onStageHunks],
+		[onStageHunks, runMutation],
 	);
 
 	const stageAll = useCallback((): void => {
 		if (visibleChanges.length === 0) return;
-		onStageHunks(visibleChanges.map(change => ({ path: change.path, hunks: { type: "all" } })));
-	}, [onStageHunks, visibleChanges]);
+		runMutation(() => onStageHunks(stageSelectionsForChanges(visibleChanges)));
+	}, [onStageHunks, runMutation, visibleChanges]);
+
+	const refresh = useCallback((): void => {
+		if (refreshing) return;
+		setRefreshing(true);
+		Promise.resolve()
+			.then(onRefresh)
+			.finally(() => setRefreshing(false));
+	}, [onRefresh, refreshing]);
 
 	return (
-		<section className={`changes-panel${navigatorOpen ? " changes-panel--with-navigator" : ""}`}>
+		<section
+			className={`changes-panel${navigatorOpen ? " changes-panel--with-navigator" : ""}`}
+			aria-busy={mutating || refreshing}
+		>
 			<div className="changes-head">
 				<div className="changes-summary">
 					<span className="changes-title">Unstaged</span>
@@ -863,14 +920,15 @@ export function ChangesPanel({ changes, onRefresh, onStageHunks, onUnstage, disa
 						{menuOpen ? (
 							<ReviewOptions
 								hiddenCount={hiddenPaths.size}
-								stageDisabled={disabled || visibleChanges.length === 0}
+								stageDisabled={disabled || mutating || visibleChanges.length === 0}
+								refreshDisabled={refreshing}
 								onShowAll={showAll}
 								onRefresh={() => {
-									onRefresh();
+									refresh();
 									setMenuOpen(false);
 								}}
 								onUnstageAll={() => {
-									onUnstage();
+									runMutation(() => onUnstage());
 									setMenuOpen(false);
 								}}
 							/>
@@ -930,14 +988,29 @@ export function ChangesPanel({ changes, onRefresh, onStageHunks, onUnstage, disa
 						<FolderOpen size={16} strokeWidth={1.8} />
 					</button>
 					<span className="changes-action-divider" />
-					<button type="button" className="changes-pill-action" disabled={disabled || visibleChanges.length === 0}>
+					<button
+						type="button"
+						className="changes-pill-action"
+						disabled={disabled || mutating || gitStatus.staged === 0}
+						onClick={onCommit}
+					>
 						<GitCommitHorizontal size={15} strokeWidth={1.8} />
-						Commit or push
+						Commit staged
 					</button>
 					<button
 						type="button"
-						className="changes-pill-action changes-pill-action--disabled"
-						disabled={disabled || visibleChanges.length === 0}
+						className="changes-pill-action"
+						disabled={disabled || mutating || !gitStatus.branch}
+						onClick={onPush}
+					>
+						<GitPullRequestCreate size={15} strokeWidth={1.8} />
+						Push branch
+					</button>
+					<button
+						type="button"
+						className="changes-pill-action"
+						disabled={disabled || mutating || !gitStatus.branch}
+						onClick={onCreatePullRequest}
 					>
 						<GitPullRequestCreate size={15} strokeWidth={1.8} />
 						Create PR
@@ -955,7 +1028,7 @@ export function ChangesPanel({ changes, onRefresh, onStageHunks, onUnstage, disa
 								change={change}
 								mode={mode}
 								collapsed={isCollapsed(change)}
-								disabled={disabled}
+								disabled={disabled || mutating}
 								onToggleCollapsed={toggleCollapsed}
 								onSelect={selectPath}
 								onStageFile={stageFile}
@@ -989,11 +1062,15 @@ export function ChangesPanel({ changes, onRefresh, onStageHunks, onUnstage, disa
 			</div>
 			{visibleChanges.length > 0 ? (
 				<div className="review-floating-actions">
-					<button type="button" disabled>
+					<button
+						type="button"
+						disabled={disabled || mutating || revertibleChanges.length === 0}
+						onClick={() => onRevertFiles(revertibleChanges.map(change => change.path))}
+					>
 						<RotateCcw size={15} />
 						Revert all
 					</button>
-					<button type="button" disabled={disabled} onClick={stageAll}>
+					<button type="button" disabled={disabled || mutating} onClick={stageAll}>
 						<Plus size={15} />
 						Stage all
 					</button>

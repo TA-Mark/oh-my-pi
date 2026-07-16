@@ -229,6 +229,29 @@
 	opacity: 0.45;
 }
 
+.composer-queue-button {
+	display: inline-flex;
+	align-items: center;
+	gap: 5px;
+	height: 34px;
+	padding: 0 10px;
+	border: 1px solid var(--color-border-subtle);
+	border-radius: 999px;
+	background: var(--color-overlay-sunken);
+	color: var(--text-secondary);
+	font-size: 12px;
+	font-weight: 600;
+}
+
+.composer-queue-button:hover:not(:disabled) {
+	border-color: var(--color-border-strong);
+	color: var(--text-primary);
+}
+
+.composer-queue-button:disabled {
+	opacity: 0.45;
+}
+
 .composer-send--stop {
 	background: rgba(240, 93, 85, 0.95);
 	color: var(--color-accent-contrast);
@@ -658,4 +681,3 @@
 .picker-list {
 	overflow-y: auto;
 }
-

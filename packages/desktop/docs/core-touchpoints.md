@@ -84,3 +84,81 @@ tree — a mistaken stage is fully reversible with `unstage` (and vice versa). R
 stay disabled. Additive only (two union arms + one interface + one case each). No existing
 behavior changed. If upstream adds its own staging RPC, drop this during sync. Verified by
 the runtime probe in `scripts/smoke-rpc.ts` (stage_hunks + unstage steps).
+
+## Git Review status, revert, and commit RPCs
+
+The desktop Git Review panel now uses additive `get_git_status`, `revert_files`, and `commit`
+commands. Revert is confirmation-gated and accepts tracked files only, restoring from `HEAD`;
+commit requires a non-empty message and staged changes. Additive `push`, `create_pull_request`,
+`list_worktrees`, `create_worktree`, and `remove_worktree` commands complete the next slice. Push
+never force-pushes and rejects detached HEAD; PR creation uses authenticated `gh`; worktree removal
+rejects the active workspace and unregistered paths. The runtime smoke probe validates all safe,
+non-network guard paths without publishing or deleting user data.
+
+The desktop Worktree Manager consumes these commands to list registered worktrees, switch the
+live engine with `set_workspace`, attempt non-force removal first, and expose force removal as a
+separate confirmation-gated action. The active workspace can never be removed.
+
+## Workspace Files RPCs
+
+The Files panel uses additive `list_workspace_files` and `read_workspace_file` commands. The
+engine caps directory walks at 5,000 entries, skips symlinks and heavy generated directories,
+and returns relative DOM-safe metadata. Reads resolve both the workspace and target through
+`realpath`, reject lexical and symlink escapes, reject binary/non-UTF-8 content, and cap previews
+at 1 MiB. The desktop polls the bounded listing while Files is open, refreshes the selected
+preview, supports search/reveal, and injects either an `@file` mention or a bounded text selection
+into the composer. The smoke probe verifies listing, bounded text reads, and traversal rejection.
+
+## Browser integration RPCs
+
+The Browser panel is backed by the existing OMP `BrowserTool` and tab supervisor through additive
+`browser_open`, `browser_close`, `browser_snapshot`, `browser_navigate`, and `browser_history`
+commands. URLs are restricted to HTTP(S) without embedded credentials. Snapshots are capped at
+128 KiB before reaching the desktop and can be staged into Context Inspector as text. External
+open continues to use the host URL policy; non-HTTP schemes are not silently permitted.
+
+## Side Chat isolation
+
+Side Chat runs through a second Electron engine process and a separate `DesktopRpcTransport`;
+its transcript and session state never reuse the main client. Staged Files/Context Inspector
+items can be forked into the side session, and the latest assistant response can be staged back
+into the main context. An optional Git worktree can be created for the side engine; cleanup is
+non-force by default and retains dirty worktrees for explicit review in Worktree Manager.
+
+## Scheduled Tasks
+
+Scheduled Tasks are persisted by the Electron main process under the app user-data directory and
+exposed through a dedicated IPC CRUD surface. The background scheduler checks every 15 seconds,
+validates that the workspace still exists, prevents duplicate execution per task, and runs each
+prompt in a short-lived RPC engine with a five-minute timeout. Each task keeps its last 20 run
+diagnostics; removal is rejected while a task is running.
+Tasks support bounded retry with exponential backoff (maximum five retries), and the UI exposes a
+confirmation-gated Run now action that uses the same lock, timeout, diagnostics, and retry path.
+Persistence uses a temporary file plus atomic rename. Only one Electron instance owns the
+scheduler, resume from system sleep immediately checks overdue tasks, and shutdown terminates
+active task engines. Contract tests cover migration, restart persistence, duplicate locking,
+retry backoff, missing workspaces, and overdue-task recovery; Electron E2E verifies persistence
+through a real application restart.
+
+## Wire-level parity additions
+
+MCP lifecycle commands are available through the RPC boundary: `get_mcp_status`,
+`reconnect_mcp`, and `set_mcp_enabled`. Responses contain only server state, transport,
+tool count, and redacted OAuth booleans. Enable/disable persists through the OMP-owned
+config writer and updates reconnect state without exposing credentials, headers, tokens,
+or command arguments.
+
+The desktop RPC client now accepts OMP's optional `streamingBehavior` on prompt commands, forwards
+`host_tool_update` partial results, and classifies `prompt_result` frames. These frames are kept
+separate from the normal response/event channels so request correlation and transcript ordering
+remain unchanged.
+
+The sidebar Plugins entry now opens the live Settings Plugins category instead of presenting a
+separate placeholder. Full install/update/uninstall still requires explicit lifecycle commands;
+the current RPC settings surface intentionally only exposes installed-plugin descriptors and
+enable/disable mutations.
+
+Context Inspector now receives canonical skill discovery details (description, source, file path,
+hidden flag) and skill-loading warnings through `get_context_snapshot`. This improves discovery
+parity without exposing memory contents or credentials; structured memory search and MCP server
+lifecycle still require dedicated RPC commands.

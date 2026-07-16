@@ -1,4 +1,3 @@
-import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
 import {
 	Archive,
 	Badge,
@@ -36,29 +35,48 @@ import {
 } from "lucide-react";
 import type { PointerEvent as ReactPointerEvent } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { revealItem } from "../lib/desktop-bridge";
 import type { ViewModel } from "../lib/reducer";
-import type { EngineStatus } from "../lib/rpc-client";
+import { type EngineStatus, supportsCapability } from "../lib/rpc-client";
 import type {
 	ApprovalMode,
+	AvailableCommand,
+	BranchMessage,
 	ExtensionUIRequest,
 	ExtensionUIResponse,
+	GitStatus,
 	HunkSelection,
 	ImageContent,
 	LoginProvider,
+	McpServerStatus,
+	MemorySearchResult,
+	MemoryStatus,
 	ModelInfo,
 	PlanModeState,
+	SessionStats,
 	SessionSummary,
+	SettingCategory,
+	SettingsSnapshot,
+	SubagentMessage,
 	SubagentSnapshot,
 	ThinkingLevel,
+	TodoPhase,
+	WorkspaceEntry,
 	WorkspaceFileChange,
+	WorkspaceFileContent,
 } from "../lib/rpc-protocol";
 import { AuthDialog, type AuthPrompt } from "./AuthDialog";
+import { COMMAND_ICONS, type CommandAction, CommandPalette } from "./CommandPalette";
 import { Composer, type ComposerInjection } from "./Composer";
+import type { StagedContextItem } from "./ContextInspector";
 import { DialogHost } from "./DialogHost";
 import { StatusBar, WidgetArea, type WidgetEntry } from "./ExtensionWidgets";
 import { LoginMenu } from "./LoginMenu";
 import { ModelPicker } from "./ModelPicker";
+import type { ScheduledTaskView } from "./ScheduledTasksPanel";
 import { type ChatContextActions, SessionHistory } from "./SessionHistory";
+import { SettingsPanel } from "./SettingsPanel";
+import type { SideChatMessage } from "./SideChatPanel";
 import { SubagentPanel } from "./SubagentPanel";
 import { ThemeToggle } from "./ThemeToggle";
 import { ThinkingPicker } from "./ThinkingPicker";
@@ -72,9 +90,16 @@ export interface SessionInfo {
 	approvalMode?: ApprovalMode;
 	sessionName?: string;
 	messageCount: number;
+	autoCompactionEnabled?: boolean;
+	steeringMode?: "all" | "one-at-a-time";
+	followUpMode?: "all" | "one-at-a-time";
+	interruptMode?: "immediate" | "wait";
+	todoPhases?: TodoPhase[];
 }
 
 interface AppShellProps {
+	capabilities: readonly string[];
+	availableCommands: AvailableCommand[];
 	vm: ViewModel;
 	status: EngineStatus;
 	statusDetail?: string;
@@ -87,14 +112,78 @@ interface AppShellProps {
 	statuses: Record<string, string>;
 	widgets: Record<string, WidgetEntry>;
 	planMode?: PlanModeState;
+	settingsSnapshot: SettingsSnapshot | null;
+	settingsLoading: boolean;
+	settingsSavingKey: string | null;
+	onRefreshSettings: () => void;
+	onUpdateSetting: (path: string, value: unknown) => void;
+	onSetPluginEnabled: (name: string, enabled: boolean) => void;
+	onInstallPlugin: (spec: string) => void;
+	onUpdatePlugin: (name: string) => void;
+	onUninstallPlugin: (name: string) => void;
+	mcpServers: McpServerStatus[];
+	mcpLoading: boolean;
+	onRefreshMcp: () => void;
+	onReconnectMcp: (serverName: string) => void;
+	onSetMcpEnabled: (serverName: string, enabled: boolean) => void;
+	memoryStatus: MemoryStatus | null;
+	memorySearch: MemorySearchResult | null;
+	memoryLoading: boolean;
+	onRefreshMemory: () => void;
+	onSearchMemory: (query: string) => void;
 	onTogglePlanMode: (enabled: boolean) => void;
+	onCopyDiagnostics: () => void;
 	changes: WorkspaceFileChange[];
+	gitStatus: GitStatus;
 	onRefreshChanges: () => void;
 	onStageHunks: (selections: HunkSelection[]) => void;
 	onUnstage: (files?: string[]) => void;
+	onRevertFiles: (files: string[]) => void;
+	onCommit: () => void;
+	onPush: () => void;
+	onCreatePullRequest: () => void;
+	onCreateWorktree: () => void;
+	onManageWorktrees: () => void;
+	workspaceEntries: WorkspaceEntry[];
+	workspaceFileContent: WorkspaceFileContent | null;
+	selectedWorkspacePath: string | null;
+	workspaceFilesLoading: boolean;
+	workspaceFilesTruncated: boolean;
+	onRefreshWorkspaceFiles: (query?: string) => void;
+	onOpenWorkspaceFile: (path: string) => void;
+	onRevealWorkspaceFile: (path: string) => void;
+	onAddWorkspaceContext: (path: string, selection?: string) => void;
 	updateVersion: string | null;
 	updateInstalling: boolean;
 	onInstallUpdate: () => void;
+	onRestartEngine: () => void;
+	bashOutput: string;
+	bashRunning: boolean;
+	onRunBash: (command: string) => void;
+	onAbortBash: () => void;
+	sessionStats: SessionStats | null;
+	statsLoading: boolean;
+	compacting: boolean;
+	autoRetry: boolean;
+	onRefreshStats: () => void;
+	onCompact: () => void;
+	onSetAutoRetry: (enabled: boolean) => void;
+	onAbortRetry: () => void;
+	branchMessages: BranchMessage[];
+	sessionActionRunning: boolean;
+	onBranch: (entryId: string) => void;
+	onCopyLast: () => void;
+	onExport: () => void;
+	onHandoff: () => void;
+	thinkingLevel?: string;
+	steeringMode?: "all" | "one-at-a-time";
+	followUpMode?: "all" | "one-at-a-time";
+	interruptMode?: "immediate" | "wait";
+	onCycleThinking: () => void;
+	onSetSteering: (mode: "all" | "one-at-a-time") => void;
+	onSetFollowUp: (mode: "all" | "one-at-a-time") => void;
+	onSetInterrupt: (mode: "immediate" | "wait") => void;
+	onSetAutoCompaction: (enabled: boolean) => void;
 	historyLoading: boolean;
 	/** A session switch is in flight — the transcript shows an "opening…" state. */
 	switching: boolean;
@@ -104,6 +193,10 @@ interface AppShellProps {
 	authPrompt: AuthPrompt | null;
 	onSend: (text: string, images: ImageContent[]) => void;
 	onAbort: () => void;
+	onAbortAndPrompt: (text: string, images: ImageContent[]) => void;
+	onSteer: (text: string, images: ImageContent[]) => void;
+	onFollowUp: (text: string, images: ImageContent[]) => void;
+	onCycleModel: () => void;
 	/** Stop was clicked and the turn is still tearing down — reflected on the Stop button. */
 	aborting: boolean;
 	onChangeFolder: () => void;
@@ -120,6 +213,49 @@ interface AppShellProps {
 	onAuthCancel: () => void;
 	onDialogRespond: (response: ExtensionUIResponse) => void;
 	onDismissToast: (id: string) => void;
+	subagentMessages: Record<string, SubagentMessage[]>;
+	onLoadSubagentMessages: (agent: SubagentSnapshot) => void;
+	composerImages: ImageContent[];
+	onComposerImagesChange: (images: ImageContent[]) => void;
+	contextItems: StagedContextItem[];
+	contextSkills: string[];
+	contextMemoryBackend: string | null;
+	contextSkillDetails?: Array<{
+		name: string;
+		description: string;
+		filePath: string;
+		source: string;
+		hidden?: boolean;
+	}>;
+	contextSkillWarnings?: Array<{ skillPath: string; message: string }>;
+	onRemoveContextItem: (id: string) => void;
+	onClearContext: () => void;
+	browserUrl: string;
+	browserSnapshot: string;
+	browserBusy: boolean;
+	onBrowserOpen: (url: string) => void;
+	onBrowserHistory: (direction: "back" | "forward" | "reload") => void;
+	onBrowserSnapshot: () => void;
+	onBrowserAddContext: () => void;
+	onBrowserExternal: (url: string) => void;
+	sideChatReady: boolean;
+	sideChatStarting: boolean;
+	sideChatMessages: SideChatMessage[];
+	onEnsureSideChat: () => void;
+	onForkSideChat: () => void;
+	onAddSideChatResult: () => void;
+	sideChatWorktreePath: string | null;
+	onToggleSideChatWorktree: () => void;
+	onSendSideChat: (text: string) => void;
+	onCloseSideChat: () => void;
+	scheduledTasks: ScheduledTaskView[];
+	onSaveScheduledTask: (
+		input: Omit<ScheduledTaskView, "id" | "nextRunAt" | "lastRunAt" | "lastStatus" | "lastError" | "runs"> & {
+			id?: string;
+		},
+	) => void;
+	onRemoveScheduledTask: (id: string) => void;
+	onRunScheduledTask: (id: string) => void;
 }
 
 function projectName(p: string): string {
@@ -202,6 +338,7 @@ function ProjectMenu({
 	onTogglePinned,
 	onOpenExplorer,
 	onCreateWorktree,
+	onManageWorktrees,
 	onRenameProject,
 	onArchiveChats,
 	onRemoveProject,
@@ -210,6 +347,7 @@ function ProjectMenu({
 	onTogglePinned: () => void;
 	onOpenExplorer: () => void;
 	onCreateWorktree: () => void;
+	onManageWorktrees: () => void;
 	onRenameProject: () => void;
 	onArchiveChats: () => void;
 	onRemoveProject: () => void;
@@ -227,6 +365,10 @@ function ProjectMenu({
 			<button type="button" className="project-menu-item" onClick={onCreateWorktree}>
 				<GitBranchPlus size={16} strokeWidth={1.8} />
 				<span>Create permanent worktree</span>
+			</button>
+			<button type="button" className="project-menu-item" onClick={onManageWorktrees}>
+				<GitBranchPlus size={16} strokeWidth={1.8} />
+				<span>Manage worktrees</span>
 			</button>
 			<button type="button" className="project-menu-item" onClick={onRenameProject}>
 				<Pencil size={16} strokeWidth={1.8} />
@@ -515,6 +657,7 @@ export function AppShell(props: AppShellProps) {
 		updateVersion,
 		updateInstalling,
 		onInstallUpdate,
+		onRestartEngine,
 		historyLoading,
 		switching,
 		dialog,
@@ -544,6 +687,10 @@ export function AppShell(props: AppShellProps) {
 	const [initialWorkspaceSidebarState] = useState(() => readWorkspaceSidebarState(workspace));
 	const [toolsOpen, setToolsOpen] = useState(false);
 	const [toolsView, setToolsView] = useState<WorkspaceToolView>("menu");
+	const [focusMode, setFocusMode] = useState(false);
+	const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
+	const [settingsOpen, setSettingsOpen] = useState(false);
+	const [settingsCategory, setSettingsCategory] = useState<SettingCategory>("providers");
 	const [sidebarCollapsed, setSidebarCollapsed] = useState(() => readSidebarCollapsed());
 	const [sidebarWidth, setSidebarWidth] = useState(() => readSidebarWidth());
 	const [projectMenuPlacement, setProjectMenuPlacement] = useState<"header" | "row" | null>(null);
@@ -619,6 +766,22 @@ export function AppShell(props: AppShellProps) {
 		workspaceStateLoadedFor,
 	]);
 
+	useEffect(() => {
+		const onKeyDown = (event: KeyboardEvent): void => {
+			if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== "k") return;
+			const target = event.target;
+			if (
+				target instanceof HTMLElement &&
+				(target.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName))
+			)
+				return;
+			event.preventDefault();
+			setCommandPaletteOpen(true);
+		};
+		window.addEventListener("keydown", onKeyDown);
+		return () => window.removeEventListener("keydown", onKeyDown);
+	}, []);
+
 	const currentProjectName = projectLabel ?? projectName(workspace);
 	const visibleSessions = useMemo(() => {
 		const query = historyQuery.trim().toLowerCase();
@@ -689,6 +852,9 @@ export function AppShell(props: AppShellProps) {
 	}, []);
 
 	const openTools = (view: WorkspaceToolView = "menu") => {
+		if (view === "review" && !supportsCapability(props.capabilities, "get_workspace_diff")) return;
+		if (view === "terminal" && !supportsCapability(props.capabilities, "bash")) return;
+		if (view === "session" && !supportsCapability(props.capabilities, "get_session_stats")) return;
 		setToolsView(view);
 		setToolsOpen(true);
 	};
@@ -709,9 +875,68 @@ export function AppShell(props: AppShellProps) {
 		onNewSession();
 	};
 
+	const commandActions: CommandAction[] = [
+		{
+			id: "settings",
+			label: "Open settings",
+			detail: "Appearance, navigation, and account guidance",
+			icon: COMMAND_ICONS.Settings2,
+			onRun: () => {
+				setSettingsCategory("providers");
+				setSettingsOpen(true);
+			},
+		},
+		{
+			id: "new-task",
+			label: "New task",
+			detail: "Start a fresh conversation",
+			shortcut: "N",
+			icon: COMMAND_ICONS.MessageSquarePlus,
+			onRun: () => {
+				setSidebarView("new-task");
+				startNewChat(false);
+			},
+		},
+		{
+			id: "open-project",
+			label: "Open project",
+			detail: "Choose a workspace folder",
+			icon: COMMAND_ICONS.FolderOpen,
+			onRun: chooseProject,
+		},
+		...(supportsCapability(props.capabilities, "get_workspace_diff")
+			? [
+					{
+						id: "review-changes",
+						label: "Review changes",
+						detail: "Open the workspace diff panel",
+						shortcut: "Ctrl+Shift+G",
+						icon: COMMAND_ICONS.GitBranch,
+						onRun: () => openTools("review"),
+					},
+				]
+			: []),
+		{
+			id: "toggle-sidebar",
+			label: sidebarCollapsed ? "Show sidebar" : "Hide sidebar",
+			detail: "Toggle the workspace navigation",
+			icon: COMMAND_ICONS.PanelLeft,
+			onRun: () => setSidebarCollapsed(collapsed => !collapsed),
+		},
+		...(supportsCapability(props.capabilities, "get_available_commands")
+			? props.availableCommands.map(command => ({
+					id: `core-command-${command.name}`,
+					label: `/${command.name}`,
+					detail: command.description ?? `Run ${command.source} command`,
+					icon: COMMAND_ICONS.Command,
+					onRun: () => onSend(`/${command.name}`, []),
+				}))
+			: []),
+	];
+
 	const openWorkspaceInExplorer = (): void => {
 		setProjectMenuPlacement(null);
-		void revealItemInDir(workspace).catch(() => openPath(workspace).catch(() => undefined));
+		void revealItem(workspace).catch(() => undefined);
 	};
 
 	const toggleProjectPinned = (): void => {
@@ -755,7 +980,7 @@ export function AppShell(props: AppShellProps) {
 
 	const createPermanentWorktree = (): void => {
 		setProjectMenuPlacement(null);
-		setSidebarNotice("Permanent worktree creation needs engine support; UI action is reserved.");
+		props.onCreateWorktree();
 	};
 
 	const copyText = (text: string, label: string): void => {
@@ -809,7 +1034,7 @@ export function AppShell(props: AppShellProps) {
 			});
 		},
 		onOpenExplorer: chat => {
-			void revealItemInDir(chat.path).catch(() => openPath(chat.path).catch(() => undefined));
+			void revealItem(chat.path).catch(() => undefined);
 		},
 		onCopyWorkingDirectory: () => copyText(workspace, "Working directory"),
 		onCopySessionId: chat => copyText(chat.id, "Session ID"),
@@ -926,6 +1151,10 @@ export function AppShell(props: AppShellProps) {
 									onTogglePinned={toggleProjectPinned}
 									onOpenExplorer={openWorkspaceInExplorer}
 									onCreateWorktree={createPermanentWorktree}
+									onManageWorktrees={() => {
+										setProjectMenuPlacement(null);
+										props.onManageWorktrees();
+									}}
 									onRenameProject={renameProject}
 									onArchiveChats={() => archiveSessions(true)}
 									onRemoveProject={removeProject}
@@ -981,13 +1210,25 @@ export function AppShell(props: AppShellProps) {
 					{sidebarNotice}
 				</button>
 			) : null}
-			<SessionHistory
-				sessions={visibleSessions}
-				loading={historyLoading}
-				onSelect={selectSessionFromSidebar}
-				emptyLabel={historyEmptyLabel}
-				contextActions={chatContextActions}
-			/>
+			{activeSidebarView === "scheduled" ? (
+				<div className="sidebar-feature-empty" role="status">
+					<strong>Scheduled tasks</strong>
+					<span>Scheduled runs are not connected to the local engine yet.</span>
+				</div>
+			) : activeSidebarView === "plugins" ? (
+				<div className="sidebar-feature-empty" role="status">
+					<strong>Plugins</strong>
+					<span>Plugin management will appear here when the workspace exposes plugins.</span>
+				</div>
+			) : (
+				<SessionHistory
+					sessions={visibleSessions}
+					loading={historyLoading}
+					onSelect={selectSessionFromSidebar}
+					emptyLabel={historyEmptyLabel}
+					contextActions={chatContextActions}
+				/>
+			)}
 		</div>
 	);
 
@@ -1016,6 +1257,12 @@ export function AppShell(props: AppShellProps) {
 			onChooseProject={chooseProject}
 			onSend={sendWithTaskTitle}
 			onAbort={onAbort}
+			onAbortAndPrompt={props.onAbortAndPrompt}
+			onSteer={supportsCapability(props.capabilities, "steer") ? props.onSteer : undefined}
+			onFollowUp={supportsCapability(props.capabilities, "follow_up") ? props.onFollowUp : undefined}
+			onCycleModel={supportsCapability(props.capabilities, "cycle_model") ? props.onCycleModel : undefined}
+			images={props.composerImages}
+			onImagesChange={props.onComposerImagesChange}
 			aborting={aborting}
 		/>
 	);
@@ -1026,7 +1273,7 @@ export function AppShell(props: AppShellProps) {
 	};
 
 	return (
-		<div className="app-shell">
+		<div className={`app-shell${focusMode ? " app-shell--focus" : ""}`}>
 			<aside
 				className={`app-sidebar${sidebarCollapsed ? " app-sidebar--collapsed" : ""}`}
 				style={sidebarCollapsed ? undefined : { width: sidebarWidth }}
@@ -1115,7 +1362,10 @@ export function AppShell(props: AppShellProps) {
 							type="button"
 							className={`sidebar-nav-item${activeSidebarView === "scheduled" ? " sidebar-nav-item--active" : ""}`}
 							title="Scheduled"
-							onClick={() => setSidebarView("scheduled")}
+							onClick={() => {
+								setSidebarView("scheduled");
+								openTools("scheduled");
+							}}
 						>
 							<CalendarClock size={18} strokeWidth={1.8} />
 							<span className="sidebar-nav-label">Scheduled</span>
@@ -1124,7 +1374,11 @@ export function AppShell(props: AppShellProps) {
 							type="button"
 							className={`sidebar-nav-item${activeSidebarView === "plugins" ? " sidebar-nav-item--active" : ""}`}
 							title="Plugins"
-							onClick={() => setSidebarView("plugins")}
+							onClick={() => {
+								setSidebarView("plugins");
+								setSettingsCategory("plugins");
+								setSettingsOpen(true);
+							}}
 						>
 							<Plug size={18} strokeWidth={1.8} />
 							<span className="sidebar-nav-label">Plugins</span>
@@ -1179,6 +1433,8 @@ export function AppShell(props: AppShellProps) {
 								className="top-icon-button"
 								title="Toggle bottom panel"
 								aria-label="Toggle bottom panel"
+								aria-pressed={toolsOpen}
+								onClick={() => (toolsOpen ? setToolsOpen(false) : openTools("menu"))}
 							>
 								<PanelBottom size={16} strokeWidth={1.8} />
 							</button>
@@ -1212,7 +1468,14 @@ export function AppShell(props: AppShellProps) {
 								>
 									<ClipboardList size={15} strokeWidth={1.8} />
 								</button>
-								<button type="button" className="top-icon-button" title="Focus mode" aria-label="Focus mode">
+								<button
+									type="button"
+									className={`top-icon-button${focusMode ? " top-icon-button--active" : ""}`}
+									title={focusMode ? "Exit focus mode" : "Focus mode"}
+									aria-label="Focus mode"
+									aria-pressed={focusMode}
+									onClick={() => setFocusMode(active => !active)}
+								>
 									<Maximize2 size={15} strokeWidth={1.8} />
 								</button>
 								<button
@@ -1220,6 +1483,8 @@ export function AppShell(props: AppShellProps) {
 									className="top-icon-button"
 									title="Toggle bottom panel"
 									aria-label="Toggle bottom panel"
+									aria-pressed={toolsOpen}
+									onClick={() => (toolsOpen ? setToolsOpen(false) : openTools("menu"))}
 								>
 									<PanelBottom size={16} strokeWidth={1.8} />
 								</button>
@@ -1239,7 +1504,14 @@ export function AppShell(props: AppShellProps) {
 					</header>
 				)}
 
-				{statusDetail && status === "error" ? <div className="error-banner">{statusDetail}</div> : null}
+				{statusDetail && status === "error" ? (
+					<div className="error-banner">
+						<span>{statusDetail}</span>
+						<button type="button" onClick={onRestartEngine} disabled={switching}>
+							Restart engine
+						</button>
+					</div>
+				) : null}
 
 				{updateVersion ? (
 					<div className="update-banner">
@@ -1253,7 +1525,11 @@ export function AppShell(props: AppShellProps) {
 				<main className="app-main">
 					<div className="app-center">
 						<div className={`app-content${isEmptySession ? " app-content--home" : ""}`}>
-							<SubagentPanel subagents={subagents} />
+							<SubagentPanel
+								subagents={subagents}
+								messages={props.subagentMessages}
+								onLoadMessages={props.onLoadSubagentMessages}
+							/>
 							{switching ? (
 								<div className="switching-indicator" role="status" aria-live="polite">
 									<span className="thinking-dots" aria-hidden="true">
@@ -1328,17 +1604,126 @@ export function AppShell(props: AppShellProps) {
 						<WorkspaceToolsPanel
 							view={toolsView}
 							changes={changes}
+							gitStatus={props.gitStatus}
 							disabled={disabled}
 							onRefreshChanges={onRefreshChanges}
 							onStageHunks={onStageHunks}
 							onUnstage={onUnstage}
+							onRevertFiles={props.onRevertFiles}
+							onCommit={props.onCommit}
+							onPush={props.onPush}
+							onCreatePullRequest={props.onCreatePullRequest}
 							onSelectView={setToolsView}
 							onClose={() => setToolsOpen(false)}
+							capabilities={props.capabilities}
+							bashOutput={props.bashOutput}
+							bashRunning={props.bashRunning}
+							onRunBash={props.onRunBash}
+							onAbortBash={props.onAbortBash}
+							sessionStats={props.sessionStats}
+							statsLoading={props.statsLoading}
+							compacting={props.compacting}
+							autoRetry={props.autoRetry}
+							onRefreshStats={props.onRefreshStats}
+							onCompact={props.onCompact}
+							onSetAutoRetry={props.onSetAutoRetry}
+							onAbortRetry={props.onAbortRetry}
+							branchMessages={props.branchMessages}
+							sessionActionRunning={props.sessionActionRunning}
+							onBranch={props.onBranch}
+							onCopyLast={props.onCopyLast}
+							onExport={props.onExport}
+							onHandoff={props.onHandoff}
+							thinkingLevel={props.session.thinkingLevel}
+							steeringMode={props.session.steeringMode}
+							followUpMode={props.session.followUpMode}
+							interruptMode={props.session.interruptMode}
+							autoCompaction={props.session.autoCompactionEnabled ?? true}
+							todoPhases={props.session.todoPhases ?? []}
+							onCycleThinking={props.onCycleThinking}
+							onSetSteering={props.onSetSteering}
+							onSetFollowUp={props.onSetFollowUp}
+							onSetInterrupt={props.onSetInterrupt}
+							onSetAutoCompaction={props.onSetAutoCompaction}
+							workspaceEntries={props.workspaceEntries}
+							workspaceFileContent={props.workspaceFileContent}
+							selectedWorkspacePath={props.selectedWorkspacePath}
+							workspaceFilesLoading={props.workspaceFilesLoading}
+							workspaceFilesTruncated={props.workspaceFilesTruncated}
+							onRefreshWorkspaceFiles={props.onRefreshWorkspaceFiles}
+							onOpenWorkspaceFile={props.onOpenWorkspaceFile}
+							onRevealWorkspaceFile={props.onRevealWorkspaceFile}
+							onAddWorkspaceContext={props.onAddWorkspaceContext}
+							contextItems={props.contextItems}
+							contextImages={props.composerImages}
+							contextSkills={props.contextSkills}
+							contextMemoryBackend={props.contextMemoryBackend}
+							contextSkillDetails={props.contextSkillDetails}
+							contextSkillWarnings={props.contextSkillWarnings}
+							onRemoveContextItem={props.onRemoveContextItem}
+							onRemoveContextImage={index =>
+								props.onComposerImagesChange(props.composerImages.filter((_, itemIndex) => itemIndex !== index))
+							}
+							onClearContext={props.onClearContext}
+							browserUrl={props.browserUrl}
+							browserSnapshot={props.browserSnapshot}
+							browserBusy={props.browserBusy}
+							onBrowserOpen={props.onBrowserOpen}
+							onBrowserHistory={props.onBrowserHistory}
+							onBrowserSnapshot={props.onBrowserSnapshot}
+							onBrowserAddContext={props.onBrowserAddContext}
+							onBrowserExternal={props.onBrowserExternal}
+							sideChatReady={props.sideChatReady}
+							sideChatStarting={props.sideChatStarting}
+							sideChatMessages={props.sideChatMessages}
+							onEnsureSideChat={props.onEnsureSideChat}
+							onForkSideChat={props.onForkSideChat}
+							onAddSideChatResult={props.onAddSideChatResult}
+							sideChatWorktreePath={props.sideChatWorktreePath}
+							onToggleSideChatWorktree={props.onToggleSideChatWorktree}
+							onSendSideChat={props.onSendSideChat}
+							onCloseSideChat={props.onCloseSideChat}
+							scheduledTasks={props.scheduledTasks}
+							onSaveScheduledTask={props.onSaveScheduledTask}
+							onRemoveScheduledTask={props.onRemoveScheduledTask}
+							onRunScheduledTask={props.onRunScheduledTask}
 						/>
 					) : null}
 				</main>
 			</section>
 
+			<CommandPalette
+				open={commandPaletteOpen}
+				actions={commandActions}
+				onClose={() => setCommandPaletteOpen(false)}
+			/>
+			<SettingsPanel
+				open={settingsOpen}
+				snapshot={props.settingsSnapshot}
+				loading={props.settingsLoading}
+				savingKey={props.settingsSavingKey}
+				onRefresh={props.onRefreshSettings}
+				onUpdateSetting={props.onUpdateSetting}
+				onSetPluginEnabled={props.onSetPluginEnabled}
+				onInstallPlugin={props.onInstallPlugin}
+				onUpdatePlugin={props.onUpdatePlugin}
+				onUninstallPlugin={props.onUninstallPlugin}
+				mcpServers={props.mcpServers}
+				mcpLoading={props.mcpLoading}
+				onRefreshMcp={props.onRefreshMcp}
+				onReconnectMcp={props.onReconnectMcp}
+				onSetMcpEnabled={props.onSetMcpEnabled}
+				memoryStatus={props.memoryStatus}
+				memorySearch={props.memorySearch}
+				memoryLoading={props.memoryLoading}
+				onRefreshMemory={props.onRefreshMemory}
+				onSearchMemory={props.onSearchMemory}
+				sidebarCollapsed={sidebarCollapsed}
+				onToggleSidebar={() => setSidebarCollapsed(collapsed => !collapsed)}
+				onCopyDiagnostics={props.onCopyDiagnostics}
+				initialCategory={settingsCategory}
+				onClose={() => setSettingsOpen(false)}
+			/>
 			<DialogHost request={dialog} onRespond={onDialogRespond} />
 			<AuthDialog prompt={authPrompt} onOpen={onAuthOpen} onCancel={onAuthCancel} />
 			<Toasts toasts={toasts} onDismiss={onDismissToast} />
