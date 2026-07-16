@@ -147,7 +147,7 @@ export function App() {
 			const state = await client.getState();
 			setSession({
 				model: modelLabel(state.model?.provider, state.model?.id),
-				thinkingLevel: state.thinkingLevel,
+				thinkingLevel: state.configuredThinkingLevel ?? state.thinkingLevel,
 				sessionName: state.sessionName,
 				messageCount: state.messageCount,
 				approvalMode: state.approvalMode,

@@ -19,6 +19,7 @@
     "test": "bun test test/",
     "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml --lib",
     "smoke": "bun scripts/smoke-rpc.ts",
+    "smoke:sidecar": "bun scripts/smoke-rpc.ts --sidecar",
     "e2e": "wdio run e2e/wdio.conf.ts",
     "lint": "biome lint .",
     "fmt": "biome format --write ."

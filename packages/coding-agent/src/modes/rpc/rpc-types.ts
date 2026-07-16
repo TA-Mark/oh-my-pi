@@ -18,6 +18,7 @@ import type {
 	SubagentLifecyclePayload,
 	SubagentProgressPayload,
 } from "../../task";
+import type { ConfiguredThinkingLevel } from "../../thinking";
 import type { ApprovalMode } from "../../tools/approval";
 import type { TodoPhase } from "../../tools/todo";
 
@@ -51,7 +52,7 @@ export type RpcCommand =
 	| { id?: string; type: "get_available_models" }
 
 	// Thinking
-	| { id?: string; type: "set_thinking_level"; level: ThinkingLevel }
+	| { id?: string; type: "set_thinking_level"; level: ConfiguredThinkingLevel }
 	| { id?: string; type: "cycle_thinking_level" }
 
 	// Queue modes
@@ -94,9 +95,8 @@ export type RpcCommand =
 	| { id?: string; type: "logout"; providerId: string }
 
 	// Plan mode (desktop-added core command; core-touchpoints.md).
-	// Approval is handled agent-driven: the agent submits the finalized plan via
-	// `resolve { action: "apply" }`, which a standing handler routes to the host's
-	// confirm dialog. No separate client-driven resolve command is needed.
+	// Approval is handled agent-driven: the agent writes the plan title to
+	// `xd://propose`, which the plan proposal handler routes to the host dialog.
 	| { id?: string; type: "set_plan_mode"; enabled: boolean; workflow?: "parallel" | "iterative" }
 
 	// Staging (desktop-added core command; core-touchpoints.md). Non-destructive:
@@ -112,6 +112,8 @@ export type RpcCommand =
 export interface RpcSessionState {
 	model?: Model;
 	thinkingLevel: ThinkingLevel | undefined;
+	/** User-selected thinking mode; differs from thinkingLevel when configured as auto. */
+	configuredThinkingLevel: ConfiguredThinkingLevel | undefined;
 	isStreaming: boolean;
 	isCompacting: boolean;
 	steeringMode: "all" | "one-at-a-time";

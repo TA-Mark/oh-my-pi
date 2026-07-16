@@ -19,7 +19,8 @@ const THINKING_COPY: Record<SelectableThinkingLevel, string> = {
 	low: "Light reasoning",
 	medium: "Balanced reasoning",
 	high: "Deeper reasoning",
-	xhigh: "Maximum reasoning",
+	xhigh: "Very deep reasoning",
+	max: "Maximum reasoning",
 };
 
 function splitModelLabel(label?: string): { provider?: string; id?: string } {

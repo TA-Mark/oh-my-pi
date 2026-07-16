@@ -130,6 +130,8 @@ function groupModelsByProvider(
 
 function composerEffortLabel(level: ThinkingLevel | undefined): string {
 	switch (level) {
+		case "max":
+			return "Max";
 		case "xhigh":
 			return "Extra High";
 		case "high":

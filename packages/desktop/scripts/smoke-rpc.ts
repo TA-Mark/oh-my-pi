@@ -2,8 +2,8 @@
 // exercise the command/response contract the desktop client depends on:
 //   1. `ready` frame appears
 //   2. get_state -> { sessionId: string, isStreaming: boolean }
-//   3. set_thinking_level "low" -> response.success (Phase 2 mutating path)
-//   4. get_state -> thinkingLevel === "low"
+//   3. set_thinking_level "off" -> response.success (Phase 2 mutating path)
+//   4. get_state -> thinkingLevel === "off"
 //   5. set_approval_mode "always-ask" -> response.success
 //   6. get_state -> approvalMode === "always-ask"
 //   7. set_subagent_subscription "progress" -> success (Phase 3)
@@ -23,8 +23,23 @@
 import * as path from "node:path";
 
 const cliPath = path.join(import.meta.dir, "..", "..", "coding-agent", "src", "cli.ts");
+const useSidecar = process.argv.includes("--sidecar");
+const sidecarTriple =
+	process.platform === "win32"
+		? "x86_64-pc-windows-msvc"
+		: process.platform === "darwin"
+			? "aarch64-apple-darwin"
+			: "x86_64-unknown-linux-gnu";
+const sidecarPath = path.join(
+	import.meta.dir,
+	"..",
+	"src-tauri",
+	"binaries",
+	`omp-${sidecarTriple}${process.platform === "win32" ? ".exe" : ""}`,
+);
+const engineCommand = useSidecar ? [sidecarPath, "--mode", "rpc-ui"] : ["bun", cliPath, "--mode", "rpc-ui"];
 
-const child = Bun.spawn(["bun", cliPath, "--mode", "rpc-ui"], {
+const child = Bun.spawn(engineCommand, {
 	stdin: "pipe",
 	stdout: "pipe",
 	stderr: "ignore",
@@ -80,15 +95,33 @@ try {
 				if (typeof data.sessionId !== "string") fail("get_state.sessionId not a string");
 				if (typeof data.isStreaming !== "boolean") fail("get_state.isStreaming not a boolean");
 				console.log("OK: get_state contract holds (sessionId, isStreaming)");
-				send({ type: "set_thinking_level", level: "low", id: "s2" });
+				// Use `off`, which is preserved for every model. Concrete efforts such
+				// as `low` are intentionally clamped to the active model's supported
+				// effort set in OMP v17 and therefore are not stable smoke fixtures.
+				send({ type: "set_thinking_level", level: "off", id: "s2" });
 			} else if (frame.id === "s2") {
 				if (frame.success !== true) fail(`set_thinking_level failed: ${line}`);
 				console.log("OK: set_thinking_level accepted");
 				send({ type: "get_state", id: "s3" });
 			} else if (frame.id === "s3") {
 				const data = isRecord(frame.data) ? (frame.data as Record<string, unknown>) : {};
-				if (data.thinkingLevel !== "low") fail(`thinkingLevel not applied: ${JSON.stringify(data.thinkingLevel)}`);
-				console.log("OK: thinking level applied (thinkingLevel === 'low')");
+				if (data.thinkingLevel !== "off") fail(`thinkingLevel not applied: ${JSON.stringify(data.thinkingLevel)}`);
+				if (data.configuredThinkingLevel !== "off") {
+					fail(`configuredThinkingLevel not applied: ${JSON.stringify(data.configuredThinkingLevel)}`);
+				}
+				console.log("OK: thinking level applied (thinkingLevel === 'off')");
+				// `auto` is represented by the configured selector while get_state
+				// continues to expose the current concrete effective effort.
+				send({ type: "set_thinking_level", level: "auto", id: "s3a" });
+			} else if (frame.id === "s3a") {
+				if (frame.success !== true) fail(`set_thinking_level(auto) failed: ${line}`);
+				send({ type: "get_state", id: "s3b" });
+			} else if (frame.id === "s3b") {
+				const data = isRecord(frame.data) ? (frame.data as Record<string, unknown>) : {};
+				if (data.configuredThinkingLevel !== "auto") {
+					fail(`configured auto thinking level not preserved: ${JSON.stringify(data.configuredThinkingLevel)}`);
+				}
+				console.log("OK: configured auto thinking level preserved");
 				send({ type: "set_approval_mode", mode: "always-ask", id: "s4" });
 			} else if (frame.id === "s4") {
 				if (frame.success !== true) fail(`set_approval_mode failed: ${line}`);

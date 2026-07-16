@@ -68,7 +68,7 @@ export interface HunkSelection {
  * (mirrors ThinkingLevel in packages/agent/src/thinking.ts; "inherit" omitted —
  * it's for nested/agent defaults, not a user-facing session choice).
  */
-export const THINKING_LEVELS = ["off", "auto", "minimal", "low", "medium", "high", "xhigh"] as const;
+export const THINKING_LEVELS = ["off", "auto", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 export type ThinkingLevel = (typeof THINKING_LEVELS)[number] | "inherit";
 export type ApprovalMode = "always-ask" | "write" | "yolo";
 
@@ -92,6 +92,8 @@ export interface ReadyFrame {
 export interface SessionState {
 	model?: ModelInfo;
 	thinkingLevel?: ThinkingLevel;
+	/** User selector; `auto` remains visible while thinkingLevel is its effective effort. */
+	configuredThinkingLevel?: ThinkingLevel;
 	approvalMode?: ApprovalMode;
 	isStreaming: boolean;
 	sessionId: string;
