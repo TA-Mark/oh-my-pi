@@ -2,10 +2,6 @@
 
 ## [Unreleased]
 
-### Added
-
-- Added schema-driven RPC settings discovery and validated updates for providers, tools, MCP, skills, memory, retry, compaction, and plugin enablement, without exposing secret configuration paths.
-
 ## [16.3.4] - 2026-07-03
 
 ### Fixed

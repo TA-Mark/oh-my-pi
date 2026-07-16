@@ -1,5 +1,17 @@
 name: Desktop Release
 
+# Builds the OMP desktop app (Tauri shell + bundled `omp` engine sidecar) for
+# Windows and macOS. Each runner builds its own native engine sidecar, then
+# `tauri build` produces the installer. On a `desktop-v*` tag the installers are
+# attached to a GitHub release. Signing/notarization secrets are optional — when
+# absent the workflow still produces (unsigned) artifacts.
+#
+# Auto-update: when TAURI_SIGNING_PRIVATE_KEY is present, `createUpdaterArtifacts`
+# emits a signed updater bundle (+ `.sig`) per platform. The `updater-manifest`
+# job aggregates every platform's signature into `latest.json` and publishes it
+# to the release so the endpoint in tauri.conf.json can serve it. Without the key
+# the updater steps no-op and the release is still usable as a manual download.
+
 on:
   push:
     tags: ["desktop-v*"]
@@ -15,55 +27,245 @@ jobs:
       matrix:
         include:
           - os: windows-latest
-            target: windows-x64
+            triple: x86_64-pc-windows-msvc
           - os: macos-14
-            target: darwin-arm64
+            triple: aarch64-apple-darwin
           - os: macos-13
-            target: darwin-x64
+            triple: x86_64-apple-darwin
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install dependencies
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.triple }}
+
+      - name: Install dependencies (bun)
         uses: ./.github/actions/bun-install
 
       - name: Build engine sidecar
         shell: bash
-        env:
-          CROSS_TARGET: ${{ matrix.target }}
         run: bun --cwd=packages/desktop run sidecar
 
-      - name: Build Electron installers
-        shell: bash
+      # Optional Windows Authenticode signing. No-op unless WINDOWS_CERTIFICATE
+      # (base64 PFX) is set — imports the cert to the runner's user store and
+      # injects its thumbprint into tauri.conf.json so `tauri build` signs the
+      # NSIS/MSI output. See packages/desktop/docs/packaging.md.
+      - name: Configure Windows code signing (optional)
+        if: runner.os == 'Windows'
+        shell: pwsh
         env:
-          CSC_LINK: ${{ secrets.APPLE_CERTIFICATE }}
-          CSC_KEY_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          WIN_CSC_LINK: ${{ secrets.WINDOWS_CERTIFICATE }}
-          WIN_CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
-        run: bun --cwd=packages/desktop run electron:build
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: |
+          if (-not $env:WINDOWS_CERTIFICATE) {
+            Write-Host "No WINDOWS_CERTIFICATE secret set; building unsigned."
+            exit 0
+          }
+          $pfxPath = Join-Path $env:RUNNER_TEMP "code-sign.pfx"
+          [IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE))
+          $securePwd = ConvertTo-SecureString -String $env:WINDOWS_CERTIFICATE_PASSWORD -Force -AsPlainText
+          $cert = Import-PfxCertificate -FilePath $pfxPath -CertStoreLocation Cert:\CurrentUser\My -Password $securePwd
+          Remove-Item $pfxPath -Force
+          $conf = "packages/desktop/src-tauri/tauri.conf.json"
+          $json = Get-Content $conf -Raw | ConvertFrom-Json
+          $json.bundle.windows | Add-Member -NotePropertyName certificateThumbprint -NotePropertyValue $cert.Thumbprint -Force
+          $json | ConvertTo-Json -Depth 100 | Set-Content $conf -Encoding utf8
+          Write-Host "Configured Windows signing (thumbprint $($cert.Thumbprint))."
 
-      - name: Validate packaged application
+      - name: Build desktop bundle
         shell: bash
-        run: bun --cwd=packages/desktop run release:validate
+        run: bun --cwd=packages/desktop run tauri:build
+        env:
+          # Updater artifact signing (only set when the repo secret exists).
+          # The matching public key lives in tauri.conf.json > plugins.updater.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # macOS signing + notarization (only set when repo secrets exist).
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
 
       - name: Upload installers
         uses: actions/upload-artifact@v4
         with:
-          name: omp-desktop-${{ matrix.target }}
+          name: omp-desktop-${{ matrix.triple }}
           if-no-files-found: error
           path: |
-            packages/desktop/release/*.exe
-            packages/desktop/release/*.msi
-            packages/desktop/release/*.dmg
+            packages/desktop/src-tauri/target/release/bundle/nsis/*.exe
+            packages/desktop/src-tauri/target/release/bundle/nsis/*.exe.sig
+            packages/desktop/src-tauri/target/release/bundle/msi/*.msi
+            packages/desktop/src-tauri/target/release/bundle/dmg/*.dmg
+            packages/desktop/src-tauri/target/release/bundle/macos/*.app.tar.gz
+            packages/desktop/src-tauri/target/release/bundle/macos/*.app.tar.gz.sig
 
-      - name: Attach installers to release
+      # Emit a per-platform updater fragment ({<key>: {signature, asset}}) from
+      # the `.sig` produced by createUpdaterArtifacts. No signature => no-op
+      # (unsigned build), so the aggregation job simply skips this platform.
+      - name: Prepare updater manifest fragment
+        if: startsWith(github.ref, 'refs/tags/desktop-v')
+        shell: bash
+        run: |
+          set -uo pipefail
+          bundle=packages/desktop/src-tauri/target/release/bundle
+          case "${{ matrix.triple }}" in
+            x86_64-pc-windows-msvc) key=windows-x86_64; art=$(ls "$bundle"/nsis/*-setup.exe 2>/dev/null | head -n1) ;;
+            aarch64-apple-darwin)   key=darwin-aarch64; art=$(ls "$bundle"/macos/*.app.tar.gz 2>/dev/null | head -n1) ;;
+            x86_64-apple-darwin)    key=darwin-x86_64;  art=$(ls "$bundle"/macos/*.app.tar.gz 2>/dev/null | head -n1) ;;
+            *) echo "unknown triple ${{ matrix.triple }}"; exit 0 ;;
+          esac
+          if [ -z "${art:-}" ] || [ ! -f "$art" ]; then
+            echo "No updater artifact for ${{ matrix.triple }}; skipping."; exit 0
+          fi
+          sig="$art.sig"
+          if [ ! -f "$sig" ]; then
+            echo "No signature next to $art (updater key not set?); skipping."; exit 0
+          fi
+          mkdir -p fragments
+          jq -n --arg key "$key" --arg signature "$(cat "$sig")" --arg asset "$(basename "$art")" \
+            '{($key): {signature: $signature, asset: $asset}}' > "fragments/${{ matrix.triple }}.json"
+          cat "fragments/${{ matrix.triple }}.json"
+
+      - name: Upload updater fragment
+        if: startsWith(github.ref, 'refs/tags/desktop-v')
+        uses: actions/upload-artifact@v4
+        with:
+          name: updater-fragment-${{ matrix.triple }}
+          if-no-files-found: ignore
+          path: fragments/*.json
+
+      - name: Attach to release
         if: startsWith(github.ref, 'refs/tags/desktop-v')
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            packages/desktop/release/*.exe
-            packages/desktop/release/*.msi
-            packages/desktop/release/*.dmg
+            packages/desktop/src-tauri/target/release/bundle/nsis/*.exe
+            packages/desktop/src-tauri/target/release/bundle/msi/*.msi
+            packages/desktop/src-tauri/target/release/bundle/dmg/*.dmg
+            packages/desktop/src-tauri/target/release/bundle/macos/*.app.tar.gz
+
+  # Aggregate every platform's updater signature into a single latest.json and
+  # publish it to the release. Runs only on a tag, after all installers are
+  # attached, so it can resolve real asset URLs (GitHub rewrites spaces to `.`
+  # in asset filenames — we match against the actual uploaded names via the API
+  # rather than guessing). No fragments => no signed platforms => nothing to do.
+  updater-manifest:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/desktop-v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download updater fragments
+        uses: actions/download-artifact@v4
+        with:
+          pattern: updater-fragment-*
+          path: fragments
+          merge-multiple: true
+
+      - name: Build and publish latest.json
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -uo pipefail
+          shopt -s nullglob
+          frags=(fragments/*.json)
+          if [ ${#frags[@]} -eq 0 ]; then
+            echo "No updater fragments (no signed platforms); skipping latest.json."
+            exit 0
+          fi
+          tag="${GITHUB_REF_NAME}"
+          version="${tag#desktop-v}"
+          merged=$(jq -s 'add // {}' "${frags[@]}")
+          out=$(jq -n \
+            --arg version "$version" \
+            --arg pub_date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            '{version: $version, notes: "", pub_date: $pub_date, platforms: {}}')
+          while IFS= read -r entry; do
+            key=$(jq -r '.key' <<<"$entry")
+            signature=$(jq -r '.value.signature' <<<"$entry")
+            asset=$(jq -r '.value.asset' <<<"$entry")
+            # GitHub replaces spaces with '.' in release asset names.
+            normalized=$(printf '%s' "$asset" | tr ' ' '.')
+            url=$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json assets \
+              --jq ".assets[] | select(.name == \"$normalized\") | .url" | head -n1)
+            if [ -z "$url" ]; then
+              echo "WARN: no release asset matched '$normalized' for $key; skipping." >&2
+              continue
+            fi
+            out=$(jq --arg k "$key" --arg s "$signature" --arg u "$url" \
+              '.platforms[$k] = {signature: $s, url: $u}' <<<"$out")
+          done < <(jq -c 'to_entries[]' <<<"$merged")
+          printf '%s\n' "$out" > latest.json
+          echo "--- latest.json ---"
+          cat latest.json
+          if [ "$(jq '.platforms | length' latest.json)" -eq 0 ]; then
+            echo "No platforms resolved; not publishing latest.json." >&2
+            exit 0
+          fi
+          gh release upload "$tag" latest.json --repo "$GITHUB_REPOSITORY" --clobber
+
+  # Packaged-app launch smoke test via WebDriver (tauri-driver + WebView2).
+  # Builds the real bundle and drives the shipped binary to prove it launches,
+  # mounts the React shell, and shows primary nav — catching CSP / asset-bundling
+  # / Rust-bridge regressions a unit test can't. Webview2-dependent, so it runs
+  # only on tags / manual dispatch, never on PRs, and never blocks the release
+  # (continue-on-error) — it is a signal, not a gate.
+  e2e-smoke:
+    if: startsWith(github.ref, 'refs/tags/desktop-v') || github.event_name == 'workflow_dispatch'
+    runs-on: windows-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Install dependencies (bun)
+        uses: ./.github/actions/bun-install
+
+      - name: Install tauri-driver
+        shell: bash
+        run: cargo install tauri-driver --locked
+
+      # tauri-driver bridges to Edge WebDriver; its version must match the
+      # WebView2 runtime on the runner. Fetch the msedgedriver matching the
+      # installed Edge and put it on PATH.
+      - name: Install msedgedriver
+        shell: pwsh
+        run: |
+          $edge = (Get-ItemProperty "HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{56EB18F8-B008-4CBD-B6D2-8C97FE7E9062}" -ErrorAction SilentlyContinue).pv
+          if (-not $edge) { $edge = (Get-Command msedge -ErrorAction SilentlyContinue).Version }
+          if (-not $edge) { $edge = "stable" }
+          Write-Host "Edge/WebView2 version: $edge"
+          $url = if ($edge -eq "stable") {
+            "https://msedgedriver.azureedge.net/LATEST_STABLE"
+          } else { $null }
+          $ver = if ($url) { (Invoke-WebRequest $url -UseBasicParsing).Content.Trim() -replace "[^\d.]","" } else { $edge }
+          $dest = Join-Path $env:RUNNER_TEMP "edgedriver"
+          New-Item -ItemType Directory -Force -Path $dest | Out-Null
+          $zip = Join-Path $env:RUNNER_TEMP "edgedriver.zip"
+          Invoke-WebRequest "https://msedgedriver.azureedge.net/$ver/edgedriver_win64.zip" -OutFile $zip -UseBasicParsing
+          Expand-Archive $zip -DestinationPath $dest -Force
+          echo $dest | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+
+      - name: Build engine sidecar
+        shell: bash
+        run: bun --cwd=packages/desktop run sidecar
+
+      - name: Build desktop bundle
+        shell: bash
+        run: bun --cwd=packages/desktop run tauri:build
+
+      # No TAURI_APP_BINARY needed: wdio.conf.ts computes the default binary
+      # path from its own location (packages/desktop/src-tauri/target/release).
+      - name: Run packaged launch smoke test
+        shell: bash
+        run: bun --cwd=packages/desktop run e2e

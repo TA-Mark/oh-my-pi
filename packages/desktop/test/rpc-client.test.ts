@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, mock, test } from "bun:test";
 
-// ── Controllable fake of the Electron bridge ─────────────────────────────────
-// The client talks to the engine only through desktop-bridge, so mocking this
+// ── Controllable fake of the Tauri bridge ────────────────────────────────────
+// The client talks to the engine only through tauri-bridge, so mocking this
 // module lets us drive frames/exits and observe sent lines without a runtime.
 const bridge = {
 	frameCb: undefined as ((line: string) => void) | undefined,
@@ -24,7 +24,7 @@ const bridge = {
 	},
 };
 
-mock.module("../src/lib/desktop-bridge", () => ({
+mock.module("../src/lib/tauri-bridge", () => ({
 	startEngine: () => Promise.resolve(),
 	stopEngine: () => Promise.resolve(),
 	sendRpcLine: (line: string) => {
@@ -46,9 +46,7 @@ mock.module("../src/lib/desktop-bridge", () => ({
 	},
 }));
 
-const { DesktopRpcClient, RpcTimeoutError, RpcTransportError, RpcEngineError, supportsCapability } = await import(
-	"../src/lib/rpc-client"
-);
+const { DesktopRpcClient, RpcTimeoutError, RpcTransportError, RpcEngineError } = await import("../src/lib/rpc-client");
 
 function lastRequestId(): string {
 	const line = bridge.sent.at(-1);
@@ -73,28 +71,9 @@ async function startedClient(handlers?: ConstructorParameters<typeof DesktopRpcC
 beforeEach(() => bridge.reset());
 
 describe("startup", () => {
-	test("rejects commands before the ready handshake", async () => {
-		const client = new DesktopRpcClient();
-		await expect(client.getState()).rejects.toMatchObject({ kind: "transport", message: "engine is not ready" });
-	});
-	test("capability lookup is exact and backward-compatible", () => {
-		expect(supportsCapability(["prompt", "get_state"], "prompt")).toBe(true);
-		expect(supportsCapability(["prompt"], "bash")).toBe(false);
-		expect(supportsCapability([], "prompt")).toBe(false);
-	});
 	test("resolves once the ready frame arrives", async () => {
 		const client = await startedClient();
 		expect(bridge.frameCb).toBeDefined();
-		await client.stop();
-	});
-
-	test("captures protocol version and capabilities from the ready handshake", async () => {
-		const client = new DesktopRpcClient();
-		const startPromise = client.start("/tmp/ws");
-		await flush();
-		bridge.emitFrame({ type: "ready", protocolVersion: 1, capabilities: ["prompt", "get_state", 42] });
-		await startPromise;
-		expect(client.readyInfo).toEqual({ protocolVersion: 1, capabilities: ["prompt", "get_state"] });
 		await client.stop();
 	});
 });
@@ -116,64 +95,6 @@ describe("request/response correlation", () => {
 		await client.stop();
 	});
 
-	test("steer, follow-up, and model cycling preserve their RPC contracts", async () => {
-		const client = await startedClient();
-		const image = { type: "image" as const, data: "aGVsbG8=", mimeType: "image/png" };
-
-		const steer = client.steer("focus on tests", [image]);
-		const steerRequest = JSON.parse(bridge.sent.at(-1) ?? "{}") as Record<string, unknown>;
-		expect(steerRequest).toMatchObject({ type: "steer", message: "focus on tests", images: [image] });
-		bridge.emitFrame({ type: "response", command: "steer", id: steerRequest.id, success: true });
-		await steer;
-
-		const followUp = client.followUp("then update docs");
-		const followUpRequest = JSON.parse(bridge.sent.at(-1) ?? "{}") as Record<string, unknown>;
-		expect(followUpRequest).toMatchObject({ type: "follow_up", message: "then update docs" });
-		bridge.emitFrame({ type: "response", command: "follow_up", id: followUpRequest.id, success: true });
-		await followUp;
-
-		const cycle = client.cycleModel();
-		const cycleRequest = JSON.parse(bridge.sent.at(-1) ?? "{}") as Record<string, unknown>;
-		expect(cycleRequest).toMatchObject({ type: "cycle_model" });
-		bridge.emitFrame({
-			type: "response",
-			command: "cycle_model",
-			id: cycleRequest.id,
-			success: true,
-			data: { provider: "openai", id: "gpt-5" },
-		});
-		expect(await cycle).toEqual({ provider: "openai", id: "gpt-5" });
-		await client.stop();
-	});
-
-	test("settings commands preserve typed payloads and correlation", async () => {
-		const client = await startedClient();
-		const snapshotPromise = client.getSettings();
-		const snapshotRequest = JSON.parse(bridge.sent.at(-1) ?? "{}") as Record<string, unknown>;
-		expect(snapshotRequest.type).toBe("get_settings");
-		bridge.emitFrame({
-			type: "response",
-			command: "get_settings",
-			id: snapshotRequest.id,
-			success: true,
-			data: { settings: [], plugins: [] },
-		});
-		expect(await snapshotPromise).toEqual({ settings: [], plugins: [] });
-
-		const updatePromise = client.setSetting("retry.enabled", false);
-		const updateRequest = JSON.parse(bridge.sent.at(-1) ?? "{}") as Record<string, unknown>;
-		expect(updateRequest).toMatchObject({ type: "set_setting", path: "retry.enabled", value: false });
-		bridge.emitFrame({
-			type: "response",
-			command: "set_setting",
-			id: updateRequest.id,
-			success: true,
-			data: { path: "retry.enabled", category: "retry", type: "boolean", value: false },
-		});
-		expect(await updatePromise).toMatchObject({ path: "retry.enabled", value: false });
-		await client.stop();
-	});
-
 	test("a response with a mismatched id does not resolve", async () => {
 		const client = await startedClient();
 		let settled = false;
@@ -186,42 +107,6 @@ describe("request/response correlation", () => {
 		await client.stop(); // rejects the still-pending request → avoid unhandled
 		await p.catch(() => {});
 	});
-
-	test("nullable response data is preserved for empty handoff results", async () => {
-		const client = await startedClient();
-		const pending = client.handoff();
-		const id = lastRequestId();
-		bridge.emitFrame({ type: "response", command: "handoff", id, success: true, data: null });
-		await expect(pending).resolves.toBeNull();
-		await client.stop();
-	});
-
-	test("subagent transcript request preserves cursor and messages", async () => {
-		const client = await startedClient();
-		const pending = client.getSubagentMessages({ subagentId: "sub-1", fromByte: 12 });
-		const id = lastRequestId();
-		expect(JSON.parse(bridge.sent.at(-1) ?? "{}")).toMatchObject({
-			type: "get_subagent_messages",
-			subagentId: "sub-1",
-			fromByte: 12,
-		});
-		bridge.emitFrame({
-			type: "response",
-			command: "get_subagent_messages",
-			id,
-			success: true,
-			data: {
-				sessionFile: "sub.jsonl",
-				fromByte: 12,
-				nextByte: 20,
-				reset: false,
-				entries: [],
-				messages: [{ role: "assistant", content: "done" }],
-			},
-		});
-		await expect(pending).resolves.toMatchObject({ nextByte: 20, messages: [{ role: "assistant" }] });
-		await client.stop();
-	});
 });
 
 describe("error classification (0.5)", () => {
@@ -231,22 +116,6 @@ describe("error classification (0.5)", () => {
 		const id = lastRequestId();
 		bridge.emitFrame({ type: "response", command: "get_state", id, success: false, error: "nope" });
 		await expect(p).rejects.toBeInstanceOf(RpcEngineError);
-		await client.stop();
-	});
-
-	test("structured engine errors preserve code and message", async () => {
-		const client = await startedClient();
-		const p = client.getState();
-		const id = lastRequestId();
-		bridge.emitFrame({
-			type: "response",
-			command: "get_state",
-			id,
-			success: false,
-			error: { code: "BUSY", message: "engine is busy" },
-		});
-		const error = await p.catch(value => value);
-		expect(error).toMatchObject({ kind: "engine", code: "BUSY", message: "engine is busy" });
 		await client.stop();
 	});
 
@@ -273,17 +142,6 @@ describe("error classification (0.5)", () => {
 		await expect(p).rejects.toBeInstanceOf(RpcTransportError);
 		await client.stop();
 	});
-
-	test("engine exit returns the client to a restartable lifecycle", async () => {
-		const client = await startedClient();
-		bridge.emitExit();
-		bridge.reset();
-		const restart = client.start("/tmp/recovered");
-		await flush();
-		bridge.emitFrame({ type: "ready", protocolVersion: 1, capabilities: ["get_state"] });
-		await expect(restart).resolves.toBeUndefined();
-		await client.stop();
-	});
 });
 
 describe("cleanup", () => {
@@ -307,24 +165,6 @@ describe("cleanup", () => {
 });
 
 describe("frame classification", () => {
-	test("detects missing event sequence numbers and drops stale events", async () => {
-		const gaps: Array<[number, number]> = [];
-		const events: string[] = [];
-		const client = await startedClient({
-			onEventGap: (expected, received) => gaps.push([expected, received]),
-			onEvent: event => events.push(event.type),
-		});
-		bridge.emitFrame({ type: "agent_start", seq: 1 });
-		bridge.emitFrame({ type: "agent_end", seq: 3 });
-		bridge.emitFrame({ type: "agent_start", seq: 2 });
-		expect(gaps).toEqual([
-			[2, 3],
-			[4, 2],
-		]);
-		expect(events).toEqual(["agent_start", "agent_end"]);
-		await client.stop();
-	});
-
 	test("session events (no id) route to onEvent", async () => {
 		const events: Array<{ type: string }> = [];
 		const client = await startedClient({ onEvent: e => events.push(e as { type: string }) });
@@ -349,49 +189,6 @@ describe("frame classification", () => {
 		bridge.emitFrame({ type: "extension_ui_request", id: "x1", method: "confirm", title: "t", message: "m" });
 		expect(seen).toHaveLength(1);
 		expect(seen[0].method).toBe("confirm");
-		await client.stop();
-	});
-
-	test("command output is delivered instead of being dropped", async () => {
-		const output: string[] = [];
-		const client = await startedClient({ onCommandOutput: frame => output.push(frame.text) });
-		bridge.emitFrame({ type: "command_output", text: "Current model: openai/gpt-5" });
-		expect(output).toEqual(["Current model: openai/gpt-5"]);
-		await client.stop();
-	});
-
-	test("runtime metadata updates reach their dedicated handlers", async () => {
-		const seen: string[] = [];
-		const client = await startedClient({
-			onAvailableCommandsUpdate: frame =>
-				seen.push(`commands:${frame.commands.map(command => command.name).join(",")}`),
-			onSessionInfoUpdate: frame => seen.push(`session:${frame.sessionId}:${frame.title}`),
-			onConfigUpdate: frame => seen.push(`config:${frame.model?.id}:${frame.thinkingLevel}`),
-		});
-		bridge.emitFrame({
-			type: "available_commands_update",
-			commands: [{ name: "stats", source: "builtin" }, { invalid: true }],
-		});
-		bridge.emitFrame({ type: "session_info_update", sessionId: "session-1", title: "Renamed" });
-		bridge.emitFrame({
-			type: "config_update",
-			model: { provider: "openai", id: "gpt-5" },
-			thinkingLevel: "high",
-		});
-		expect(seen).toEqual(["commands:stats", "session:session-1:Renamed", "config:gpt-5:high"]);
-		await client.stop();
-	});
-
-	test("extension runtime failures reach the error handler", async () => {
-		const errors: string[] = [];
-		const client = await startedClient({ onExtensionError: frame => errors.push(frame.error) });
-		bridge.emitFrame({
-			type: "extension_error",
-			extensionPath: "/plugin/main.ts",
-			event: "tool_call",
-			error: "boom",
-		});
-		expect(errors).toEqual(["boom"]);
 		await client.stop();
 	});
 
@@ -485,14 +282,5 @@ describe("lifecycle: crash / restart / workspace switch (1.4)", () => {
 		const client = await startedClient();
 		await client.stop();
 		await expect(client.stop()).resolves.toBeUndefined();
-	});
-
-	test("restart reattaches listeners and waits for a fresh ready frame", async () => {
-		const client = await startedClient();
-		const restart = client.restart("/tmp/ws-restarted");
-		await flush();
-		bridge.emitFrame({ type: "ready" });
-		await expect(restart).resolves.toBeUndefined();
-		await client.stop();
 	});
 });

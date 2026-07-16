@@ -361,9 +361,7 @@ export class JsRuntime {
 					},
 				});
 				const tableConsole = new Console({ stdout: stream, colorMode: false });
-				const table = Reflect.get(tableConsole, "table");
-				if (typeof table !== "function") throw new Error("console.table is unavailable in this runtime");
-				Reflect.apply(table, tableConsole, args);
+				(tableConsole.table as (...a: unknown[]) => void)(...args);
 				hooks.onText(buffer.endsWith("\n") ? buffer : `${buffer}\n`);
 			},
 			__omp_display__: (value: unknown) => this.displayValue(value),

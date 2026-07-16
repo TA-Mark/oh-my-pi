@@ -11,13 +11,12 @@
  * - Extension UI: Extension UI requests are emitted, client responds with extension_ui_response
  */
 
-import type * as nodeFs from "node:fs";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { getOAuthProviders } from "@oh-my-pi/pi-ai/oauth";
 import { PROVIDER_REGISTRY } from "@oh-my-pi/pi-ai/registry";
 import { isZodSchema, zodToWireSchema } from "@oh-my-pi/pi-ai/utils/schema";
-import { $env, getAgentDir, isEnoent, isRecord, readJsonl, Snowflake, setProjectDir } from "@oh-my-pi/pi-utils";
+import { $env, isEnoent, isRecord, readJsonl, Snowflake, setProjectDir } from "@oh-my-pi/pi-utils";
 import { reset as resetCapabilities } from "../../capability";
 import { applyProviderGlobalsFromSettings } from "../../config/provider-globals";
 import { clearPluginRootsAndCaches, resolveActiveProjectRegistryPath } from "../../discovery/helpers";
@@ -28,13 +27,9 @@ import {
 	type ExtensionWidgetOptions,
 	getExtensionUISelectOptionLabel,
 } from "../../extensibility/extensions";
-import { PluginManager } from "../../extensibility/plugins/manager";
 import { buildSkillPromptMessage, parseSkillInvocation } from "../../extensibility/skills";
 import { loadSlashCommands } from "../../extensibility/slash-commands";
 import { resolveLocalUrlToPath } from "../../internal-urls";
-import { setMcpServerEnabled } from "../../mcp/config-writer";
-import type { MCPManager } from "../../mcp/manager";
-import { createSessionMemoryRuntimeContext } from "../../memory-backend/runtime";
 import { type Theme, theme } from "../../modes/theme/theme";
 import { type PlanApprovalDetails, resolveApprovedPlan } from "../../plan-mode/approved-plan";
 import type { AgentSession } from "../../session/agent-session";
@@ -42,8 +37,6 @@ import { SKILL_PROMPT_MESSAGE_TYPE, USER_INTERRUPT_LABEL } from "../../session/m
 import { SessionManager } from "../../session/session-manager";
 import { executeAcpBuiltinSlashCommand } from "../../slash-commands/acp-builtins";
 import { buildAvailableSlashCommands } from "../../slash-commands/available-commands";
-import { type BrowserParams, BrowserTool } from "../../tools/browser";
-import { listTabs } from "../../tools/browser/tab-supervisor";
 import { normalizeLocalScheme } from "../../tools/path-utils";
 import { runResolveInvocation } from "../../tools/resolve";
 import { ToolError } from "../../tools/tool-errors";
@@ -52,13 +45,6 @@ import * as git from "../../utils/git";
 import { initializeExtensions } from "../runtime-init";
 import { isRpcHostToolResult, isRpcHostToolUpdate, RpcHostToolBridge } from "./host-tools";
 import { isRpcHostUriResult, RpcHostUriBridge } from "./host-uris";
-import {
-	buildRpcSettingsSnapshot,
-	getRpcPluginDescriptor,
-	getRpcSettingDescriptor,
-	setRpcPluginEnabled,
-	setRpcSetting,
-} from "./rpc-settings";
 import { RpcSubagentRegistry, readRpcSubagentTranscript } from "./rpc-subagents";
 import type {
 	RpcCommand,
@@ -77,7 +63,6 @@ import type {
 	RpcSessionState,
 	RpcSessionSummary,
 	RpcSubagentSubscriptionLevel,
-	RpcWorkspaceEntry,
 	RpcWorkspaceFileChange,
 } from "./rpc-types";
 
@@ -218,104 +203,6 @@ async function buildWorkspaceDiff(cwd: string): Promise<RpcWorkspaceFileChange[]
 
 	out.sort((a, b) => a.path.localeCompare(b.path));
 	return out;
-}
-
-const MAX_WORKSPACE_ENTRIES = 5000;
-const DEFAULT_FILE_PREVIEW_BYTES = 256 * 1024;
-const MAX_FILE_PREVIEW_BYTES = 1024 * 1024;
-const IGNORED_WORKSPACE_DIRECTORIES = new Set([".git", "node_modules", ".cache", "dist"]);
-
-function isContainedPath(root: string, candidate: string): boolean {
-	const relative = path.relative(root, candidate);
-	return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
-}
-
-function validateBrowserUrl(raw: string): string {
-	const url = new URL(raw.trim());
-	if (url.protocol !== "http:" && url.protocol !== "https:") throw new Error("Browser URL must use http or https");
-	if (url.username || url.password) throw new Error("Browser URLs cannot contain credentials");
-	return url.href;
-}
-
-async function executeBrowserRpc(session: AgentSession, params: BrowserParams) {
-	const tool = session.getToolByName("browser");
-	if (!(tool instanceof BrowserTool)) throw new Error("Browser tool is unavailable or disabled");
-	return tool.execute(`rpc-browser-${Date.now()}`, params, undefined);
-}
-
-function browserResultText(result: { content: readonly { type: string; text?: string }[] }): string {
-	return result.content
-		.filter(
-			(block): block is { type: "text"; text: string } => block.type === "text" && typeof block.text === "string",
-		)
-		.map(block => block.text)
-		.join("\n")
-		.slice(0, 128 * 1024);
-}
-
-async function resolveWorkspaceFile(cwd: string, requestedPath: string): Promise<string> {
-	const root = await fs.realpath(cwd);
-	const lexical = path.resolve(root, requestedPath);
-	if (!isContainedPath(root, lexical)) throw new Error("Path is outside the workspace");
-	const resolved = await fs.realpath(lexical);
-	if (!isContainedPath(root, resolved)) throw new Error("Path resolves outside the workspace");
-	return resolved;
-}
-
-async function listWorkspaceEntries(
-	cwd: string,
-	query: string,
-	requestedLimit: number | undefined,
-): Promise<{ entries: RpcWorkspaceEntry[]; truncated: boolean }> {
-	const root = await fs.realpath(cwd);
-	const limit = Math.max(1, Math.min(MAX_WORKSPACE_ENTRIES, requestedLimit ?? MAX_WORKSPACE_ENTRIES));
-	const normalizedQuery = query.trim().toLowerCase();
-	const entries: RpcWorkspaceEntry[] = [];
-	const pending = [root];
-	let truncated = false;
-	while (pending.length > 0 && entries.length < limit) {
-		const current = pending.pop();
-		if (!current) break;
-		let children: nodeFs.Dirent[];
-		try {
-			children = await fs.readdir(current, { withFileTypes: true });
-		} catch {
-			continue;
-		}
-		children.sort((a, b) => a.name.localeCompare(b.name));
-		for (const child of children) {
-			if (entries.length >= limit) {
-				truncated = true;
-				break;
-			}
-			if (child.isSymbolicLink()) continue;
-			if (child.isDirectory() && IGNORED_WORKSPACE_DIRECTORIES.has(child.name)) continue;
-			const absolute = path.join(current, child.name);
-			const relative = path.relative(root, absolute).split(path.sep).join("/");
-			if (!child.isDirectory() && !child.isFile()) continue;
-			if (child.isDirectory()) pending.push(absolute);
-			if (normalizedQuery && !relative.toLowerCase().includes(normalizedQuery)) continue;
-			let size: number | null = null;
-			let mtimeMs: number | null = null;
-			try {
-				const stat = await fs.stat(absolute);
-				size = child.isFile() ? stat.size : null;
-				mtimeMs = stat.mtimeMs;
-			} catch {
-				// Entry changed during the walk; keep the path with unknown metadata.
-			}
-			entries.push({
-				path: relative,
-				name: child.name,
-				type: child.isDirectory() ? "directory" : "file",
-				size,
-				mtimeMs,
-			});
-		}
-	}
-	if (pending.length > 0) truncated = true;
-	entries.sort((a, b) => a.path.localeCompare(b.path));
-	return { entries, truncated };
 }
 
 export type RpcSessionChangeSession = Pick<AgentSession, "newSession" | "switchSession" | "branch">;
@@ -778,87 +665,7 @@ export async function runRpcMode(
 	session: AgentSession,
 	setToolUIContext?: (uiContext: ExtensionUIContext, hasUI: boolean) => void,
 	eventBus?: EventBus,
-	mcpManager?: MCPManager,
 ): Promise<never> {
-	const protocolVersion = 1;
-	const capabilities = [
-		"prompt",
-		"steer",
-		"follow_up",
-		"abort",
-		"abort_and_prompt",
-		"new_session",
-		"set_workspace",
-		"get_state",
-		"get_settings",
-		"set_setting",
-		"set_plugin_enabled",
-		"install_plugin",
-		"update_plugin",
-		"uninstall_plugin",
-		"get_available_commands",
-		"set_todos",
-		"set_host_tools",
-		"set_host_uri_schemes",
-		"set_subagent_subscription",
-		"get_subagents",
-		"get_subagent_messages",
-		"set_model",
-		"cycle_model",
-		"get_available_models",
-		"set_thinking_level",
-		"cycle_thinking_level",
-		"set_steering_mode",
-		"set_follow_up_mode",
-		"set_interrupt_mode",
-		"compact",
-		"set_auto_compaction",
-		"set_approval_mode",
-		"set_auto_retry",
-		"abort_retry",
-		"bash",
-		"abort_bash",
-		"get_session_stats",
-		"get_workspace_diff",
-		"list_workspace_files",
-		"read_workspace_file",
-		"get_context_snapshot",
-		"get_mcp_status",
-		"reconnect_mcp",
-		"set_mcp_enabled",
-		"get_memory_status",
-		"search_memory",
-		"browser_open",
-		"browser_close",
-		"browser_snapshot",
-		"browser_navigate",
-		"browser_history",
-		"browser_list_tabs",
-		"get_git_status",
-		"revert_files",
-		"commit",
-		"push",
-		"create_pull_request",
-		"list_worktrees",
-		"create_worktree",
-		"remove_worktree",
-		"export_html",
-		"list_sessions",
-		"switch_session",
-		"branch",
-		"get_branch_messages",
-		"get_last_assistant_text",
-		"set_session_name",
-		"handoff",
-		"get_messages",
-		"get_login_providers",
-		"login",
-		"set_api_key",
-		"logout",
-		"set_plan_mode",
-		"stage_hunks",
-		"unstage",
-	] as const;
 	// Signal to RPC clients that the server is ready to accept commands
 	// Suppress terminal notifications: they write \x07 (BEL) or OSC sequences directly to
 	// process.stdout with no newline, which the reader merges with the next JSON line and
@@ -866,16 +673,8 @@ export async function runRpcMode(
 	// may write there.
 	process.env.PI_NOTIFICATIONS = "off";
 
-	process.stdout.write(`${JSON.stringify({ type: "ready", protocolVersion, capabilities })}\n`);
-	let eventSequence = 0;
+	process.stdout.write(`${JSON.stringify({ type: "ready" })}\n`);
 	const output = (obj: RpcResponse | RpcExtensionUIRequest | object) => {
-		if (typeof obj === "object" && obj !== null && "type" in obj) {
-			const type = (obj as { type?: unknown }).type;
-			if (typeof type === "string" && type !== "response" && type !== "ready") {
-				process.stdout.write(`${JSON.stringify({ ...obj, seq: ++eventSequence })}\n`);
-				return;
-			}
-		}
 		process.stdout.write(`${JSON.stringify(obj)}\n`);
 	};
 	const emitRpcTitles = shouldEmitRpcTitles();
@@ -1445,7 +1244,6 @@ export async function runRpcMode(
 					sessionId: session.sessionId,
 					sessionName: session.sessionName,
 					autoCompactionEnabled: session.autoCompactionEnabled,
-					autoRetryEnabled: session.autoRetryEnabled,
 					messageCount: session.messages.length,
 					queuedMessageCount: session.queuedMessageCount,
 					todoPhases: session.getTodoPhases(),
@@ -1460,94 +1258,6 @@ export async function runRpcMode(
 					planMode: toRpcPlanMode(),
 				};
 				return success(id, "get_state", state);
-			}
-
-			case "get_settings": {
-				try {
-					return success(
-						id,
-						"get_settings",
-						await buildRpcSettingsSnapshot(session.settings, session.sessionManager.getCwd()),
-					);
-				} catch (err) {
-					return error(id, "get_settings", err instanceof Error ? err.message : String(err));
-				}
-			}
-
-			case "set_setting": {
-				if (session.isStreaming) {
-					return error(id, "set_setting", "Cannot change settings while a response is in progress");
-				}
-				let previousValue: unknown;
-				let persisted = false;
-				try {
-					previousValue = getRpcSettingDescriptor(session.settings, command.path).value;
-					const setting = await setRpcSetting(session.settings, command.path, command.value);
-					persisted = true;
-					if (setting.path === "retry.enabled") session.setAutoRetryEnabled(setting.value === true);
-					if (setting.path === "compaction.enabled") session.setAutoCompactionEnabled(setting.value === true);
-					if (setting.category === "providers") {
-						applyProviderGlobalsFromSettings(session.settings);
-						await session.modelRegistry.refresh();
-					}
-					if (["tools", "skills", "memory"].includes(setting.category)) await session.refreshBaseSystemPrompt();
-					if (["providers", "tools", "skills"].includes(setting.category)) await reloadPluginState();
-					return success(id, "set_setting", setting);
-				} catch (err) {
-					if (persisted) await setRpcSetting(session.settings, command.path, previousValue).catch(() => {});
-					return error(id, "set_setting", err instanceof Error ? err.message : String(err));
-				}
-			}
-
-			case "set_plugin_enabled": {
-				if (session.isStreaming) {
-					return error(id, "set_plugin_enabled", "Cannot change plugins while a response is in progress");
-				}
-				const cwd = session.sessionManager.getCwd();
-				let previousEnabled: boolean | undefined;
-				let persisted = false;
-				try {
-					previousEnabled = (await getRpcPluginDescriptor(cwd, command.name)).enabled;
-					const plugin = await setRpcPluginEnabled(cwd, command.name, command.enabled);
-					persisted = true;
-					await reloadPluginState();
-					return success(id, "set_plugin_enabled", plugin);
-				} catch (err) {
-					if (persisted && previousEnabled !== undefined) {
-						await setRpcPluginEnabled(cwd, command.name, previousEnabled).catch(() => {});
-					}
-					return error(id, "set_plugin_enabled", err instanceof Error ? err.message : String(err));
-				}
-			}
-
-			case "install_plugin":
-			case "update_plugin": {
-				if (session.isStreaming)
-					return error(id, command.type, "Cannot change plugins while a response is in progress");
-				try {
-					const manager = new PluginManager(session.sessionManager.getCwd());
-					const installed = await manager.install(command.type === "install_plugin" ? command.spec : command.name);
-					await reloadPluginState();
-					return success(
-						id,
-						command.type,
-						await getRpcPluginDescriptor(session.sessionManager.getCwd(), installed.name),
-					);
-				} catch (err: unknown) {
-					return error(id, command.type, err instanceof Error ? err.message : String(err));
-				}
-			}
-
-			case "uninstall_plugin": {
-				if (session.isStreaming)
-					return error(id, "uninstall_plugin", "Cannot change plugins while a response is in progress");
-				try {
-					await new PluginManager(session.sessionManager.getCwd()).uninstall(command.name);
-					await reloadPluginState();
-					return success(id, "uninstall_plugin", { name: command.name });
-				} catch (err: unknown) {
-					return error(id, "uninstall_plugin", err instanceof Error ? err.message : String(err));
-				}
 			}
 
 			case "get_available_commands": {
@@ -1752,362 +1462,6 @@ export async function runRpcMode(
 				return success(id, "get_workspace_diff", { files });
 			}
 
-			case "list_workspace_files": {
-				try {
-					const result = await listWorkspaceEntries(
-						session.sessionManager.getCwd(),
-						command.query ?? "",
-						command.limit,
-					);
-					return success(id, "list_workspace_files", result);
-				} catch (err) {
-					return error(id, "list_workspace_files", err instanceof Error ? err.message : String(err));
-				}
-			}
-
-			case "read_workspace_file": {
-				try {
-					const cwd = session.sessionManager.getCwd();
-					const resolved = await resolveWorkspaceFile(cwd, command.path.trim());
-					const stat = await fs.stat(resolved);
-					if (!stat.isFile()) return error(id, "read_workspace_file", "Path is not a file");
-					const maxBytes = Math.max(
-						1,
-						Math.min(MAX_FILE_PREVIEW_BYTES, command.maxBytes ?? DEFAULT_FILE_PREVIEW_BYTES),
-					);
-					const bytes = await Bun.file(resolved)
-						.slice(0, maxBytes + 1)
-						.bytes();
-					const sample = bytes.subarray(0, Math.min(bytes.length, 8192));
-					if (sample.includes(0)) return error(id, "read_workspace_file", "Binary files cannot be previewed");
-					const truncated = bytes.length > maxBytes;
-					const content = new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(0, maxBytes));
-					return success(id, "read_workspace_file", {
-						path: path.relative(cwd, resolved).split(path.sep).join("/"),
-						content,
-						size: stat.size,
-						truncated,
-					});
-				} catch (err) {
-					const message =
-						err instanceof TypeError
-							? "File is not valid UTF-8 text"
-							: err instanceof Error
-								? err.message
-								: String(err);
-					return error(id, "read_workspace_file", message);
-				}
-			}
-
-			case "get_context_snapshot": {
-				return success(id, "get_context_snapshot", {
-					skills: session.skills.map(skill => skill.name),
-					memoryBackend: session.settings.get("memory.backend") || null,
-					skillDetails: session.skills.map(skill => ({
-						name: skill.name,
-						description: skill.description,
-						filePath: skill.filePath,
-						source: skill.source,
-						hidden: skill.hide,
-					})),
-					skillWarnings: session.skillWarnings,
-				});
-			}
-
-			case "get_mcp_status": {
-				return success(id, "get_mcp_status", { servers: mcpManager?.getStatusSnapshot() ?? [] });
-			}
-
-			case "reconnect_mcp": {
-				if (!mcpManager) return error(id, "reconnect_mcp", "MCP is not enabled for this session");
-				try {
-					const connection = await mcpManager.reconnectServer(command.serverName, { manual: true });
-					if (!connection) return error(id, "reconnect_mcp", `MCP server not found: ${command.serverName}`);
-					await session.refreshMCPTools(mcpManager.getTools());
-					return success(id, "reconnect_mcp", {
-						serverName: command.serverName,
-						status: mcpManager.getConnectionStatus(command.serverName),
-						toolCount: mcpManager.getTools().filter(tool => tool.mcpServerName === command.serverName).length,
-					});
-				} catch (err: unknown) {
-					return error(id, "reconnect_mcp", err instanceof Error ? err.message : String(err));
-				}
-			}
-
-			case "set_mcp_enabled": {
-				if (!mcpManager) return error(id, "set_mcp_enabled", "MCP is not enabled for this session");
-				const source = mcpManager.getSource(command.serverName);
-				const sourcePath =
-					source && /(?:^|[\\/])(?:\.mcp\.json|mcp\.json)$/.test(source.path) ? source.path : undefined;
-				try {
-					await setMcpServerEnabled({
-						userPath: path.join(getAgentDir(), "mcp.json"),
-						projectPath: path.join(session.sessionManager.getCwd(), ".omp", "mcp.json"),
-						sourcePath,
-						name: command.serverName,
-						enabled: command.enabled,
-					});
-					const currentConfig = mcpManager.getServerConfig(command.serverName);
-					if (currentConfig)
-						mcpManager.setServerConfig(command.serverName, { ...currentConfig, enabled: command.enabled });
-					if (!command.enabled) await mcpManager.disconnectServer(command.serverName);
-					else if (mcpManager.getConnectionStatus(command.serverName) === "disconnected") {
-						const connection = await mcpManager.reconnectServer(command.serverName, { manual: true });
-						if (connection) await session.refreshMCPTools(mcpManager.getTools());
-					}
-					return success(id, "set_mcp_enabled", { serverName: command.serverName, enabled: command.enabled });
-				} catch (err: unknown) {
-					return error(id, "set_mcp_enabled", err instanceof Error ? err.message : String(err));
-				}
-			}
-
-			case "get_memory_status": {
-				const runtime = createSessionMemoryRuntimeContext(session, getAgentDir(), session.sessionManager.getCwd());
-				try {
-					return success(id, "get_memory_status", await runtime.status());
-				} catch (err: unknown) {
-					return error(id, "get_memory_status", err instanceof Error ? err.message : String(err));
-				}
-			}
-
-			case "search_memory": {
-				const runtime = createSessionMemoryRuntimeContext(session, getAgentDir(), session.sessionManager.getCwd());
-				try {
-					return success(id, "search_memory", await runtime.search(command.query, { limit: command.limit }));
-				} catch (err: unknown) {
-					return error(id, "search_memory", err instanceof Error ? err.message : String(err));
-				}
-			}
-
-			case "browser_open": {
-				try {
-					const url = validateBrowserUrl(command.url);
-					const name = command.name?.trim() || "main";
-					const result = await executeBrowserRpc(session, { action: "open", name, url });
-					return success(id, "browser_open", {
-						name,
-						url: result.details?.url ?? url,
-						text: browserResultText(result),
-					});
-				} catch (err) {
-					return error(id, "browser_open", err instanceof Error ? err.message : String(err));
-				}
-			}
-
-			case "browser_list_tabs": {
-				return success(id, "browser_list_tabs", { tabs: listTabs() });
-			}
-
-			case "browser_close": {
-				try {
-					const text = browserResultText(
-						await executeBrowserRpc(session, {
-							action: "close",
-							name: command.name?.trim() || "main",
-							all: command.all,
-						}),
-					);
-					return success(id, "browser_close", { text });
-				} catch (err) {
-					return error(id, "browser_close", err instanceof Error ? err.message : String(err));
-				}
-			}
-
-			case "browser_snapshot": {
-				try {
-					const name = command.name?.trim() || "main";
-					const result = await executeBrowserRpc(session, {
-						action: "run",
-						name,
-						code: "const observation = await tab.observe(); return observation;",
-					});
-					return success(id, "browser_snapshot", {
-						name,
-						url: result.details?.url ?? "",
-						snapshot: browserResultText(result),
-					});
-				} catch (err) {
-					return error(id, "browser_snapshot", err instanceof Error ? err.message : String(err));
-				}
-			}
-
-			case "browser_navigate": {
-				try {
-					const url = validateBrowserUrl(command.url);
-					const name = command.name?.trim() || "main";
-					const result = await executeBrowserRpc(session, {
-						action: "run",
-						name,
-						code: `await tab.goto(${JSON.stringify(url)}); return page.url();`,
-					});
-					return success(id, "browser_navigate", {
-						name,
-						url: result.details?.url ?? url,
-						text: browserResultText(result),
-					});
-				} catch (err) {
-					return error(id, "browser_navigate", err instanceof Error ? err.message : String(err));
-				}
-			}
-
-			case "browser_history": {
-				try {
-					const name = command.name?.trim() || "main";
-					const code =
-						command.direction === "back"
-							? "await page.goBack(); return page.url();"
-							: command.direction === "forward"
-								? "await page.goForward(); return page.url();"
-								: "await page.reload(); return page.url();";
-					const result = await executeBrowserRpc(session, { action: "run", name, code });
-					return success(id, "browser_history", {
-						name,
-						url: result.details?.url ?? "",
-						text: browserResultText(result),
-					});
-				} catch (err) {
-					return error(id, "browser_history", err instanceof Error ? err.message : String(err));
-				}
-			}
-
-			case "get_git_status": {
-				const cwd = session.sessionManager.getCwd();
-				try {
-					const [summary, head] = await Promise.all([git.status.summary(cwd), git.head.resolve(cwd)]);
-					return success(id, "get_git_status", {
-						branch: head?.kind === "ref" ? head.branchName : null,
-						staged: summary?.staged ?? 0,
-						unstaged: summary?.unstaged ?? 0,
-						untracked: summary?.untracked ?? 0,
-					});
-				} catch (err) {
-					return error(id, "get_git_status", err instanceof Error ? err.message : String(err));
-				}
-			}
-
-			case "revert_files": {
-				if (session.isStreaming)
-					return error(id, "revert_files", "Cannot revert files while a response is in progress");
-				const files = [...new Set(command.files.map(file => file.trim()).filter(Boolean))];
-				if (files.length === 0) return error(id, "revert_files", "No files provided");
-				try {
-					const cwd = session.sessionManager.getCwd();
-					const tracked = new Set(await git.ls.files(cwd));
-					const untracked = files.filter(file => !tracked.has(file));
-					if (untracked.length > 0)
-						return error(id, "revert_files", `Cannot revert untracked files: ${untracked.join(", ")}`);
-					await git.restore(cwd, { source: "HEAD", staged: true, worktree: true, files });
-					return success(id, "revert_files", { files });
-				} catch (err) {
-					return error(id, "revert_files", err instanceof Error ? err.message : String(err));
-				}
-			}
-
-			case "commit": {
-				if (session.isStreaming) return error(id, "commit", "Cannot commit while a response is in progress");
-				const message = command.message.trim();
-				if (!message) return error(id, "commit", "Commit message cannot be empty");
-				try {
-					const cwd = session.sessionManager.getCwd();
-					if (!(await git.diff.has(cwd, { cached: true })))
-						return error(id, "commit", "No staged changes to commit");
-					const result = await git.commit(cwd, message);
-					return success(id, "commit", { stdout: result.stdout, stderr: result.stderr });
-				} catch (err) {
-					return error(id, "commit", err instanceof Error ? err.message : String(err));
-				}
-			}
-
-			case "push": {
-				if (session.isStreaming) return error(id, "push", "Cannot push while a response is in progress");
-				try {
-					const cwd = session.sessionManager.getCwd();
-					const head = await git.head.resolve(cwd);
-					if (head?.kind !== "ref" || !head.branchName) return error(id, "push", "Cannot push a detached HEAD");
-					const remote = command.remote?.trim() || undefined;
-					const refspec = command.refspec?.trim() || undefined;
-					await git.push(cwd, { remote, refspec });
-					return success(id, "push", { remote: remote ?? null, refspec: refspec ?? null });
-				} catch (err) {
-					return error(id, "push", err instanceof Error ? err.message : String(err));
-				}
-			}
-
-			case "create_pull_request": {
-				if (session.isStreaming)
-					return error(id, "create_pull_request", "Cannot create a pull request while a response is in progress");
-				const title = command.title.trim();
-				if (!title) return error(id, "create_pull_request", "Pull request title cannot be empty");
-				try {
-					const args = ["pr", "create", "--title", title, "--body", command.body.trim()];
-					const base = command.base?.trim();
-					if (base) args.push("--base", base);
-					if (command.draft) args.push("--draft");
-					const url = await git.github.text(session.sessionManager.getCwd(), args);
-					return success(id, "create_pull_request", { url: url.trim() });
-				} catch (err) {
-					return error(id, "create_pull_request", err instanceof Error ? err.message : String(err));
-				}
-			}
-
-			case "list_worktrees": {
-				try {
-					const entries = await git.worktree.list(session.sessionManager.getCwd());
-					return success(id, "list_worktrees", {
-						worktrees: entries.map(entry => ({
-							path: entry.path,
-							branch: entry.branch ?? null,
-							detached: entry.detached,
-							head: entry.head ?? null,
-						})),
-					});
-				} catch (err) {
-					return error(id, "list_worktrees", err instanceof Error ? err.message : String(err));
-				}
-			}
-
-			case "create_worktree": {
-				if (session.isStreaming)
-					return error(id, "create_worktree", "Cannot create a worktree while a response is in progress");
-				const worktreePath = path.resolve(command.path.trim());
-				const ref = command.ref.trim();
-				if (!command.path.trim() || !path.isAbsolute(command.path.trim()))
-					return error(id, "create_worktree", "Worktree path must be absolute");
-				if (!ref) return error(id, "create_worktree", "Worktree ref cannot be empty");
-				try {
-					const cwd = session.sessionManager.getCwd();
-					await git.worktree.add(cwd, worktreePath, ref, { detach: command.detach });
-					const created = (await git.worktree.list(cwd)).find(entry => path.resolve(entry.path) === worktreePath);
-					return success(id, "create_worktree", {
-						path: worktreePath,
-						branch: created?.branch ?? null,
-						detached: created?.detached ?? Boolean(command.detach),
-						head: created?.head ?? null,
-					});
-				} catch (err) {
-					return error(id, "create_worktree", err instanceof Error ? err.message : String(err));
-				}
-			}
-
-			case "remove_worktree": {
-				if (session.isStreaming)
-					return error(id, "remove_worktree", "Cannot remove a worktree while a response is in progress");
-				const worktreePath = path.resolve(command.path.trim());
-				if (!command.path.trim() || !path.isAbsolute(command.path.trim()))
-					return error(id, "remove_worktree", "Worktree path must be absolute");
-				try {
-					const cwd = session.sessionManager.getCwd();
-					if (path.resolve(cwd) === worktreePath)
-						return error(id, "remove_worktree", "Cannot remove the active workspace");
-					const known = (await git.worktree.list(cwd)).some(entry => path.resolve(entry.path) === worktreePath);
-					if (!known) return error(id, "remove_worktree", "Path is not a registered worktree");
-					await git.worktree.remove(cwd, worktreePath, { force: command.force === true });
-					return success(id, "remove_worktree", { path: worktreePath });
-				} catch (err) {
-					return error(id, "remove_worktree", err instanceof Error ? err.message : String(err));
-				}
-			}
-
 			// Non-destructive: stage/unstage only mutate the git index, never the
 			// working tree. `git.stage.hunks` builds a patch from the current diff
 			// and applies it with --cached. Desktop-added; see core-touchpoints.md.
@@ -2143,7 +1497,7 @@ export async function runRpcMode(
 			}
 
 			case "get_last_assistant_text": {
-				const text = session.getLastAssistantText() ?? null;
+				const text = session.getLastAssistantText();
 				return success(id, "get_last_assistant_text", { text });
 			}
 

@@ -692,13 +692,6 @@ export class MCPManager {
 		return this.#connections.get(name)?.config ?? this.#serverConfigs.get(name);
 	}
 
-	/** Update the in-memory config used by reconnects after a persisted toggle. */
-	setServerConfig(name: string, config: MCPServerConfig): void {
-		this.#serverConfigs.set(name, config);
-		const connection = this.#connections.get(name);
-		if (connection) connection.config = config;
-	}
-
 	/**
 	 * Wait for a connection to complete (or fail).
 	 */
@@ -739,34 +732,6 @@ export class MCPManager {
 		return Array.from(
 			new Set([...this.#sources.keys(), ...this.#connections.keys(), ...this.#pendingConnections.keys()]),
 		);
-	}
-
-	/** Return a redacted, UI-safe snapshot of all discovered MCP servers. */
-	getStatusSnapshot(): Array<{
-		name: string;
-		status: "connected" | "connecting" | "disconnected";
-		toolCount: number;
-		transport: "stdio" | "http" | "sse" | "unknown";
-		auth: { configured: boolean; oauth: boolean; credentialConfigured: boolean };
-	}> {
-		return this.getAllServerNames()
-			.sort()
-			.map(name => {
-				const config = this.getServerConfig(name);
-				const toolCount = this.#tools.filter(tool => tool.mcpServerName === name).length;
-				const auth = config?.auth;
-				return {
-					name,
-					status: this.getConnectionStatus(name),
-					toolCount,
-					transport: config?.type ?? (config && "command" in config ? "stdio" : "unknown"),
-					auth: {
-						configured: auth !== undefined || config?.oauth !== undefined,
-						oauth: auth?.type === "oauth" || config?.oauth !== undefined,
-						credentialConfigured: auth?.credentialId !== undefined,
-					},
-				};
-			});
 	}
 
 	/**

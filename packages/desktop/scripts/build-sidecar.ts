@@ -1,7 +1,10 @@
 /**
- * Build the `omp` engine binary and stage it as an Electron extra resource.
+ * Build the `omp` engine binary and stage it as a Tauri external sidecar.
  *
- * Electron packages resources/omp[.exe] into the application resources folder.
+ * Tauri's `externalBin` contract: for `"binaries/omp"` in tauri.conf.json it
+ * expects a file named `binaries/omp-<RUST_TARGET_TRIPLE>[.exe]` at build time,
+ * and strips the triple when placing it next to the app binary in the bundle
+ * (so rpc.rs resolves plain `omp[.exe]` beside current_exe at runtime).
  *
  * Env:
  *   CROSS_TARGET=<platform>-<arch>  cross-compile the engine (linux-arm64, darwin-arm64, …).
@@ -80,9 +83,9 @@ async function main(): Promise<void> {
 		throw new Error(`Engine binary not found in ${distDir} (looked for ${outName}${exe}). Did the build succeed?`);
 	}
 
-	const resourcesDir = path.join(desktopDir, "resources");
-	await fs.mkdir(resourcesDir, { recursive: true });
-	const dest = path.join(resourcesDir, `omp${exe}`);
+	const binariesDir = path.join(desktopDir, "src-tauri", "binaries");
+	await fs.mkdir(binariesDir, { recursive: true });
+	const dest = path.join(binariesDir, `omp-${triple}${exe}`);
 	await fs.copyFile(src, dest);
 	if (!exe) await fs.chmod(dest, 0o755);
 

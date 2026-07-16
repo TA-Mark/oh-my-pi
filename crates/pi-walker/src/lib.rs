@@ -1314,10 +1314,6 @@ pub fn root_device_id(path: &Path, follow_links: FollowLinks) -> Option<u64> {
 ///
 /// Non-Unix platforms return `None`, making same-filesystem filtering a no-op.
 #[cfg(not(unix))]
-#[allow(
-	clippy::missing_const_for_fn,
-	reason = "keep the public API identical to the non-const Unix implementation"
-)]
 pub fn root_device_id(_path: &Path, _follow_links: FollowLinks) -> Option<u64> {
 	None
 }
@@ -1349,10 +1345,6 @@ pub fn is_path_on_root_file_system(
 /// When `root_device` is `None`, this returns true. On non-Unix platforms this
 /// is always true, matching the existing no-op same-filesystem behavior there.
 #[cfg(not(unix))]
-#[allow(
-	clippy::missing_const_for_fn,
-	reason = "keep the public API identical to the non-const Unix implementation"
-)]
 pub fn is_path_on_root_file_system(
 	_path: &Path,
 	_depth: usize,
@@ -1383,10 +1375,6 @@ fn is_effective_path_on_root_file_system(
 }
 
 #[cfg(not(unix))]
-#[allow(
-	clippy::missing_const_for_fn,
-	reason = "mirror the non-const Unix implementation selected on other targets"
-)]
 fn is_effective_path_on_root_file_system(
 	_path: &Path,
 	_depth: usize,
@@ -3263,7 +3251,7 @@ mod platform {
 				};
 				let name_offset = offset + std::mem::offset_of!(FILE_ID_FULL_DIR_INFORMATION, FileName);
 				let name_len = info.FileNameLength as usize;
-				if !name_len.is_multiple_of(2) || name_offset + name_len > buffer.len() {
+				if name_len % 2 != 0 || name_offset + name_len > buffer.len() {
 					return Err(invalid_data("invalid NtQueryDirectoryFile name length").into());
 				}
 				let name_units: Vec<u16> = buffer[name_offset..name_offset + name_len]
@@ -3271,20 +3259,21 @@ mod platform {
 					.map(|chunk| u16::from_ne_bytes([chunk[0], chunk[1]]))
 					.collect();
 				let name = OsString::from_wide(&name_units);
-				let file_type = file_type_from_attributes(info.FileAttributes);
-				let size = if detail == WalkDetail::Full && file_type == FileType::File {
-					Some(info.EndOfFile.max(0) as f64)
-				} else {
-					None
-				};
-				let mtime = if detail == WalkDetail::Full {
-					mtime_from_filetime(info.LastWriteTime)
-				} else {
-					None
-				};
-				let entry = RawDirEntry { name: name.into(), file_type, mtime, size };
-				if emit(entry).map_err(ReadDirError::Walk)? == ReadDirControl::Stop {
-					return Ok(ReadDirControl::Stop);
+				if let Some(file_type) = file_type_from_attributes(info.FileAttributes) {
+					let size = if detail == WalkDetail::Full && file_type == FileType::File {
+						Some(info.EndOfFile.max(0) as f64)
+					} else {
+						None
+					};
+					let mtime = if detail == WalkDetail::Full {
+						mtime_from_filetime(info.LastWriteTime)
+					} else {
+						None
+					};
+					let entry = RawDirEntry { name: name.into(), file_type, mtime, size };
+					if emit(entry).map_err(ReadDirError::Walk)? == ReadDirControl::Stop {
+						return Ok(ReadDirControl::Stop);
+					}
 				}
 				if info.NextEntryOffset == 0 {
 					break;
@@ -3318,13 +3307,13 @@ mod platform {
 		}
 	}
 
-	const fn file_type_from_attributes(attributes: u32) -> FileType {
+	fn file_type_from_attributes(attributes: u32) -> Option<FileType> {
 		if attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
-			FileType::Symlink
+			Some(FileType::Symlink)
 		} else if attributes & FILE_ATTRIBUTE_DIRECTORY != 0 {
-			FileType::Dir
+			Some(FileType::Dir)
 		} else {
-			FileType::File
+			Some(FileType::File)
 		}
 	}
 

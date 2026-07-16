@@ -1,0 +1,15 @@
+{
+  "identifier": "default",
+  "description": "Main-window capability, least-privilege. core:default = IPC to the 3 bridge commands (start/send/stop) + event listen for rpc:// frames. dialog:default = the workspace folder picker (pickWorkspaceFolder). The opener grants are each used: allow-open-url (OAuth/external links via openExternalUrl) paired with allow-default-urls (the http/https/mailto/tel scope that allow-open-url validates against — without it every open-url call is silently rejected as out-of-scope), allow-open-path + allow-reveal-item-in-dir (reveal workspace/session in the OS file manager, AppShell). updater:default = check/download signed updates; process:allow-restart = relaunch after an update installs. No fs/shell/http capability is granted — all filesystem and process work happens in the engine sidecar, never the WebView.",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "dialog:default",
+    "opener:allow-open-url",
+    "opener:allow-default-urls",
+    "opener:allow-open-path",
+    "opener:allow-reveal-item-in-dir",
+    "updater:default",
+    "process:allow-restart"
+  ]
+}

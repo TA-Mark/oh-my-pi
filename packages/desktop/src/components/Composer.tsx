@@ -4,13 +4,10 @@ import {
 	Check,
 	ChevronDown,
 	ChevronRight,
-	CornerDownRight,
 	FolderOpen,
 	Hand,
-	ListPlus,
 	Mic,
 	Plus,
-	RefreshCw,
 	Shield,
 	ShieldCheck,
 	Square,
@@ -41,12 +38,6 @@ interface ComposerProps {
 	onChooseProject: () => void;
 	onSend: (text: string, images: ImageContent[]) => void;
 	onAbort: () => void;
-	onAbortAndPrompt?: (text: string, images: ImageContent[]) => void;
-	onSteer?: (text: string, images: ImageContent[]) => void;
-	onFollowUp?: (text: string, images: ImageContent[]) => void;
-	onCycleModel?: () => void;
-	images: ImageContent[];
-	onImagesChange: (images: ImageContent[]) => void;
 	/** Stop clicked, turn still tearing down — shows "Stopping…" and blocks repeat clicks. */
 	aborting?: boolean;
 }
@@ -106,15 +97,6 @@ function fileToImage(file: File): Promise<ImageContent | null> {
 
 function choiceLabel<T extends string>(choices: readonly ComposerChoice<T>[], id: T): string {
 	return choices.find(choice => choice.id === id)?.label ?? id;
-}
-
-/** A prompt can only start a new turn when the engine is ready and idle. */
-export function canSubmitComposer(disabled: boolean, streaming: boolean, text: string, imageCount: number): boolean {
-	return !disabled && !streaming && (text.trim().length > 0 || imageCount > 0);
-}
-
-export function canQueueComposer(disabled: boolean, streaming: boolean, text: string, imageCount: number): boolean {
-	return !disabled && streaming && (text.trim().length > 0 || imageCount > 0);
 }
 
 function providerDisplayName(providers: readonly LoginProvider[], providerId: string): string {
@@ -197,14 +179,9 @@ export function Composer({
 	onChooseProject,
 	onSend,
 	onAbort,
-	onAbortAndPrompt,
-	onSteer,
-	onFollowUp,
-	onCycleModel,
-	images,
-	onImagesChange,
 }: ComposerProps) {
 	const [text, setText] = useState("");
+	const [images, setImages] = useState<ImageContent[]>([]);
 	const [dragOver, setDragOver] = useState(false);
 	const [openMenu, setOpenMenu] = useState<ComposerMenu>(null);
 	const [modelFilter, setModelFilter] = useState("");
@@ -249,35 +226,25 @@ export function Composer({
 	const addFiles = async (files: Iterable<File>): Promise<void> => {
 		const parsed = await Promise.all(Array.from(files).map(fileToImage));
 		const valid = parsed.filter((img): img is ImageContent => img !== null);
-		if (valid.length > 0) onImagesChange([...images, ...valid]);
+		if (valid.length > 0) setImages(prev => [...prev, ...valid]);
 	};
 
 	const removeImage = (index: number): void => {
-		onImagesChange(images.filter((_, i) => i !== index));
+		setImages(prev => prev.filter((_, i) => i !== index));
 	};
 
 	const submit = () => {
 		const trimmed = text.trim();
-		if (!canSubmitComposer(disabled, streaming, text, images.length)) return;
+		if (disabled || (trimmed.length === 0 && images.length === 0)) return;
 		onSend(trimmed, images);
 		setText("");
-		onImagesChange([]);
-	};
-
-	const submitQueued = (mode: "steer" | "follow_up") => {
-		if (!canQueueComposer(disabled, streaming, text, images.length)) return;
-		const handler = mode === "steer" ? onSteer : onFollowUp;
-		if (!handler) return;
-		handler(text.trim(), images);
-		setText("");
-		onImagesChange([]);
+		setImages([]);
 	};
 
 	const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
 		if (event.key === "Enter" && !event.shiftKey) {
 			event.preventDefault();
-			if (streaming && onFollowUp) submitQueued("follow_up");
-			else submit();
+			submit();
 		}
 	};
 
@@ -306,8 +273,7 @@ export function Composer({
 		setDragOver(true);
 	};
 
-	const canSend = canSubmitComposer(disabled, streaming, text, images.length);
-	const canQueue = canQueueComposer(disabled, streaming, text, images.length);
+	const canSend = !disabled && (text.trim().length > 0 || images.length > 0);
 	const approvalLabel = choiceLabel(APPROVAL_CHOICES, approvalMode);
 	const modelLabel = composerModelLabel(model);
 	const effortLabel = composerEffortLabel(thinkingLevel);
@@ -446,22 +412,6 @@ export function Composer({
 									onClick={() => setOpenMenu(null)}
 								/>
 								<div className="composer-menu composer-menu--profile">
-									{onCycleModel ? (
-										<button
-											type="button"
-											className="composer-menu-item"
-											onClick={() => {
-												onCycleModel();
-												setOpenMenu(null);
-											}}
-										>
-											<RefreshCw size={16} strokeWidth={1.8} />
-											<span>
-												<strong>Use next model</strong>
-												<small>Cycle through the configured model scope.</small>
-											</span>
-										</button>
-									) : null}
 									{onSelectModel && (models?.length ?? 0) > 0 ? (
 										<div className="composer-menu-models">
 											<div className="composer-menu-section-title">Model</div>
@@ -565,56 +515,16 @@ export function Composer({
 						<Mic size={18} strokeWidth={1.8} />
 					</button>
 					{streaming ? (
-						<>
-							{onSteer && canQueue ? (
-								<button
-									type="button"
-									className="composer-queue-button"
-									onClick={() => submitQueued("steer")}
-									disabled={aborting}
-									title="Send guidance to the active turn"
-								>
-									<CornerDownRight size={14} strokeWidth={2} /> Steer
-								</button>
-							) : null}
-							{onFollowUp && canQueue ? (
-								<button
-									type="button"
-									className="composer-queue-button"
-									onClick={() => submitQueued("follow_up")}
-									disabled={aborting}
-									title="Queue after the active turn"
-								>
-									<ListPlus size={14} strokeWidth={2} /> Queue
-								</button>
-							) : null}
-							{onAbortAndPrompt && (text.trim() || images.length > 0) ? (
-								<button
-									type="button"
-									className="composer-send composer-send--replace"
-									onClick={() => {
-										onAbortAndPrompt(text.trim(), images);
-										setText("");
-										onImagesChange([]);
-									}}
-									disabled={aborting}
-									aria-label="Replace prompt"
-									title="Abort and send this prompt"
-								>
-									<ArrowUp size={16} strokeWidth={2.1} />
-								</button>
-							) : null}
-							<button
-								type="button"
-								className={`composer-send composer-send--stop${aborting ? " composer-send--stopping" : ""}`}
-								onClick={onAbort}
-								disabled={aborting}
-								aria-label={aborting ? "Stopping" : "Stop"}
-								title={aborting ? "Stopping…" : "Stop"}
-							>
-								<Square size={14} fill="currentColor" strokeWidth={1.8} />
-							</button>
-						</>
+						<button
+							type="button"
+							className={`composer-send composer-send--stop${aborting ? " composer-send--stopping" : ""}`}
+							onClick={onAbort}
+							disabled={aborting}
+							aria-label={aborting ? "Stopping" : "Stop"}
+							title={aborting ? "Stopping…" : "Stop"}
+						>
+							<Square size={14} fill="currentColor" strokeWidth={1.8} />
+						</button>
 					) : (
 						<button
 							type="button"

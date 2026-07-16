@@ -1,11 +1,9 @@
 # frontend build output
 dist/
 
-# Electron build artifacts
-dist-electron/
-release/
-test-results/
+# tauri build artifacts
+src-tauri/target/
+src-tauri/gen/
 
-# bundled engine sidecar (produced per-target at package time)
-resources/omp
-resources/omp.exe
+# bundled engine sidecars (produced per-target at package time)
+src-tauri/binaries/
