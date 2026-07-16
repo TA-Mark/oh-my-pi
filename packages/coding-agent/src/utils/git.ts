@@ -197,7 +197,6 @@ const GIT_NON_INTERACTIVE_ENV = {
 	GIT_ASKPASS: "true",
 	GIT_EDITOR: "true",
 	GIT_TERMINAL_PROMPT: "0",
-	GPG_TTY: "not a tty",
 	SSH_ASKPASS: "/usr/bin/false",
 } satisfies Record<string, string>;
 const GH_NON_INTERACTIVE_ENV = {
@@ -1725,6 +1724,26 @@ export const cherryPick = Object.assign(
 	{
 		async abort(cwd: string, signal?: AbortSignal): Promise<void> {
 			await runEffect(cwd, ["cherry-pick", "--abort"], { signal });
+		},
+		/**
+		 * Skip the current commit of an in-progress cherry-pick sequence and
+		 * continue with the rest of the range. Use after {@link isEmptyError}
+		 * reports the current attempt collapsed to a no-op — the alternative,
+		 * `--abort`, throws away every remaining commit in the range.
+		 */
+		async skip(cwd: string, signal?: AbortSignal): Promise<void> {
+			await runEffect(cwd, ["cherry-pick", "--skip"], { signal });
+		},
+		/**
+		 * True when a cherry-pick failure was caused by the current commit
+		 * being empty against HEAD — either redundant with an already-applied
+		 * change, or auto-resolved to HEAD by a 3-way merge. Callers should
+		 * `--skip` in this case to advance the sequencer rather than aborting
+		 * the whole range: an empty commit is not a merge conflict, and any
+		 * later commits in the range still deserve to land.
+		 */
+		isEmptyError(err: unknown): boolean {
+			return err instanceof GitCommandError && /the previous cherry-pick is now empty/i.test(err.result.stderr);
 		},
 	},
 );

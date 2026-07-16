@@ -29,6 +29,7 @@ struct Ctx {
 	stdin:                 Box<dyn Read + Send>,
 	/// Raw fd backing `stdin` when it is a real OS file/pipe, used for
 	/// cancellable readiness polling on unix. `None` for non-fd readers.
+	#[cfg(unix)]
 	stdin_fd:              Option<i32>,
 	/// Whether stdin is a shell pipe/stream that should be searched implicitly.
 	stdin_is_search_input: bool,
@@ -97,6 +98,7 @@ pub fn scope<R>(io: ScopeIo, f: impl FnOnce() -> R) -> R {
 	let prev = CTX.with(|c| {
 		c.borrow_mut().replace(Ctx {
 			stdin:                 io.stdin,
+			#[cfg(unix)]
 			stdin_fd:              io.stdin_fd,
 			stdin_is_search_input: io.stdin_is_search_input,
 			stdout:                io.stdout,
@@ -186,6 +188,23 @@ pub fn var(key: &str) -> Option<String> {
 		c.borrow()
 			.as_ref()
 			.and_then(|ctx| ctx.env.get(key).cloned())
+	})
+}
+
+/// Returns a snapshot of the scope's entire environment map (the shell's
+/// exported variables), or an empty vector when no scope is installed.
+/// Utilities that spawn child processes use this to build the child
+/// environment (`env_clear().envs(..)`), because the shell's exported
+/// variables are not present in the host process environment.
+#[must_use]
+pub fn env_snapshot() -> Vec<(String, String)> {
+	CTX.with(|c| {
+		c.borrow().as_ref().map_or_else(Vec::new, |ctx| {
+			ctx.env
+				.iter()
+				.map(|(k, v)| (k.clone(), v.clone()))
+				.collect()
+		})
 	})
 }
 /// Returns true when scoped stdin is a shell pipe or custom stream that should

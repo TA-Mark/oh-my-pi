@@ -13,6 +13,7 @@
 
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import { getOAuthProviders } from "@oh-my-pi/pi-ai/oauth";
 import { PROVIDER_REGISTRY } from "@oh-my-pi/pi-ai/registry";
 import { isZodSchema, zodToWireSchema } from "@oh-my-pi/pi-ai/utils/schema";
@@ -38,7 +39,6 @@ import { SessionManager } from "../../session/session-manager";
 import { executeAcpBuiltinSlashCommand } from "../../slash-commands/acp-builtins";
 import { buildAvailableSlashCommands } from "../../slash-commands/available-commands";
 import { normalizeLocalScheme } from "../../tools/path-utils";
-import { runResolveInvocation } from "../../tools/resolve";
 import { ToolError } from "../../tools/tool-errors";
 import type { EventBus } from "../../utils/event-bus";
 import * as git from "../../utils/git";
@@ -73,6 +73,29 @@ export type PendingExtensionRequest = {
 	resolve: (response: RpcExtensionUIResponse) => void;
 	reject: (error: Error) => void;
 };
+
+/** Pending extension UI request map that can fail closed when the RPC client disconnects. */
+export class RpcPendingExtensionRequests extends Map<string, PendingExtensionRequest> {
+	#closedError: Error | undefined;
+
+	override set(id: string, request: PendingExtensionRequest): this {
+		if (this.#closedError) {
+			request.reject(this.#closedError);
+			return this;
+		}
+		return super.set(id, request);
+	}
+
+	/** Reject every active and future extension UI request. */
+	rejectAll(message: string): void {
+		if (!this.#closedError) this.#closedError = new Error(message);
+		const requests = Array.from(this.values());
+		this.clear();
+		for (const request of requests) {
+			request.reject(this.#closedError);
+		}
+	}
+}
 
 type RpcOutput = (
 	obj:
@@ -213,6 +236,7 @@ export type RpcSkillCommandResult = { agentInvoked: true };
 export async function tryRunRpcSkillCommand(
 	session: RpcSkillCommandSession,
 	text: string,
+	streamingBehavior: "steer" | "followUp" = "steer",
 ): Promise<RpcSkillCommandResult | false> {
 	if (!session.skillsSettings?.enableSkillCommands) return false;
 	const parsed = parseSkillInvocation(text);
@@ -220,13 +244,16 @@ export async function tryRunRpcSkillCommand(
 	const skill = session.skills.find(candidate => candidate.name === parsed.name);
 	if (!skill) return false;
 	const built = await buildSkillPromptMessage(skill, parsed.args, "user");
-	await session.promptCustomMessage({
-		customType: SKILL_PROMPT_MESSAGE_TYPE,
-		content: built.message,
-		display: true,
-		details: built.details,
-		attribution: "user",
-	});
+	await session.promptCustomMessage(
+		{
+			customType: SKILL_PROMPT_MESSAGE_TYPE,
+			content: built.message,
+			display: true,
+			details: built.details,
+			attribution: "user",
+		},
+		{ streamingBehavior },
+	);
 	return { agentInvoked: true };
 }
 
@@ -367,15 +394,40 @@ function isRpcExtensionUIResponse(value: unknown): value is RpcExtensionUIRespon
 	return value.type === "extension_ui_response" && typeof value.id === "string";
 }
 
+/** Dispatch side-channel frames that must overtake the serialized command queue. */
+export function dispatchRpcControlFrame(parsed: unknown, deps: RpcInputFrameDeps): boolean {
+	if (isRpcExtensionUIResponse(parsed)) {
+		const pending = deps.pendingExtensionRequests.get(parsed.id);
+		if (pending) pending.resolve(parsed);
+		return true;
+	}
+
+	if (isRpcHostToolResult(parsed)) {
+		deps.onHostToolResult(parsed);
+		return true;
+	}
+
+	if (isRpcHostToolUpdate(parsed)) {
+		deps.onHostToolUpdate(parsed);
+		return true;
+	}
+
+	if (isRpcHostUriResult(parsed)) {
+		deps.onHostUriResult(parsed);
+		return true;
+	}
+
+	return false;
+}
+
 /**
  * Dispatch a single parsed frame from the RPC input stream.
  *
- * Bash commands are dispatched in the background so the caller (the stdin loop
- * in {@link runRpcMode}) can keep reading subsequent frames while a shell
- * command is still running. This lets a client send `abort_bash` (or any other
- * command) while a long-running `bash` is in flight. Response correlation is
- * preserved via each command's `id`; ordering across concurrent commands is
- * not guaranteed and clients MUST match on `id`.
+ * Bash commands are dispatched in the background so the caller can keep reading
+ * subsequent frames while a shell command is still running. This lets a client
+ * send `abort_bash` while a long-running `bash` is in flight. Response
+ * correlation is preserved via each command's `id`; ordering across concurrent
+ * commands is not guaranteed and clients MUST match on `id`.
  *
  * @returns `undefined` when the frame was routed to a side-channel handler
  *   (extension UI response, host tool/URI frames) or dispatched in the
@@ -384,28 +436,7 @@ function isRpcExtensionUIResponse(value: unknown): value is RpcExtensionUIRespon
  *   on non-`bash` commands propagate; the caller is expected to wrap them.
  */
 export function dispatchRpcInputFrame(parsed: unknown, deps: RpcInputFrameDeps): Promise<void> | undefined {
-	// Side-channel: extension UI responses resolve a pending dialog promise.
-	if (isRpcExtensionUIResponse(parsed)) {
-		const pending = deps.pendingExtensionRequests.get(parsed.id);
-		if (pending) pending.resolve(parsed);
-		return undefined;
-	}
-
-	if (isRpcHostToolResult(parsed)) {
-		deps.onHostToolResult(parsed);
-		return undefined;
-	}
-
-	if (isRpcHostToolUpdate(parsed)) {
-		deps.onHostToolUpdate(parsed);
-		return undefined;
-	}
-
-	if (isRpcHostUriResult(parsed)) {
-		deps.onHostUriResult(parsed);
-		return undefined;
-	}
-
+	if (dispatchRpcControlFrame(parsed, deps)) return undefined;
 	// Regular RPC command. The transport contract states each remaining frame
 	// is an {@link RpcCommand}; `handleCommand`'s `default` arm surfaces
 	// unknown discriminants as an error response, so we do not shape-check
@@ -456,6 +487,64 @@ export function dispatchRpcInputFrame(parsed: unknown, deps: RpcInputFrameDeps):
 	return (async () => {
 		deps.output(await deps.handleCommand(command));
 	})();
+}
+
+/** Serializes ordinary RPC commands while allowing control frames to dispatch immediately. */
+export class RpcInputDispatcher {
+	#tail: Promise<void> = Promise.resolve();
+	#tasks = new Set<Promise<void>>();
+	readonly #deps: RpcInputFrameDeps;
+	readonly #afterSerialCommand: (() => Promise<void>) | undefined;
+
+	constructor(options: { deps: RpcInputFrameDeps; afterSerialCommand?: () => Promise<void> }) {
+		this.#deps = options.deps;
+		this.#afterSerialCommand = options.afterSerialCommand;
+	}
+
+	/** Accept a parsed input frame without blocking the stdin reader. */
+	dispatch(parsed: unknown): void {
+		try {
+			if (dispatchRpcControlFrame(parsed, this.#deps)) return;
+
+			const command = parsed as RpcCommand;
+			if (command.type === "bash") {
+				dispatchRpcInputFrame(command, this.#deps);
+				return;
+			}
+
+			const task = this.#tail.then(
+				() => this.#dispatchSerialCommand(command),
+				() => this.#dispatchSerialCommand(command),
+			);
+			this.#tail = task.catch(() => {});
+			this.#tasks.add(task);
+			void task.finally(() => {
+				this.#tasks.delete(task);
+			});
+		} catch (err: unknown) {
+			const message = err instanceof Error ? err.message : String(err);
+			this.#deps.output(this.#deps.errorResponse(undefined, "parse", `Failed to parse command: ${message}`));
+		}
+	}
+
+	/** Await every accepted serial command, including commands queued before EOF. */
+	async drain(): Promise<void> {
+		while (this.#tasks.size > 0) {
+			await Promise.allSettled(Array.from(this.#tasks));
+		}
+	}
+
+	async #dispatchSerialCommand(command: RpcCommand): Promise<void> {
+		try {
+			const awaited = dispatchRpcInputFrame(command, this.#deps);
+			if (awaited) await awaited;
+		} catch (err: unknown) {
+			const message = err instanceof Error ? err.message : String(err);
+			this.#deps.output(this.#deps.errorResponse(command.id, command.type, message));
+		} finally {
+			await this.#afterSerialCommand?.();
+		}
+	}
 }
 
 /**
@@ -567,6 +656,7 @@ function normalizeHostToolDefinitions(tools: RpcHostToolDefinition[]): RpcHostTo
 			description,
 			parameters: tool.parameters,
 			hidden: tool.hidden === true,
+			loadMode: tool.loadMode ?? "discoverable",
 		};
 	});
 }
@@ -696,7 +786,7 @@ export async function runRpcMode(
 
 	const extensionUserMessageTracker = new RpcExtensionUserMessageTracker();
 
-	const pendingExtensionRequests = new Map<string, PendingExtensionRequest>();
+	const pendingExtensionRequests = new RpcPendingExtensionRequests();
 	const hostToolBridge = new RpcHostToolBridge(output);
 	const hostUriBridge = new RpcHostUriBridge(output);
 	const subagentRegistry = eventBus ? new RpcSubagentRegistry(eventBus, output) : undefined;
@@ -904,6 +994,10 @@ export async function runRpcMode(
 			return requestRpcEditor(this.pendingRequests, this.output, title, prefill, dialogOptions, editorOptions);
 		}
 
+		addAutocompleteProvider(): void {
+			// Autocomplete provider composition is not supported in RPC mode
+		}
+
 		get theme(): Theme {
 			return theme;
 		}
@@ -965,7 +1059,7 @@ export async function runRpcMode(
 
 	// ── Plan mode ────────────────────────────────────────────────────────────
 	// Mirrors AcpAgent's headless plan-mode wiring (acp-agent.ts). The engine
-	// primitives (setPlanModeState/setStandingResolveHandler/setPlanReferencePath)
+	// primitives (setPlanModeState/setPlanProposalHandler/setPlanReferencePath)
 	// are shared; only the approval surface differs — here it routes to the host's
 	// confirm dialog via rpcUiContext instead of ACP elicitation.
 	const DEFAULT_PLAN_FILE_URL = "local://PLAN.md";
@@ -1030,58 +1124,50 @@ export async function runRpcMode(
 		return rpcUiContext.confirm(`Plan ready: ${title}`, message);
 	};
 
-	/** Standing resolve handler installed while plan mode is active. The agent
-	 *  submits the finalized plan via `resolve { action: "apply", extra: { title } }`;
+	/** Plan-proposal handler installed while plan mode is active. The agent
+	 *  submits the finalized plan by writing its title to `xd://propose`;
 	 *  this validates the plan file, asks the host to confirm, and on approval sets
 	 *  the plan reference and exits plan mode so the agent regains full tools. On
 	 *  refine, plan mode stays active so the agent keeps iterating. */
-	const runPlanApprovalResolve = (input: unknown): Promise<unknown> =>
-		runResolveInvocation(input as Parameters<typeof runResolveInvocation>[0], {
-			sourceToolName: "plan_approval",
-			label: "Plan ready for approval",
-			apply: async (_reason, extra) => {
-				const state = session.getPlanModeState();
-				if (!state?.enabled) {
-					throw new ToolError("Plan mode is not active.");
-				}
-				const { planFilePath, planContent, title } = await resolveApprovedPlan({
-					suppliedTitle: extra?.title,
-					statePlanFilePath: state.planFilePath,
-					readPlan: url => readPlanFile(url),
-					listPlanFiles: () => listLocalPlanFiles(),
-				});
-				const details: PlanApprovalDetails = { planFilePath, title, planExists: true };
-				const approved = await requestPlanApprovalChoice(title, planContent);
-				if (!approved) {
-					// Refine: leave plan mode active so the agent keeps the read-only
-					// toolset and can iterate on the plan file.
-					return {
-						content: [
-							{
-								type: "text" as const,
-								text: 'Plan refinement requested. Update the plan file, then call `resolve { action: "apply" }` again when ready.',
-							},
-						],
-						details,
-					};
-				}
-				// Approved: record the plan reference (injected as context next turn),
-				// clear the standing handler, and exit plan mode.
-				session.setPlanReferencePath(planFilePath);
-				session.setStandingResolveHandler?.(null);
-				session.setPlanModeState(undefined);
-				emitPlanModeChanged();
-				return {
-					content: [
-						{
-							type: "text" as const,
-							text: `Plan approved at ${planFilePath}. Plan mode exited; proceed with the implementation.`,
-						},
-					],
-					details,
-				};
-			},
+	const handlePlanProposal = async (suppliedTitle: string): Promise<AgentToolResult<unknown>> => {
+		const state = session.getPlanModeState();
+		if (!state?.enabled) {
+			throw new ToolError("Plan mode is not active.");
+		}
+		const { planFilePath, planContent, title } = await resolveApprovedPlan({
+			suppliedTitle,
+			statePlanFilePath: state.planFilePath,
+			readPlan: url => readPlanFile(url),
+			listPlanFiles: () => listLocalPlanFiles(),
 		});
+		const details: PlanApprovalDetails = { planFilePath, title, planExists: true };
+		const approved = await requestPlanApprovalChoice(title, planContent);
+		if (!approved) {
+			return {
+				content: [
+					{
+						type: "text" as const,
+						text: `Plan refinement requested. Update the plan file, then write ${title} to xd://propose again when ready.`,
+					},
+				],
+				details,
+			};
+		}
+
+		session.setPlanReferencePath(planFilePath);
+		session.setPlanProposalHandler(null);
+		session.setPlanModeState(undefined);
+		emitPlanModeChanged();
+		return {
+			content: [
+				{
+					type: "text" as const,
+					text: `Plan approved at ${planFilePath}. Plan mode exited; proceed with the implementation.`,
+				},
+			],
+			details,
+		};
+	};
 
 	const getAvailableCommands = async () => buildAvailableSlashCommands(session);
 	const reloadPluginState = async () => {
@@ -1089,8 +1175,8 @@ export async function runRpcMode(
 		const projectPath = await resolveActiveProjectRegistryPath(cwd);
 		clearPluginRootsAndCaches(projectPath ? [projectPath] : undefined);
 		resetCapabilities();
+		await session.refreshSkills();
 		session.setSlashCommands(await loadSlashCommands({ cwd }));
-		await session.refreshSshTool({ activateIfAvailable: true });
 		await emitAvailableCommandsUpdate();
 	};
 	const emitAvailableCommandsUpdate = async () => {
@@ -1111,7 +1197,7 @@ export async function runRpcMode(
 			// =================================================================
 
 			case "prompt": {
-				const skillResult = await tryRunRpcSkillCommand(session, command.message);
+				const skillResult = await tryRunRpcSkillCommand(session, command.message, command.streamingBehavior);
 				if (skillResult) {
 					return success(id, "prompt", skillResult);
 				}
@@ -1570,11 +1656,9 @@ export async function runRpcMode(
 					return error(id, "login", `Unknown OAuth provider: ${command.providerId}`);
 				}
 				const uiCtx = new RpcExtensionUIContext(pendingExtensionRequests, output);
-				// Track whether onAuth has fired. Providers that use OAuthCallbackFlow
-				// always call onAuth first (emit browser URL), then onManualCodeInput as
-				// a fallback. Providers that require interactive input (API-key paste,
-				// GitHub Enterprise URL, device-code entry) call onPrompt before onAuth.
-				// We use this ordering to self-classify at runtime — no static allowlist.
+				// Track whether onAuth has fired. Providers that require interactive
+				// input before a browser URL cannot be satisfied headlessly; after
+				// onAuth, prompt input is the pasted OAuth code/redirect URL path.
 				let authEmitted = false;
 				try {
 					await session.modelRegistry.authStorage.login(command.providerId, {
@@ -1585,13 +1669,14 @@ export async function runRpcMode(
 								id: Snowflake.next() as string,
 								method: "open_url",
 								url: info.url,
+								launchUrl: info.launchUrl,
 								instructions: info.instructions,
 							} as RpcExtensionUIRequest);
 						},
 						onProgress: message => {
 							uiCtx.notify(message, "info");
 						},
-						onPrompt: () => {
+						onPrompt: async prompt => {
 							if (!authEmitted) {
 								// onPrompt called before any auth URL — provider requires
 								// interactive input that cannot be satisfied headlessly.
@@ -1602,11 +1687,7 @@ export async function runRpcMode(
 									),
 								);
 							}
-							// onAuth has already fired — we are inside OAuthCallbackFlow's
-							// manual-redirect fallback race. Returning a never-settling promise
-							// lets the race block until the callback server wins; a rejection
-							// would be caught as null and spin the while(true) loop.
-							return new Promise<string>(() => {});
+							return (await uiCtx.input(prompt.message, prompt.placeholder, { timeout: 600_000 })) ?? "";
 						},
 					});
 					await session.modelRegistry.refresh();
@@ -1657,9 +1738,9 @@ export async function runRpcMode(
 							workflow: command.workflow ?? previous?.workflow ?? "parallel",
 							reentry: previous !== undefined,
 						});
-						session.setStandingResolveHandler?.(input => runPlanApprovalResolve(input));
+						session.setPlanProposalHandler(title => handlePlanProposal(title));
 					} else {
-						session.setStandingResolveHandler?.(null);
+						session.setPlanProposalHandler(null);
 						session.setPlanModeState(undefined);
 					}
 					emitPlanModeChanged();
@@ -1683,9 +1764,12 @@ export async function runRpcMode(
 	const shutdownCoordinator = new RpcShutdownCoordinator({
 		isShutdownRequested: () => shutdownState.requested,
 		performShutdown: async () => {
-			if (session.extensionRunner?.hasHandlers("session_shutdown")) {
-				await session.extensionRunner.emit({ type: "session_shutdown" });
-			}
+			// Route through the idempotent session.dispose() so the browser
+			// reaper (releaseTabsForOwner) and other bounded teardown run before
+			// the process exits. dispose() also emits `session_shutdown`, so we
+			// must NOT emit it separately here or the event fires twice. Skipping
+			// dispose left OMP-owned Chromium alive after RPC shutdown (#5643).
+			await session.dispose();
 			process.exit(0);
 		},
 	});
@@ -1701,35 +1785,30 @@ export async function runRpcMode(
 		onHostUriResult: frame => hostUriBridge.handleResult(frame),
 	};
 
-	// Listen for JSON input using Bun's stdin. Frame dispatch lives in
-	// dispatchRpcInputFrame so it can be exercised directly by tests; see the
-	// helper's docstring for the concurrency contract.
+	const inputDispatcher = new RpcInputDispatcher({
+		deps: dispatchFrameDeps,
+		afterSerialCommand: () => shutdownCoordinator.checkShutdownRequested(),
+	});
+
+	// Keep the stdin reader moving: side-channel frames dispatch immediately,
+	// ordinary commands serialize through inputDispatcher, and bash remains
+	// background-dispatched so abort_bash can overtake it.
 	for await (const parsed of readJsonl(Bun.stdin.stream())) {
-		try {
-			const awaited = dispatchRpcInputFrame(parsed, dispatchFrameDeps);
-			if (awaited) {
-				await awaited;
-				// Check for deferred shutdown request (idle between commands).
-				// Background-dispatched bash frames skip this check so a later
-				// abort_bash can still be read; the coordinator re-checks when
-				// each tracked task settles, so a shutdown requested mid-bash
-				// fires once the response frame is written even if no further
-				// client frames arrive.
-				await shutdownCoordinator.checkShutdownRequested();
-			}
-		} catch (e: unknown) {
-			const message = e instanceof Error ? e.message : String(e);
-			output(error(undefined, "parse", `Failed to parse command: ${message}`));
-		}
+		inputDispatcher.dispatch(parsed);
 	}
 
-	// Background bash tasks may still owe response frames; drain them before
-	// tearing down (stdin EOF ends the frame stream, not in-flight work).
-	await shutdownCoordinator.drain();
-
-	// stdin closed — RPC client is gone, exit cleanly
-	hostToolBridge.rejectAllPending("RPC client disconnected before host tool execution completed");
+	// stdin closed — RPC client is gone. Fail pending side-channel requests
+	// first so active/queued commands can settle, then drain accepted work.
+	pendingExtensionRequests.rejectAll("RPC client disconnected before extension UI response completed");
+	hostToolBridge.close("RPC client disconnected before host tool execution completed");
 	hostUriBridge.clear("RPC client disconnected before host URI request completed");
+	await inputDispatcher.drain();
+	await shutdownCoordinator.drain();
 	subagentRegistry?.dispose();
+	// Dispose the main session before exiting so the browser reaper and other
+	// bounded teardown run on the stdin-EOF path too (#5643). Idempotent: a
+	// prior pi.shutdown() through the coordinator makes this await settle
+	// immediately.
+	await session.dispose();
 	process.exit(0);
 }

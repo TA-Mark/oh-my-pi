@@ -61,7 +61,7 @@ export function shouldBypassProxy(urlObj: URL): boolean {
 		.map(r => r.trim())
 		.filter(Boolean);
 	const targetHost = urlObj.hostname.toLowerCase();
-	const targetPort = urlObj.port || (urlObj.protocol === "https:" ? "443" : "80");
+	const targetPort = urlObj.port || (urlObj.protocol === "https:" || urlObj.protocol === "wss:" ? "443" : "80");
 
 	for (const rule of rules) {
 		if (rule === "*") {
@@ -251,13 +251,14 @@ export async function connectProxiedSocket(
 			return;
 		}
 
-		tunnelSocket = tls.connect({
+		const connectedTunnel = tls.connect({
 			socket: rawSocket,
 			servername: targetHost,
 			ALPNProtocols: ["h2"],
 		});
-		tunnelSocket.once("secureConnect", onTunnelReady);
-		tunnelSocket.once("error", onTunnelError);
+		tunnelSocket = connectedTunnel;
+		connectedTunnel.once("secureConnect", onTunnelReady);
+		connectedTunnel.once("error", onTunnelError);
 	};
 	const onProxyReady = (): void => {
 		if (!rawSocket) return;
@@ -284,7 +285,7 @@ export async function connectProxiedSocket(
 		timeout.unref?.();
 	}
 
-	rawSocket = useProxySsl
+	const connectedSocket = useProxySsl
 		? tls.connect({
 				host: proxyHost,
 				port: proxyPort,
@@ -293,8 +294,9 @@ export async function connectProxiedSocket(
 				host: proxyHost,
 				port: proxyPort,
 			});
-	rawSocket.once("error", onRawError);
-	rawSocket.once(readyEvent, onProxyReady);
+	rawSocket = connectedSocket;
+	connectedSocket.once("error", onRawError);
+	connectedSocket.once(readyEvent, onProxyReady);
 
 	return promise;
 }

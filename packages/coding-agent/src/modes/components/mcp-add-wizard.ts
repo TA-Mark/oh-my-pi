@@ -15,7 +15,7 @@ import {
 } from "@oh-my-pi/pi-tui";
 import { getMCPConfigPath, getProjectDir } from "@oh-my-pi/pi-utils";
 import { validateServerName } from "../../mcp/config-writer";
-import { analyzeAuthError, discoverOAuthEndpoints } from "../../mcp/oauth-discovery";
+import { analyzeAuthError, discoverOAuthEndpoints, fetchResourceMetadataScopes } from "../../mcp/oauth-discovery";
 import type { MCPHttpServerConfig, MCPServerConfig, MCPSseServerConfig, MCPStdioServerConfig } from "../../mcp/types";
 import { shortenPath } from "../../tools/render-utils";
 import { theme } from "../theme/theme";
@@ -63,6 +63,7 @@ export interface MCPAddWizardOAuthResult {
 interface MCPAddWizardOAuthOptions {
 	serverUrl?: string;
 	resource?: string;
+	registrationUrl?: string;
 	/**
 	 * External cancellation source. Aborting it tears down the in-flight OAuth
 	 * flow and surfaces a neutral cancellation error. The wizard wires its own
@@ -82,6 +83,7 @@ interface WizardState {
 	authMethod: AuthMethod;
 	oauthAuthUrl: string;
 	oauthTokenUrl: string;
+	oauthRegistrationUrl: string;
 	oauthClientId: string;
 	oauthClientSecret: string;
 	oauthScopes: string;
@@ -113,6 +115,7 @@ export class MCPAddWizard extends Container {
 		authMethod: "none",
 		oauthAuthUrl: "",
 		oauthTokenUrl: "",
+		oauthRegistrationUrl: "",
 		oauthClientId: "",
 		oauthClientSecret: "",
 		oauthScopes: "",
@@ -1009,15 +1012,24 @@ export class MCPAddWizard extends Container {
 							this.#state.url,
 							authResult.authServerUrl,
 							authResult.resourceMetadataUrl,
+							{ protectedScopes: authResult.scopes },
 						);
 					} catch {
 						// Ignore discovery failures and fallback to manual auth.
 					}
 				}
+				if (oauth && !oauth.scopes && authResult.resourceMetadataUrl) {
+					// JSON-error-body path skips `discoverOAuthEndpoints` when the body
+					// already carries endpoints, so scopes advertised only in the
+					// protected-resource metadata document never reach the grant.
+					const scopes = await fetchResourceMetadataScopes(authResult.resourceMetadataUrl);
+					if (scopes) oauth = { ...oauth, scopes };
+				}
 
 				if (oauth) {
 					this.#state.oauthAuthUrl = oauth.authorizationUrl;
 					this.#state.oauthTokenUrl = oauth.tokenUrl;
+					this.#state.oauthRegistrationUrl = oauth.registrationUrl || "";
 					this.#state.oauthClientId = oauth.clientId || "";
 					this.#state.oauthScopes = oauth.scopes || "";
 					this.#state.oauthResource = oauth.resource || (this.#state.transport === "stdio" ? "" : this.#state.url);
@@ -1188,6 +1200,7 @@ export class MCPAddWizard extends Container {
 				this.#state.oauthScopes,
 				{
 					serverUrl: this.#state.url || undefined,
+					registrationUrl: this.#state.oauthRegistrationUrl || undefined,
 					resource: oauthResource || undefined,
 					abortSignal: this.#oauthAbort.signal,
 				},

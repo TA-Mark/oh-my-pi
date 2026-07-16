@@ -10,6 +10,14 @@ export type OAuthCredentials = {
 	email?: string;
 	accountId?: string;
 	apiEndpoint?: string;
+	/**
+	 * Organization/workspace the token is scoped to (e.g. an Anthropic org
+	 * UUID). Captured once at login; token refreshes never rewrite it. Lets
+	 * one account email hold credentials for multiple subscriptions.
+	 */
+	orgId?: string;
+	/** Human-readable organization name for display (may embed the email). */
+	orgName?: string;
 };
 
 export type OAuthProvider = OAuthProviderUnion;
@@ -23,7 +31,21 @@ export type OAuthPrompt = {
 };
 
 export type OAuthAuthInfo = {
+	/**
+	 * Full authorization URL. Suitable for direct browser launch, OSC 8
+	 * hyperlinks, and clipboard when the target UI can guarantee the full
+	 * string reaches the user unmodified.
+	 */
 	url: string;
+	/**
+	 * Short loopback URL that 302-redirects to {@link url}. Provided by flows
+	 * that host the redirect on the same callback server they already run
+	 * ({@link OAuthCallbackFlow}). UIs SHOULD prefer this as the copy target
+	 * so viewport truncation cannot corrupt OAuth query parameters. Undefined
+	 * for flows without a loopback callback server (device code, paste-code
+	 * providers with fixed non-loopback redirects, etc.).
+	 */
+	launchUrl?: string;
 	instructions?: string;
 };
 
