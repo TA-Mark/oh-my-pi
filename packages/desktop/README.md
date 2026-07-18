@@ -1,88 +1,53 @@
 # @oh-my-pi/desktop
 
-Desktop GUI for OMP. A thin **Tauri v2** shell (Rust + OS WebView) that runs the
-`omp` engine as an **RPC sidecar** (`omp --mode rpc-ui`) and talks to it over
-newline-delimited JSON via stdio. Frontend is **React + Vite**.
+OMP Desktop is an Electron + React + TypeScript application. Electron owns the
+native process, secure preload bridge, workspace dialogs, scheduled-task lifecycle,
+and the OMP sidecar. The renderer speaks the OMP v17.0.1 `rpc-ui` protocol over
+newline-delimited JSON.
 
-> Design & rationale: [`docs/design.md`](docs/design.md).
-> Keeping the fork in sync with upstream OMP: [`docs/upstream-sync.md`](docs/upstream-sync.md).
+## Architecture
 
-## Status
-
-Phase 2: everything from Phase 1 (workspace picker, streamed markdown chat, tool
-lifecycle chips, abort) **plus** a model picker (filterable, `get_available_models`
-/ `set_model`), a thinking-level selector (`set_thinking_level`), and session
-controls — new session (`new_session`), inline rename (`set_session_name`), and
-live session metadata (model / thinking / name / message count via `get_state`).
-
-Protocol drift is guarded at runtime by `scripts/smoke-rpc.ts`
-(`bun packages/desktop/scripts/smoke-rpc.ts`), which now also exercises the
-`set_thinking_level` → `get_state` round-trip.
-
-Phase 3 adds **rich tool cards** (the collab-web `ToolView` renderers are reused
-directly — 40+ tools, fed straight from `tool_execution_*` events) and a **subagent
-panel** (`set_subagent_subscription` + `get_subagents`).
-
-Phase 4 adds **interactive UI**: `extension_ui_request` dialogs (select / confirm /
-input / editor — this is also how tool-approval prompts surface), `notify` toasts,
-`open_url` (system browser via the opener plugin), `set_editor_text` → composer, and
-**OAuth login** (`get_login_providers` + `login`). `scripts/smoke-rpc.ts` probes the
-subagent and login-provider contracts.
-
-Phase 5 adds **packaging**: the `omp` engine is built and bundled as a Tauri
-**sidecar** (`scripts/build-sidecar.ts` → `src-tauri/binaries/omp-<triple>`), resolved
-next to the app binary at runtime. `bun --cwd=packages/desktop run bundle` produces the
-installer. Verified on Windows (MSI + NSIS, sidecar embedded); macOS DMG + signing/notary
-and a multi-platform release workflow are wired in CI. See [`docs/packaging.md`](docs/packaging.md).
-
-Session history/switch is implemented via a left **History drawer**: an additive
-`list_sessions` RPC command (paired with the pre-existing `switch_session` + `get_messages`)
-lists the workspace's sessions, and picking one switches the engine and re-seeds the
-transcript from its persisted messages (see `docs/core-touchpoints.md`).
-
-All five roadmap phases are implemented. The `setStatus` / `setWidget` / `setTitle`
-extension-UI methods are wired end-to-end (engine emit → `handleExtensionUI` →
-`StatusBar` / `WidgetArea` / `document.title`). Remaining optional work: auto-update and
-macOS build/signing verification on a mac host.
-
-## Architecture (short)
-
-```
-React (WebView) ──invoke("send_rpc")──►  Rust bridge  ──stdin──►  omp --mode rpc-ui
-             ◄──event("rpc://frame")───  (rpc.rs)     ◄─stdout──  (engine)
+```text
+React renderer ── contextBridge IPC ── Electron main ── stdin/stdout ── omp --mode rpc-ui
+                                      ├─ main engine
+                                      ├─ side-chat engine
+                                      └─ scheduled-task store
 ```
 
-- `src/lib/tauri-bridge.ts` — Tauri IPC wrapper.
-- `src/lib/rpc-client.ts` — request/response correlation + event routing.
-- `src/lib/rpc-protocol.ts` — standalone protocol types (drift guarded at runtime via `scripts/smoke-rpc.ts`).
-- `src/lib/reducer.ts` — folds engine events into the view model.
-- `src-tauri/src/rpc.rs` — owns the engine process, bridges stdio to WebView events.
+- `electron/main.ts` owns child processes, diagnostics, scheduler, and IPC handlers.
+- `electron/preload.ts` exposes a narrow `window.desktop` API with context isolation.
+- `src/lib/desktop-bridge.ts` adapts the preload API for the renderer.
+- `src/lib/rpc-client.ts` correlates requests, responses, events, and engine failures.
+- `src/lib/rpc-protocol.ts` mirrors the OMP RPC contract and is checked by the runtime smoke probe.
+- `src/lib/reducer.ts` folds OMP session events into the view model.
 
-## Develop
-
-Run the engine from source (no bundled binary needed) by pointing the bridge at
-the repo CLI via `OMP_ENGINE_ARGV` (JSON argv):
+## Development
 
 ```sh
-# from repo root
-export OMP_ENGINE_ARGV='["bun","'"$PWD"'/packages/coding-agent/src/cli.ts","--mode","rpc-ui"]'
-bun --cwd packages/desktop run tauri:dev
+bun install
+bun --cwd packages/desktop run electron:dev
 ```
 
-On Windows (PowerShell):
-
-```powershell
-$env:OMP_ENGINE_ARGV = '["bun","' + (Resolve-Path .\packages\coding-agent\src\cli.ts) + '","--mode","rpc-ui"]'
-bun --cwd packages/desktop run tauri:dev
-```
-
-Without `OMP_ENGINE_ARGV`, the bridge launches `omp --mode rpc-ui` from `PATH`
-(the production sidecar path).
-
-## Frontend only
+For a frontend-only Vite session:
 
 ```sh
-bun --cwd packages/desktop run dev     # Vite dev server on :1420
-bun --cwd packages/desktop run build   # static bundle → dist/
-bun --cwd packages/desktop run check   # type-check
+bun --cwd packages/desktop run dev
 ```
+
+The development main process runs the source engine through Bun. Set
+`OMP_ENGINE_PATH` to use a compiled OMP binary instead.
+
+## Validation and packaging
+
+```sh
+bun --cwd packages/desktop run check
+bun --cwd packages/desktop run test
+bun --cwd packages/desktop run smoke
+bun --cwd packages/desktop run sidecar
+bun --cwd packages/desktop run electron:build
+```
+
+`sidecar` builds the current `packages/coding-agent` source and stages
+`resources/omp.exe` (or the platform equivalent). `electron:build` produces NSIS
+and MSI installers under `release/` on Windows. Auto-update is intentionally disabled
+until a signed update endpoint is configured.

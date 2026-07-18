@@ -107,9 +107,14 @@ describe("AgentSession snapcompact frame-budget sizing", () => {
 		try {
 			await session?.dispose();
 		} finally {
-			authStorage?.close();
-			await tempDir?.remove();
-			vi.restoreAllMocks();
+			try {
+				authStorage?.close();
+				await tempDir?.remove();
+			} finally {
+				// Cleanup failures must not leak spies into the next test and turn one
+				// resource-lifecycle failure into misleading call-count assertions.
+				vi.restoreAllMocks();
+			}
 		}
 	});
 

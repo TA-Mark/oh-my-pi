@@ -753,6 +753,47 @@ describe("agentLoop with AgentMessage", () => {
 		expect(endEvent?.result?.details?.executed).toBe(false);
 	});
 
+	it("labels a running tool interrupted by the run signal as cancelled instead of a local tool failure", async () => {
+		const controller = new AbortController();
+		const toolSchema = type({ value: "string" });
+		const tool: AgentTool<typeof toolSchema, Record<string, never>> = {
+			name: "bash",
+			label: "Bash",
+			description: "Interruptible test tool",
+			parameters: toolSchema,
+			async execute(_toolCallId, _params, signal) {
+				controller.abort("Interrupted by user");
+				if (!signal) throw new Error("missing abort signal");
+				throw signal.reason;
+			},
+		};
+		const context: AgentContext = { systemPrompt: [""], messages: [], tools: [tool] };
+		const mock = createMockModel({
+			responses: [
+				{
+					content: [{ type: "toolCall", id: "tool-cancelled", name: "bash", arguments: { value: "go" } }],
+				},
+			],
+		});
+		const config: AgentLoopConfig = { model: mock.model, convertToLlm: identityConverter };
+
+		const events: AgentEvent[] = [];
+		const stream = agentLoop([createUserMessage("run")], context, config, controller.signal, mock.stream);
+		for await (const event of stream) events.push(event);
+		await stream.result();
+
+		const endEvent = events.find(
+			(event): event is Extract<AgentEvent, { type: "tool_execution_end" }> =>
+				event.type === "tool_execution_end" && event.toolCallId === "tool-cancelled",
+		);
+		expect(endEvent?.isError).toBe(true);
+		expect(endEvent?.result.details).toMatchObject({
+			__synthetic: true,
+			source: "tool_signal_aborted",
+			executed: true,
+		});
+	});
+
 	it("recovers completed custom-wire tool calls after stream_read_error", async () => {
 		const executedParams: Array<{ value: string }> = [];
 		const toolSchema = type({ value: "string" });

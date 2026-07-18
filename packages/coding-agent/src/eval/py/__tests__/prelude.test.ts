@@ -65,7 +65,7 @@ describe("python prelude", () => {
 				},
 			);
 
-			expect(result).toEqual({
+			expect({ ...result, stdout: result.stdout.replaceAll("\r\n", "\n") }).toEqual({
 				stdout: "resource contents\nresource contents\n",
 				stderr: "",
 				exitCode: 0,

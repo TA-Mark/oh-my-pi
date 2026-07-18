@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Emitted structured cancellation and skip details for interrupted tool executions so RPC and GUI hosts can distinguish them from genuine tool failures.
+
 ## [17.0.0] - 2026-07-15
 
 ### Breaking Changes

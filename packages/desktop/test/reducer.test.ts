@@ -123,11 +123,84 @@ describe("assistant error passthrough", () => {
 		expect(a?.error).toBe(true);
 		expect(a?.text).toBe("boom");
 	});
+
+	test("a user interrupt is silent instead of becoming a red assistant error", () => {
+		const s = apply(
+			initialViewModel,
+			{ type: "message_start", message: assistant("") },
+			{
+				type: "message_end",
+				message: { role: "assistant", content: [], stopReason: "aborted", errorMessage: "Interrupted by user" },
+			},
+		);
+		expect(s.messages.filter(message => message.role === "assistant")).toEqual([]);
+	});
+
+	test("partial assistant text survives a user interrupt without error styling", () => {
+		const s = apply(
+			initialViewModel,
+			{ type: "message_start", message: assistant("") },
+			{
+				type: "message_end",
+				message: assistant("partial answer", { stopReason: "aborted", errorMessage: "Interrupted by user" }),
+			},
+		);
+		expect(s.messages.filter(message => message.role === "assistant")).toEqual([
+			expect.objectContaining({ text: "partial answer", error: false }),
+		]);
+	});
 });
 
 describe("user message append", () => {
 	test("appendUserMessage adds a user row", () => {
 		const s = appendUserMessage(initialViewModel, "hi");
 		expect(s.messages.at(-1)).toMatchObject({ role: "user", text: "hi" });
+	});
+});
+
+describe("session lifecycle event parity", () => {
+	test("surfaces compaction, retry, fallback, todo, TTSR, IRC, thinking, and goal events", () => {
+		const s = apply(
+			initialViewModel,
+			{ type: "auto_compaction_start", reason: "threshold", action: "context-full" },
+			{ type: "auto_compaction_end", action: "context-full", aborted: false, willRetry: true },
+			{ type: "auto_retry_start", attempt: 1, maxAttempts: 3, delayMs: 100, errorMessage: "temporary" },
+			{ type: "auto_retry_end", success: true, attempt: 2 },
+			{ type: "retry_fallback_applied", from: "primary", to: "fallback", role: "slow" },
+			{ type: "retry_fallback_succeeded", model: "fallback", role: "slow" },
+			{ type: "ttsr_triggered", rules: [{ id: "r1" }] },
+			{ type: "todo_reminder", todos: [{ id: "t1" }], attempt: 1, maxAttempts: 2 },
+			{ type: "todo_auto_clear" },
+			{ type: "irc_message", message: { text: "hello" } },
+			{ type: "thinking_level_changed", thinkingLevel: "high", configured: "auto", resolved: "high" },
+			{
+				type: "goal_updated",
+				goal: {
+					id: "goal-1",
+					objective: "Ship desktop",
+					status: "active",
+					tokensUsed: 0,
+					timeUsedSeconds: 0,
+					createdAt: 1,
+					updatedAt: 1,
+				},
+			},
+		);
+		const text = s.messages
+			.filter(message => message.role === "system")
+			.map(message => message.text)
+			.join("\n");
+		expect(text).toContain("Context compaction started");
+		expect(text).toContain("Context compacted; retrying");
+		expect(text).toContain("Retrying request");
+		expect(text).toContain("Retry recovered");
+		expect(text).toContain("Retry fallback applied");
+		expect(text).toContain("Retry fallback succeeded");
+		expect(text).toContain("TTSR triggered");
+		expect(text).toContain("Todo reminder");
+		expect(text).toContain("Todo list cleared");
+		expect(text).toContain("IRC message");
+		expect(text).toContain("Thinking level changed to auto");
+		expect(text).toContain("Goal updated");
 	});
 });

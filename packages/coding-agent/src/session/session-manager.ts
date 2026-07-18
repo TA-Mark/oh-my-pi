@@ -329,6 +329,7 @@ export type ReadonlySessionManager = Pick<
 	| "allocateArtifactPath"
 	| "saveArtifact"
 	| "getArtifactPath"
+	| "readArtifact"
 	| "getLeafId"
 	| "getLeafEntry"
 	| "getEntry"
@@ -341,6 +342,13 @@ export type ReadonlySessionManager = Pick<
 	| "putBlob"
 	| "putBlobSync"
 >;
+
+export interface SessionArtifactContent {
+	id: string;
+	content: string;
+	size: number;
+	truncated: boolean;
+}
 
 interface SessionManagerStateSnapshot {
 	cwd: string;
@@ -1329,6 +1337,33 @@ export class SessionManager {
 
 	async getArtifactPath(id: string): Promise<string | null> {
 		return (await this.#artifactManagerForSession()?.getPath(id)) ?? null;
+	}
+
+	async readArtifact(id: string, maxBytes: number): Promise<SessionArtifactContent | null> {
+		if (!/^\d+$/.test(id)) throw new Error("Artifact ID must be numeric");
+		if (!Number.isFinite(maxBytes) || maxBytes < 1) throw new Error("Artifact preview size must be positive");
+		const byteLimit = Math.trunc(maxBytes);
+		const inMemory = this.#inMemoryArtifacts?.get(id);
+		if (inMemory !== undefined) {
+			const bytes = Buffer.from(inMemory, "utf8");
+			return {
+				id,
+				content: bytes.subarray(0, byteLimit).toString("utf8"),
+				size: bytes.byteLength,
+				truncated: bytes.byteLength > byteLimit,
+			};
+		}
+
+		const artifactPath = await this.getArtifactPath(id);
+		if (!artifactPath) return null;
+		const stat = await fs.promises.stat(artifactPath);
+		if (!stat.isFile()) return null;
+		return {
+			id,
+			content: await Bun.file(artifactPath).slice(0, byteLimit).text(),
+			size: stat.size,
+			truncated: stat.size > byteLimit,
+		};
 	}
 
 	async saveDraft(text: string): Promise<void> {

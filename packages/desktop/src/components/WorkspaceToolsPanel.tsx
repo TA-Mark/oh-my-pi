@@ -1,20 +1,103 @@
 import { Folder, Globe, MessageCircle, PanelRightClose, Plus, SquarePen, Terminal } from "lucide-react";
 import type { ComponentType, PointerEvent as ReactPointerEvent } from "react";
 import { useEffect, useState } from "react";
-import type { HunkSelection, WorkspaceFileChange } from "../lib/rpc-protocol";
+import type {
+	BashResult,
+	BrowserTab,
+	ContextBreakdown,
+	ContextUsage,
+	GitStatus,
+	HunkSelection,
+	ImageContent,
+	ScheduledTask,
+	ScheduledTaskInput,
+	WorkspaceEntry,
+	WorkspaceFileChange,
+	WorkspaceFileContent,
+} from "../lib/rpc-protocol";
+import { type BrowserActivity, BrowserPanel } from "./BrowserPanel";
 import { ChangesPanel } from "./ChangesPanel";
+import { ContextInspector, type StagedContextItem } from "./ContextInspector";
+import { FilesPanel } from "./FilesPanel";
+import { ScheduledTasksPanel } from "./ScheduledTasksPanel";
+import { type SideChatMessage, SideChatPanel } from "./SideChatPanel";
+import { TerminalPanel } from "./TerminalPanel";
 
-export type WorkspaceToolView = "menu" | "review" | "terminal" | "browser" | "files" | "side-chat";
+export type WorkspaceToolView =
+	| "menu"
+	| "review"
+	| "terminal"
+	| "context"
+	| "browser"
+	| "files"
+	| "side-chat"
+	| "scheduled";
 
 interface WorkspaceToolsPanelProps {
 	view: WorkspaceToolView;
+	workspace: string;
 	changes: WorkspaceFileChange[];
 	disabled: boolean;
 	onClose: () => void;
 	onRefreshChanges: () => void;
 	onStageHunks: (selections: HunkSelection[]) => void;
 	onUnstage: (files?: string[]) => void;
+	gitStatus: GitStatus;
+	onRevertFiles: (files: string[]) => void;
+	onCommit: () => void;
+	onPush: () => void;
+	onCreatePullRequest: () => void;
+	onTerminalRun: (command: string) => Promise<BashResult>;
+	onTerminalAbort: () => Promise<void>;
+	sideChatReady: boolean;
+	sideChatStarting: boolean;
+	sideChatMessages: SideChatMessage[];
+	sideChatWorktreePath: string | null;
+	onEnsureSideChat: () => void;
+	onForkSideChat: () => void;
+	onAddSideChatResult: () => void;
+	onToggleSideChatWorktree: () => void;
+	onSendSideChat: (text: string) => void;
+	onCloseSideChat: () => void;
+	scheduledTasks: ScheduledTask[];
+	onSaveScheduledTask: (input: ScheduledTaskInput) => void;
+	onRemoveScheduledTask: (id: string) => void;
+	onRunScheduledTask: (id: string) => void;
 	onSelectView: (view: WorkspaceToolView) => void;
+	workspaceEntries: WorkspaceEntry[];
+	workspaceFileContent: WorkspaceFileContent | null;
+	selectedWorkspacePath: string | null;
+	workspaceFilesLoading: boolean;
+	workspaceFilesTruncated: boolean;
+	onRefreshWorkspaceFiles: (query?: string) => void;
+	onOpenWorkspaceFile: (path: string) => void;
+	onRevealWorkspaceFile: (path: string) => void;
+	onAddWorkspaceContext?: (path: string, selection?: string) => void;
+	contextItems: StagedContextItem[];
+	contextImages: ImageContent[];
+	contextSkills: string[];
+	contextMemoryBackend: string | null;
+	contextUsage?: ContextUsage;
+	contextBreakdown?: ContextBreakdown;
+	onRemoveContextItem: (id: string) => void;
+	onRemoveContextImage: (index: number) => void;
+	onClearContext: () => void;
+	browserUrl: string;
+	browserSnapshot: string;
+	browserBusy: boolean;
+	browserTabs: BrowserTab[];
+	browserActiveTab: string;
+	browserActivity: BrowserActivity[];
+	browserDownloadPolicy: "deny";
+	onBrowserOpen: (url: string) => void;
+	onBrowserNewTab: () => void;
+	onBrowserSelectTab: (tab: BrowserTab) => void;
+	onBrowserCloseTab: (name: string) => void;
+	onBrowserRefreshTabs: () => void;
+	onBrowserHistory: (direction: "back" | "forward" | "reload") => void;
+	onBrowserSnapshot: () => void;
+	onBrowserAddContext: () => void;
+	onBrowserExternal: (url: string) => void;
 }
 
 interface ToolItem {
@@ -27,6 +110,7 @@ interface ToolItem {
 const TOOLS: ToolItem[] = [
 	{ view: "review", label: "Review", shortcut: "Ctrl+Shift+G", icon: SquarePen },
 	{ view: "terminal", label: "Terminal", icon: Terminal },
+	{ view: "context", label: "Context", icon: MessageCircle },
 	{ view: "browser", label: "Browser", shortcut: "Ctrl+T", icon: Globe },
 	{ view: "files", label: "Files", shortcut: "Ctrl+P", icon: Folder },
 	{ view: "side-chat", label: "Side chat", shortcut: "Ctrl+Alt+S", icon: MessageCircle },
@@ -69,29 +153,22 @@ function FeatureMenu({ onSelectView }: { onSelectView: (view: WorkspaceToolView)
 	);
 }
 
-function PlaceholderView({ title }: { title: string }) {
-	return (
-		<div className="tools-placeholder">
-			<p className="tools-placeholder-title">{title}</p>
-			<p className="tools-placeholder-copy">
-				This surface is ready in the panel, but the desktop host has not wired it yet.
-			</p>
-		</div>
-	);
-}
-
 function viewTitle(view: WorkspaceToolView): string {
 	switch (view) {
 		case "review":
 			return "Review";
 		case "terminal":
 			return "Terminal";
+		case "context":
+			return "Context Inspector";
 		case "browser":
 			return "Browser";
 		case "files":
 			return "Files";
 		case "side-chat":
 			return "Side chat";
+		case "scheduled":
+			return "Scheduled Tasks";
 		default:
 			return "Workspace";
 	}
@@ -99,13 +176,69 @@ function viewTitle(view: WorkspaceToolView): string {
 
 export function WorkspaceToolsPanel({
 	view,
+	workspace,
 	changes,
 	disabled,
 	onClose,
 	onRefreshChanges,
 	onStageHunks,
 	onUnstage,
+	gitStatus,
+	onRevertFiles,
+	onCommit,
+	onPush,
+	onCreatePullRequest,
+	onTerminalRun,
+	onTerminalAbort,
+	sideChatReady,
+	sideChatStarting,
+	sideChatMessages,
+	sideChatWorktreePath,
+	onEnsureSideChat,
+	onForkSideChat,
+	onAddSideChatResult,
+	onToggleSideChatWorktree,
+	onSendSideChat,
+	onCloseSideChat,
+	scheduledTasks,
+	onSaveScheduledTask,
+	onRemoveScheduledTask,
+	onRunScheduledTask,
 	onSelectView,
+	workspaceEntries,
+	workspaceFileContent,
+	selectedWorkspacePath,
+	workspaceFilesLoading,
+	workspaceFilesTruncated,
+	onRefreshWorkspaceFiles,
+	onOpenWorkspaceFile,
+	onRevealWorkspaceFile,
+	onAddWorkspaceContext,
+	contextItems,
+	contextImages,
+	contextSkills,
+	contextMemoryBackend,
+	contextUsage,
+	contextBreakdown,
+	onRemoveContextItem,
+	onRemoveContextImage,
+	onClearContext,
+	browserUrl,
+	browserSnapshot,
+	browserBusy,
+	browserTabs,
+	browserActiveTab,
+	browserActivity,
+	browserDownloadPolicy,
+	onBrowserOpen,
+	onBrowserNewTab,
+	onBrowserSelectTab,
+	onBrowserCloseTab,
+	onBrowserRefreshTabs,
+	onBrowserHistory,
+	onBrowserSnapshot,
+	onBrowserAddContext,
+	onBrowserExternal,
 }: WorkspaceToolsPanelProps) {
 	const isReview = view === "review";
 	const [reviewWidth, setReviewWidth] = useState(DEFAULT_REVIEW_WIDTH);
@@ -185,16 +318,89 @@ export function WorkspaceToolsPanel({
 				{view === "review" ? (
 					<ChangesPanel
 						changes={changes}
+						gitStatus={gitStatus}
 						onRefresh={onRefreshChanges}
 						onStageHunks={onStageHunks}
 						onUnstage={onUnstage}
+						onRevertFiles={onRevertFiles}
+						onCommit={onCommit}
+						onPush={onPush}
+						onCreatePullRequest={onCreatePullRequest}
 						disabled={disabled}
 					/>
 				) : null}
-				{view === "terminal" ? <PlaceholderView title="Terminal" /> : null}
-				{view === "browser" ? <PlaceholderView title="Browser" /> : null}
-				{view === "files" ? <PlaceholderView title="Files" /> : null}
-				{view === "side-chat" ? <PlaceholderView title="Side chat" /> : null}
+				{view === "terminal" ? (
+					<TerminalPanel disabled={disabled} onRun={onTerminalRun} onAbort={onTerminalAbort} />
+				) : null}
+				{view === "browser" ? (
+					<BrowserPanel
+						url={browserUrl}
+						snapshot={browserSnapshot}
+						busy={browserBusy}
+						tabs={browserTabs}
+						activeTab={browserActiveTab}
+						activity={browserActivity}
+						downloadPolicy={browserDownloadPolicy}
+						onOpen={onBrowserOpen}
+						onNewTab={onBrowserNewTab}
+						onSelectTab={onBrowserSelectTab}
+						onCloseTab={onBrowserCloseTab}
+						onRefreshTabs={onBrowserRefreshTabs}
+						onHistory={onBrowserHistory}
+						onSnapshot={onBrowserSnapshot}
+						onAddContext={onBrowserAddContext}
+						onExternal={onBrowserExternal}
+					/>
+				) : null}
+				{view === "files" ? (
+					<FilesPanel
+						entries={workspaceEntries}
+						content={workspaceFileContent}
+						selectedPath={selectedWorkspacePath}
+						loading={workspaceFilesLoading}
+						truncated={workspaceFilesTruncated}
+						onRefresh={onRefreshWorkspaceFiles}
+						onOpen={onOpenWorkspaceFile}
+						onReveal={onRevealWorkspaceFile}
+						onAddContext={onAddWorkspaceContext ?? (() => {})}
+					/>
+				) : null}
+				{view === "context" ? (
+					<ContextInspector
+						items={contextItems}
+						images={contextImages}
+						skills={contextSkills}
+						memoryBackend={contextMemoryBackend}
+						usage={contextUsage}
+						breakdown={contextBreakdown}
+						onRemoveItem={onRemoveContextItem}
+						onRemoveImage={onRemoveContextImage}
+						onClear={onClearContext}
+					/>
+				) : null}
+				{view === "side-chat" ? (
+					<SideChatPanel
+						ready={sideChatReady}
+						starting={sideChatStarting}
+						messages={sideChatMessages}
+						onEnsure={onEnsureSideChat}
+						onFork={onForkSideChat}
+						onAddResult={onAddSideChatResult}
+						worktreePath={sideChatWorktreePath}
+						onToggleWorktree={onToggleSideChatWorktree}
+						onSend={onSendSideChat}
+						onClose={onCloseSideChat}
+					/>
+				) : null}
+				{view === "scheduled" ? (
+					<ScheduledTasksPanel
+						tasks={scheduledTasks}
+						defaultWorkspace={workspace}
+						onSave={onSaveScheduledTask}
+						onRemove={onRemoveScheduledTask}
+						onRunNow={onRunScheduledTask}
+					/>
+				) : null}
 			</div>
 		</aside>
 	);

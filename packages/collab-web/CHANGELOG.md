@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added dedicated transcript renderers for checkpoint, rewind, memory editing, learning, and managed-skill lifecycle tools.
+
+### Fixed
+
+- Rendered structured cancelled and skipped tool results with neutral status styling instead of failure styling.
+
 ## [17.0.1] - 2026-07-16
 
 ### Fixed

@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added additive RPC parity for desktop settings/plugins, safe workspace file previews, context inspection, MCP and memory lifecycle, browser tabs, and Git/worktree management.
+- Added a bounded `read_artifact` RPC command so GUI hosts can preview session and subagent artifacts without receiving filesystem paths.
+- Added RPC control for per-plugin feature selection with live plugin and skill discovery reload.
+- Added GUI-safe MCP OAuth reauthorization/sign-out commands plus redacted connection diagnostics and credential-availability status.
+- Added scoped plugin marketplace RPC discovery/source lifecycle/install/update/uninstall/enable operations for GUI hosts.
+- Added structured memory save/consolidate/clear RPC lifecycle actions and Hindsight backend health, scoped search, and explicit save support.
+
+### Changed
+
+- Replaced the Desktop source-regex RPC drift check with a compile-time parity contract covering every core command and success-response discriminant.
+
 ## [17.0.1] - 2026-07-16
 
 ### Changed

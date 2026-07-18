@@ -40,6 +40,7 @@ import os
 import re
 import runpy
 import shlex
+import shutil
 import signal
 import subprocess
 import sys
@@ -506,16 +507,28 @@ def _stream_process_output(
         max_lines=_SHELL_OUTPUT_MAX_LINES,
         encoding=encoding,
     )
+    pending_cr = False
+
+    def normalize_newlines(text: str, *, final: bool = False) -> str:
+        nonlocal pending_cr
+        if pending_cr:
+            text = "\r" + text
+            pending_cr = False
+        if not final and text.endswith("\r"):
+            text = text[:-1]
+            pending_cr = True
+        return text.replace("\r\n", "\n").replace("\r", "\n")
+
     while True:
         chunk = os.read(proc.stdout.fileno(), _SHELL_READ_CHUNK_BYTES)
         if not chunk:
             break
-        text = decoder.decode(chunk)
+        text = normalize_newlines(decoder.decode(chunk))
         if text:
             limiter.write(text)
             if on_text is not None:
                 on_text(text)
-    tail = decoder.decode(b"", final=True)
+    tail = normalize_newlines(decoder.decode(b"", final=True), final=True)
     if tail:
         limiter.write(tail)
         if on_text is not None:
@@ -739,7 +752,7 @@ def _magic_run(args: str) -> None:
 
 @cell_magic("bash")
 def _magic_cell_bash(args: str, body: str) -> int:
-    return _run_shell_body(body, shell_arg="/bin/bash")
+    return _run_shell_body(body, shell_arg=_resolve_bash())
 
 
 @cell_magic("capture")
@@ -779,11 +792,34 @@ def _magic_cell_writefile(args: str, body: str) -> str:
     return str(path)
 
 
+def _resolve_bash() -> str:
+    """Locate bash without routing Windows through the WSL app execution alias."""
+    if os.name != "nt":
+        return "/bin/bash"
+    candidates = [
+        os.environ.get("BASH"),
+        os.path.join(os.environ.get("ProgramFiles", ""), "Git", "bin", "bash.exe"),
+        os.path.join(os.environ.get("ProgramFiles(x86)", ""), "Git", "bin", "bash.exe"),
+        os.path.join(
+            os.environ.get("LOCALAPPDATA", ""), "Programs", "Git", "bin", "bash.exe"
+        ),
+    ]
+    for candidate in candidates:
+        if candidate and os.path.isfile(candidate):
+            return candidate
+    resolved = shutil.which("bash")
+    if resolved:
+        return resolved
+    raise FileNotFoundError("%%bash requires bash; install Git for Windows or set BASH")
+
+
 def _run_shell_body(body: str, *, shell_arg: str) -> int:
     proc = subprocess.Popen(
         [shell_arg, "-c", body],
+        stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
+        close_fds=True,
     )
     _stream_process_output(proc)
     proc.wait()
@@ -821,11 +857,24 @@ class _ShellResult(list):
 
 
 def __omp_shell(cmd: str) -> _ShellResult:
+    if os.name == "nt":
+        # Avoid `shell=True`'s implicit Windows handle inheritance when the
+        # runner itself is hosted behind a Bun stdio pipe. That combination can
+        # leave the nested command's stdout pipe open forever. Invoke COMSPEC
+        # explicitly so only the intended standard handles are inherited.
+        comspec = os.environ.get("COMSPEC", "cmd.exe")
+        shell_command: str | list[str] = f'"{comspec}" /d /c {cmd}'
+        use_shell = False
+    else:
+        shell_command = cmd
+        use_shell = True
     proc = subprocess.Popen(
-        cmd,
-        shell=True,
+        shell_command,
+        shell=use_shell,
+        stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
+        close_fds=True,
     )
     capture = _BoundedTextCapture(
         _SHELL_RESULT_CAPTURE_BYTES, _SHELL_OUTPUT_MAX_LINES, _process_output_encoding()

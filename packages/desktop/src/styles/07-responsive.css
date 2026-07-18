@@ -224,6 +224,11 @@
 		width: 100%;
 	}
 
+	.session-workflow-actions {
+		max-width: calc(100vw - 210px);
+		overflow-x: auto;
+	}
+
 	.window-tool-controls {
 		margin-left: auto;
 	}
@@ -332,4 +337,3 @@
 		max-width: min(320px, calc(100vw - 32px));
 	}
 }
-

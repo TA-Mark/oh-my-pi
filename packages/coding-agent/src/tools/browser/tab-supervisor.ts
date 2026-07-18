@@ -158,6 +158,23 @@ export function getTab(name: string): TabSession | undefined {
 	return tabs.get(name);
 }
 
+/** Redacted tab metadata for host UIs. */
+export function listTabs(): Array<{
+	name: string;
+	url: string;
+	title?: string;
+	state: "alive" | "dead";
+	backend: "worker" | "cmux";
+}> {
+	return Array.from(tabs.values(), tab => ({
+		name: tab.name,
+		url: tab.info.url,
+		title: tab.info.title,
+		state: tab.state,
+		backend: tab.backend,
+	})).sort((a, b) => a.name.localeCompare(b.name));
+}
+
 export function acquireTab(name: string, browser: BrowserHandle, opts: AcquireTabOptions): Promise<AcquireTabResult> {
 	const prior = acquireChains.get(name) ?? Promise.resolve();
 	const result = prior.then(() => acquireTabImpl(name, browser, opts));

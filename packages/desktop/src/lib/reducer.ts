@@ -85,12 +85,28 @@ function finalResult(result: unknown, isError?: boolean): unknown {
 	return { content: [], isError: Boolean(isError) };
 }
 
+function summarize(value: unknown, maxLength = 240): string {
+	if (typeof value === "string") return value.slice(0, maxLength);
+	try {
+		const text = JSON.stringify(value);
+		return text ? text.slice(0, maxLength) : "";
+	} catch {
+		return "";
+	}
+}
+
+function appendSystemNotice(state: ViewModel, text: string): ViewModel {
+	return text ? { ...state, messages: [...state.messages, { id: newId("n"), role: "system", text }] } : state;
+}
+
 /** Assistant text + error state. Falls back to the provider errorMessage when the turn failed with no text. */
-function assistantView(message: EngineMessage): { text: string; error: boolean } {
+function assistantView(message: EngineMessage): { text: string; error: boolean; cancelled: boolean } {
 	const text = messageText(message);
+	const cancelled = message.stopReason === "aborted" && message.errorMessage === "Interrupted by user";
+	if (cancelled) return { text, error: false, cancelled: true };
 	const error = message.stopReason === "error" || Boolean(message.errorMessage);
-	if (!text && message.errorMessage) return { text: message.errorMessage, error: true };
-	return { text, error };
+	if (!text && message.errorMessage) return { text: message.errorMessage, error: true, cancelled: false };
+	return { text, error, cancelled: false };
 }
 
 /**
@@ -101,16 +117,20 @@ function assistantView(message: EngineMessage): { text: string; error: boolean }
 function updateAssistantById(
 	messages: ChatMessage[],
 	id: string,
-	view: { text: string; error: boolean },
+	view: { text: string; error: boolean; cancelled: boolean },
 ): ChatMessage[] {
 	let found = false;
-	const next = messages.map(message => {
-		if (message.id === id && message.role === "assistant") {
-			found = true;
-			return { ...message, text: view.text, error: view.error };
-		}
-		return message;
-	});
+	const next = messages
+		.map(message => {
+			if (message.id === id && message.role === "assistant") {
+				found = true;
+				if (view.cancelled && !view.text) return null;
+				return { ...message, text: view.text, error: view.error };
+			}
+			return message;
+		})
+		.filter((message): message is ChatMessage => message !== null);
+	if (found && view.cancelled && !view.text) return next;
 	if (!found) next.push({ id, role: "assistant", text: view.text, error: view.error });
 	return next;
 }
@@ -214,9 +234,59 @@ export function reduce(state: ViewModel, event: EngineEvent): ViewModel {
 			};
 		case "notice": {
 			const text = event.message ?? event.text ?? "";
-			if (!text) return state;
-			return { ...state, messages: [...state.messages, { id: newId("n"), role: "system", text }] };
+			return appendSystemNotice(state, text);
 		}
+		case "auto_compaction_start":
+			return appendSystemNotice(state, `Context compaction started (${event.action}, ${event.reason}).`);
+		case "auto_compaction_end": {
+			if (event.skipped) return appendSystemNotice(state, "Context compaction skipped.");
+			if (event.errorMessage) return appendSystemNotice(state, `Context compaction failed: ${event.errorMessage}`);
+			if (event.aborted) return appendSystemNotice(state, "Context compaction was cancelled.");
+			return appendSystemNotice(
+				state,
+				event.willRetry ? "Context compacted; retrying the request." : "Context compaction completed.",
+			);
+		}
+		case "auto_retry_start":
+			return appendSystemNotice(
+				state,
+				`Retrying request (${event.attempt}/${event.maxAttempts}) in ${event.delayMs}ms: ${event.errorMessage}`,
+			);
+		case "auto_retry_end":
+			return appendSystemNotice(
+				state,
+				event.success
+					? `Retry recovered on attempt ${event.attempt}.`
+					: `Retry failed after attempt ${event.attempt}${event.finalError ? `: ${event.finalError}` : "."}`,
+			);
+		case "retry_fallback_applied":
+			return appendSystemNotice(state, `Retry fallback applied for ${event.role}: ${event.from} → ${event.to}.`);
+		case "retry_fallback_succeeded":
+			return appendSystemNotice(state, `Retry fallback succeeded for ${event.role} with ${event.model}.`);
+		case "ttsr_triggered":
+			return appendSystemNotice(
+				state,
+				`TTSR triggered (${event.rules.length} rule${event.rules.length === 1 ? "" : "s"}).`,
+			);
+		case "todo_reminder":
+			return appendSystemNotice(
+				state,
+				`Todo reminder (${event.attempt}/${event.maxAttempts}): ${event.todos.length} item${event.todos.length === 1 ? "" : "s"} remain.`,
+			);
+		case "todo_auto_clear":
+			return appendSystemNotice(state, "Todo list cleared automatically.");
+		case "irc_message":
+			return appendSystemNotice(state, `IRC message: ${summarize(event.message)}`);
+		case "thinking_level_changed":
+			return appendSystemNotice(
+				state,
+				`Thinking level changed to ${event.configured ?? event.thinkingLevel ?? event.resolved ?? "default"}.`,
+			);
+		case "goal_updated":
+			return appendSystemNotice(
+				state,
+				event.goal === null ? "Goal cleared." : `Goal updated: ${summarize(event.goal)}`,
+			);
 		default:
 			return state;
 	}

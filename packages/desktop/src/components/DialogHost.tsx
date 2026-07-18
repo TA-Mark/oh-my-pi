@@ -34,8 +34,18 @@ function DialogBody({
 			if (event.key === "Escape") onRespond({ type: "extension_ui_response", id, cancelled: true });
 		};
 		window.addEventListener("keydown", onKey);
-		return () => window.removeEventListener("keydown", onKey);
-	}, [id, onRespond]);
+		const timeout =
+			"timeout" in request && typeof request.timeout === "number" && request.timeout > 0
+				? window.setTimeout(
+						() => onRespond({ type: "extension_ui_response", id, cancelled: true, timedOut: true }),
+						request.timeout,
+					)
+				: undefined;
+		return () => {
+			window.removeEventListener("keydown", onKey);
+			if (timeout !== undefined) window.clearTimeout(timeout);
+		};
+	}, [id, onRespond, request]);
 
 	const cancel = () => onRespond({ type: "extension_ui_response", id, cancelled: true });
 

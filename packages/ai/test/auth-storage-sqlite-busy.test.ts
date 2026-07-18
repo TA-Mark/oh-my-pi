@@ -81,6 +81,16 @@ describe("SqliteAuthCredentialStore.open SQLITE_BUSY handling", () => {
 		}
 	});
 
+	test("close releases every prepared statement and the database files", async () => {
+		const store = await SqliteAuthCredentialStore.open(path.join(tempDir, "close.db"));
+		store.close();
+
+		// Use a single, non-retrying removal so Windows proves that close() released
+		// the SQLite database, WAL, and SHM handles synchronously.
+		await fs.rm(tempDir, { recursive: true, force: true });
+		tempDir = "";
+	});
+
 	test("retries through a transient SQLITE_BUSY_RECOVERY and eventually succeeds", async () => {
 		const dbPath = path.join(tempDir, "retry.db");
 		let throws = 2;

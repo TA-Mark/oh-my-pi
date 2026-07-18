@@ -766,11 +766,114 @@
 }
 
 .subagent-item {
+	position: relative;
 	display: flex;
 	align-items: center;
 	gap: 8px;
 	padding: 6px 12px;
 	font-size: 13px;
+}
+
+.subagent-open {
+	position: absolute;
+	inset: 0;
+	border: 0;
+	background: transparent;
+	cursor: pointer;
+}
+
+.subagent-item:has(.subagent-open):hover {
+	background: var(--color-bg-hover);
+}
+
+.subagent-transcript {
+	position: fixed;
+	right: 24px;
+	top: 70px;
+	z-index: 30;
+	width: min(620px, calc(100vw - 48px));
+	max-height: 72vh;
+	overflow: auto;
+	padding: 14px;
+	border: 1px solid var(--border);
+	border-radius: 10px;
+	background: var(--color-bg-elevated);
+	box-shadow: 0 18px 60px rgba(0, 0, 0, 0.45);
+}
+
+.subagent-transcript-head,
+.subagent-transcript-head > div {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 10px;
+}
+
+.subagent-transcript-head span,
+.subagent-transcript-meta {
+	color: var(--text-faint);
+	font-size: 11px;
+}
+
+.subagent-transcript pre {
+	max-height: 32vh;
+	overflow: auto;
+	margin: 10px 0 0;
+	padding: 10px;
+	border-radius: 7px;
+	background: var(--color-bg-sidebar);
+	font: 11px/1.45 ui-monospace, SFMono-Regular, Consolas, monospace;
+	white-space: pre-wrap;
+}
+
+.subagent-message-list {
+	display: grid;
+	gap: 8px;
+	margin-top: 10px;
+}
+
+.subagent-message {
+	padding: 9px;
+	border: 1px solid var(--border);
+	border-radius: 8px;
+	background: var(--color-bg-sidebar);
+}
+
+.subagent-message-head,
+.subagent-artifact-actions {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	flex-wrap: wrap;
+}
+
+.subagent-message-head code,
+.subagent-message-error {
+	color: var(--text-faint);
+	font-size: 11px;
+}
+
+.subagent-message-error {
+	color: var(--danger);
+}
+
+.subagent-message pre,
+.subagent-artifact-preview pre {
+	margin-top: 7px;
+}
+
+.subagent-artifact-actions button {
+	border: 0;
+	background: transparent;
+	color: var(--accent);
+	font-size: 11px;
+	cursor: pointer;
+}
+
+.subagent-artifact-preview {
+	margin-top: 12px;
+	padding-top: 10px;
+	border-top: 1px solid var(--border);
 }
 
 .subagent-dot {
@@ -785,4 +888,3 @@
 	background: var(--warning);
 	animation: subagent-pulse 1.4s ease-in-out infinite;
 }
-

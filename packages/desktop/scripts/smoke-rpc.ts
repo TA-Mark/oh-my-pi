@@ -24,19 +24,7 @@ import * as path from "node:path";
 
 const cliPath = path.join(import.meta.dir, "..", "..", "coding-agent", "src", "cli.ts");
 const useSidecar = process.argv.includes("--sidecar");
-const sidecarTriple =
-	process.platform === "win32"
-		? "x86_64-pc-windows-msvc"
-		: process.platform === "darwin"
-			? "aarch64-apple-darwin"
-			: "x86_64-unknown-linux-gnu";
-const sidecarPath = path.join(
-	import.meta.dir,
-	"..",
-	"src-tauri",
-	"binaries",
-	`omp-${sidecarTriple}${process.platform === "win32" ? ".exe" : ""}`,
-);
+const sidecarPath = path.join(import.meta.dir, "..", "resources", `omp${process.platform === "win32" ? ".exe" : ""}`);
 const engineCommand = useSidecar ? [sidecarPath, "--mode", "rpc-ui"] : ["bun", cliPath, "--mode", "rpc-ui"];
 
 const child = Bun.spawn(engineCommand, {
@@ -94,7 +82,9 @@ try {
 				const data = frame.data as Record<string, unknown>;
 				if (typeof data.sessionId !== "string") fail("get_state.sessionId not a string");
 				if (typeof data.isStreaming !== "boolean") fail("get_state.isStreaming not a boolean");
-				console.log("OK: get_state contract holds (sessionId, isStreaming)");
+				if (!isRecord(data.contextBreakdown) || typeof data.contextBreakdown.messagesTokens !== "number")
+					fail("get_state.contextBreakdown shape invalid");
+				console.log("OK: get_state contract holds (sessionId, isStreaming, contextBreakdown)");
 				// Use `off`, which is preserved for every model. Concrete efforts such
 				// as `low` are intentionally clamped to the active model's supported
 				// effort set in OMP v17 and therefore are not stable smoke fixtures.
@@ -143,6 +133,16 @@ try {
 					fail("get_subagents.data.subagents is not an array");
 				}
 				console.log("OK: get_subagents contract holds (subagents array)");
+				send({ type: "read_artifact", artifactId: "999999999", maxBytes: 4096, id: "s7a" });
+			} else if (frame.id === "s7a") {
+				if (
+					frame.success !== false ||
+					typeof frame.error !== "string" ||
+					!frame.error.includes("Artifact not found")
+				) {
+					fail(`read_artifact missing-artifact contract failed: ${line}`);
+				}
+				console.log("OK: read_artifact contract holds (bounded ID lookup, structured missing error)");
 				send({ type: "get_login_providers", id: "s8" });
 			} else if (frame.id === "s8") {
 				if (frame.success !== true || !isRecord(frame.data)) fail(`get_login_providers failed: ${line}`);
@@ -190,6 +190,172 @@ try {
 					fail("get_workspace_diff.data.files is not an array");
 				}
 				console.log("OK: get_workspace_diff contract holds (files array)");
+				send({ type: "get_settings", id: "s15a" });
+			} else if (frame.id === "s15a") {
+				if (frame.success !== true || !isRecord(frame.data)) fail(`get_settings failed: ${line}`);
+				const data = frame.data as Record<string, unknown>;
+				if (!Array.isArray(data.settings) || !Array.isArray(data.plugins)) fail("get_settings data shape invalid");
+				console.log("OK: get_settings contract holds (settings/plugins arrays)");
+				send({ type: "get_available_commands", id: "s15a2" });
+			} else if (frame.id === "s15a2") {
+				if (
+					frame.success !== true ||
+					!isRecord(frame.data) ||
+					!Array.isArray((frame.data as Record<string, unknown>).commands)
+				)
+					fail(`get_available_commands failed: ${line}`);
+				console.log("OK: get_available_commands contract holds (commands array)");
+				send({ type: "get_goal", id: "s15goal" });
+			} else if (frame.id === "s15goal") {
+				if (frame.success !== true || !isRecord(frame.data) || !("goal" in frame.data) || !("state" in frame.data))
+					fail(`get_goal failed: ${line}`);
+				console.log("OK: get_goal contract holds (goal/state snapshot)");
+				send({ type: "create_goal", objective: "Desktop RPC smoke", tokenBudget: 1000, id: "s15goal-create" });
+			} else if (frame.id === "s15goal-create") {
+				if (frame.success !== true || !isRecord(frame.data) || !isRecord(frame.data.state))
+					fail(`create_goal failed: ${line}`);
+				if (frame.data.state.enabled !== true || !isRecord(frame.data.goal) || frame.data.goal.status !== "active")
+					fail(`create_goal state invalid: ${line}`);
+				console.log("OK: create_goal activates goal mode");
+				send({ type: "pause_goal", id: "s15goal-pause" });
+			} else if (frame.id === "s15goal-pause") {
+				if (frame.success !== true || !isRecord(frame.data) || !isRecord(frame.data.state))
+					fail(`pause_goal failed: ${line}`);
+				if (frame.data.state.enabled !== false || !isRecord(frame.data.goal) || frame.data.goal.status !== "paused")
+					fail(`pause_goal state invalid: ${line}`);
+				console.log("OK: pause_goal disables active goal mode");
+				send({ type: "resume_goal", id: "s15goal-resume" });
+			} else if (frame.id === "s15goal-resume") {
+				if (frame.success !== true || !isRecord(frame.data) || !isRecord(frame.data.state))
+					fail(`resume_goal failed: ${line}`);
+				if (frame.data.state.enabled !== true || !isRecord(frame.data.goal) || frame.data.goal.status !== "active")
+					fail(`resume_goal state invalid: ${line}`);
+				console.log("OK: resume_goal reactivates goal mode");
+				send({ type: "drop_goal", id: "s15goal-drop" });
+			} else if (frame.id === "s15goal-drop") {
+				if (
+					frame.success !== true ||
+					!isRecord(frame.data) ||
+					frame.data.state !== null ||
+					!isRecord(frame.data.goal)
+				)
+					fail(`drop_goal failed: ${line}`);
+				if (frame.data.goal.status !== "dropped") fail(`drop_goal state invalid: ${line}`);
+				console.log("OK: drop_goal clears goal mode with dropped snapshot");
+				send({
+					type: "set_host_tools",
+					tools: [{ name: "desktop_smoke", description: "Smoke host tool", parameters: { type: "object" } }],
+					id: "s15a3",
+				});
+			} else if (frame.id === "s15a3") {
+				if (
+					frame.success !== true ||
+					!isRecord(frame.data) ||
+					!Array.isArray((frame.data as Record<string, unknown>).toolNames) ||
+					!((frame.data as Record<string, unknown>).toolNames as unknown[]).includes("desktop_smoke")
+				)
+					fail(`set_host_tools failed: ${line}`);
+				console.log("OK: set_host_tools contract holds (toolNames)");
+				send({ type: "set_host_uri_schemes", schemes: [{ scheme: "smoke", immutable: true }], id: "s15a4" });
+			} else if (frame.id === "s15a4") {
+				if (
+					frame.success !== true ||
+					!isRecord(frame.data) ||
+					!Array.isArray((frame.data as Record<string, unknown>).schemes) ||
+					!((frame.data as Record<string, unknown>).schemes as unknown[]).includes("smoke")
+				)
+					fail(`set_host_uri_schemes failed: ${line}`);
+				console.log("OK: set_host_uri_schemes contract holds (schemes)");
+				send({ type: "set_host_tools", tools: [], id: "s15a5" });
+			} else if (frame.id === "s15a5") {
+				if (frame.success !== true) fail(`set_host_tools clear failed: ${line}`);
+				console.log("OK: host registry clear accepted");
+				send({ type: "list_workspace_files", query: "", limit: 100, id: "s15b" });
+			} else if (frame.id === "s15b") {
+				if (frame.success !== true || !isRecord(frame.data)) fail(`list_workspace_files failed: ${line}`);
+				const data = frame.data as Record<string, unknown>;
+				if (!Array.isArray(data.entries) || typeof data.truncated !== "boolean")
+					fail("list_workspace_files data shape invalid");
+				console.log("OK: list_workspace_files contract holds (entries/truncated)");
+				send({ type: "read_workspace_file", path: "package.json", maxBytes: 4096, id: "s15c" });
+			} else if (frame.id === "s15c") {
+				if (frame.success !== true || !isRecord(frame.data)) fail(`read_workspace_file failed: ${line}`);
+				const data = frame.data as Record<string, unknown>;
+				if (typeof data.content !== "string" || typeof data.path !== "string")
+					fail("read_workspace_file data shape invalid");
+				console.log("OK: read_workspace_file contract holds (bounded text preview)");
+				send({ type: "get_context_snapshot", id: "s15d" });
+			} else if (frame.id === "s15d") {
+				if (frame.success !== true || !isRecord(frame.data)) fail(`get_context_snapshot failed: ${line}`);
+				console.log("OK: get_context_snapshot accepted");
+				send({ type: "reload_skills", id: "s15d2" });
+			} else if (frame.id === "s15d2") {
+				if (frame.success !== true || !isRecord(frame.data)) fail(`reload_skills failed: ${line}`);
+				console.log("OK: reload_skills accepted");
+				send({ type: "get_mcp_status", id: "s15e" });
+			} else if (frame.id === "s15e") {
+				if (
+					frame.success !== true ||
+					!isRecord(frame.data) ||
+					!Array.isArray((frame.data as Record<string, unknown>).servers)
+				)
+					fail(`get_mcp_status failed: ${line}`);
+				console.log("OK: get_mcp_status contract holds (servers array)");
+				send({ type: "get_marketplace", id: "s15market" });
+			} else if (frame.id === "s15market") {
+				if (
+					frame.success !== true ||
+					!isRecord(frame.data) ||
+					!Array.isArray((frame.data as Record<string, unknown>).marketplaces) ||
+					!Array.isArray((frame.data as Record<string, unknown>).plugins)
+				)
+					fail(`get_marketplace failed: ${line}`);
+				console.log("OK: get_marketplace contract holds (marketplaces/plugins arrays)");
+				send({ type: "get_memory_status", id: "s15memory" });
+			} else if (frame.id === "s15memory") {
+				if (
+					frame.success !== true ||
+					!isRecord(frame.data) ||
+					typeof (frame.data as Record<string, unknown>).backend !== "string" ||
+					typeof (frame.data as Record<string, unknown>).active !== "boolean" ||
+					typeof (frame.data as Record<string, unknown>).writable !== "boolean" ||
+					typeof (frame.data as Record<string, unknown>).searchable !== "boolean"
+				)
+					fail(`get_memory_status failed: ${line}`);
+				console.log("OK: get_memory_status contract holds (backend health capabilities)");
+				send({ type: "browser_list_tabs", id: "s15f" });
+			} else if (frame.id === "s15f") {
+				if (
+					frame.success !== true ||
+					!isRecord(frame.data) ||
+					!Array.isArray((frame.data as Record<string, unknown>).tabs) ||
+					(frame.data as Record<string, unknown>).downloadPolicy !== "deny"
+				)
+					fail(`browser_list_tabs failed: ${line}`);
+				console.log("OK: browser_list_tabs contract holds (tabs array, deny download policy)");
+				send({ type: "get_git_status", id: "s15g" });
+			} else if (frame.id === "s15g") {
+				if (frame.success !== true || !isRecord(frame.data)) fail(`get_git_status failed: ${line}`);
+				console.log("OK: get_git_status accepted");
+				send({ type: "bash", command: "echo desktop-terminal-smoke", id: "s15g2" });
+			} else if (frame.id === "s15g2") {
+				if (
+					frame.success !== true ||
+					!isRecord(frame.data) ||
+					typeof (frame.data as Record<string, unknown>).output !== "string" ||
+					!(frame.data as Record<string, unknown>).output?.toString().includes("desktop-terminal-smoke")
+				)
+					fail(`bash terminal contract failed: ${line}`);
+				console.log("OK: bash terminal contract holds");
+				send({ type: "list_worktrees", id: "s15h" });
+			} else if (frame.id === "s15h") {
+				if (
+					frame.success !== true ||
+					!isRecord(frame.data) ||
+					!Array.isArray((frame.data as Record<string, unknown>).worktrees)
+				)
+					fail(`list_worktrees failed: ${line}`);
+				console.log("OK: list_worktrees contract holds (worktrees array)");
 				// Unstage-all is a safe no-op when nothing is staged; verifies the
 				// staging command path (desktop-added; core-touchpoints.md) without
 				// mutating the working tree.

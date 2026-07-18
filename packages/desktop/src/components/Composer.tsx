@@ -13,7 +13,14 @@ import {
 	Square,
 } from "lucide-react";
 import { type ClipboardEvent, type DragEvent, type KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
-import type { ApprovalMode, ImageContent, LoginProvider, ModelInfo, ThinkingLevel } from "../lib/rpc-protocol";
+import type {
+	ApprovalMode,
+	AvailableCommand,
+	ImageContent,
+	LoginProvider,
+	ModelInfo,
+	ThinkingLevel,
+} from "../lib/rpc-protocol";
 
 /** Text pushed into the composer by the engine (extension_ui `set_editor_text`). */
 export interface ComposerInjection {
@@ -30,13 +37,29 @@ interface ComposerProps {
 	model?: string;
 	models?: ModelInfo[];
 	providers?: LoginProvider[];
+	availableCommands?: AvailableCommand[];
 	thinkingLevel?: ThinkingLevel;
 	approvalMode?: ApprovalMode;
 	onSelectModel?: (provider: string, id: string) => void;
 	onSelectThinking: (level: ThinkingLevel) => void;
 	onSelectApprovalMode: (mode: ApprovalMode) => void;
+	steeringMode?: "all" | "one-at-a-time";
+	followUpMode?: "all" | "one-at-a-time";
+	interruptMode?: "immediate" | "wait";
+	autoCompactionEnabled?: boolean;
+	autoRetryEnabled?: boolean;
+	queuedMessageCount?: number;
+	onSetSteeringMode?: (mode: "all" | "one-at-a-time") => void;
+	onSetFollowUpMode?: (mode: "all" | "one-at-a-time") => void;
+	onSetInterruptMode?: (mode: "immediate" | "wait") => void;
+	onSetAutoCompaction?: (enabled: boolean) => void;
+	onSetAutoRetry?: (enabled: boolean) => void;
+	onCompact?: () => void;
+	onAbortRetry?: () => void;
 	onChooseProject: () => void;
-	onSend: (text: string, images: ImageContent[]) => void;
+	images: ImageContent[];
+	onImagesChange: (images: ImageContent[]) => void;
+	onSend: (text: string, images: ImageContent[], streamingBehavior?: "steer" | "followUp") => void;
 	onAbort: () => void;
 	/** Stop clicked, turn still tearing down — shows "Stopping…" and blocks repeat clicks. */
 	aborting?: boolean;
@@ -173,21 +196,38 @@ export function Composer({
 	model,
 	models,
 	providers,
+	availableCommands = [],
 	thinkingLevel,
 	approvalMode = "yolo",
 	onSelectModel,
 	onSelectThinking,
 	onSelectApprovalMode,
+	steeringMode,
+	followUpMode,
+	interruptMode,
+	autoCompactionEnabled,
+	autoRetryEnabled,
+	queuedMessageCount = 0,
+	onSetSteeringMode,
+	onSetFollowUpMode,
+	onSetInterruptMode,
+	onSetAutoCompaction,
+	onSetAutoRetry,
+	onCompact,
+	onAbortRetry,
 	onChooseProject,
+	images,
+	onImagesChange,
 	onSend,
 	onAbort,
 }: ComposerProps) {
 	const [text, setText] = useState("");
-	const [images, setImages] = useState<ImageContent[]>([]);
 	const [dragOver, setDragOver] = useState(false);
 	const [openMenu, setOpenMenu] = useState<ComposerMenu>(null);
 	const [modelFilter, setModelFilter] = useState("");
 	const [collapsedProviders, setCollapsedProviders] = useState<Set<string>>(() => new Set());
+	const [commandMenuOpen, setCommandMenuOpen] = useState(false);
+	const [streamingBehavior, setStreamingBehavior] = useState<"steer" | "followUp">("steer");
 	const fileRef = useRef<HTMLInputElement>(null);
 
 	const modelGroups = useMemo(
@@ -196,6 +236,13 @@ export function Composer({
 	);
 	const modelGroupKey = modelGroups.map(([providerId]) => providerId).join("\n");
 	const currentModelProvider = model ? model.slice(0, model.indexOf("/")) : undefined;
+	const commandQuery = text.startsWith("/") ? text.slice(1).split(/\s/, 1)[0].toLowerCase() : "";
+	const commandSuggestions = useMemo(() => {
+		if (!text.startsWith("/") || text.includes(" ")) return [];
+		return availableCommands
+			.filter(command => `${command.name} ${(command.aliases ?? []).join(" ")}`.toLowerCase().includes(commandQuery))
+			.slice(0, 8);
+	}, [availableCommands, commandQuery, text]);
 
 	// When the model menu opens, expand only connected providers (and the active model's provider); collapse the rest.
 	useEffect(() => {
@@ -225,22 +272,26 @@ export function Composer({
 		if (injection) setText(injection.text);
 	}, [injection?.nonce]);
 
+	useEffect(() => {
+		setCommandMenuOpen(commandSuggestions.length > 0);
+	}, [commandSuggestions.length]);
+
 	const addFiles = async (files: Iterable<File>): Promise<void> => {
 		const parsed = await Promise.all(Array.from(files).map(fileToImage));
 		const valid = parsed.filter((img): img is ImageContent => img !== null);
-		if (valid.length > 0) setImages(prev => [...prev, ...valid]);
+		if (valid.length > 0) onImagesChange([...images, ...valid]);
 	};
 
 	const removeImage = (index: number): void => {
-		setImages(prev => prev.filter((_, i) => i !== index));
+		onImagesChange(images.filter((_, i) => i !== index));
 	};
 
 	const submit = () => {
 		const trimmed = text.trim();
 		if (disabled || (trimmed.length === 0 && images.length === 0)) return;
-		onSend(trimmed, images);
+		onSend(trimmed, images, streaming ? streamingBehavior : undefined);
 		setText("");
-		setImages([]);
+		onImagesChange([]);
 	};
 
 	const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -328,6 +379,25 @@ export function Composer({
 					onPaste={onPaste}
 					rows={3}
 				/>
+				{commandMenuOpen && commandSuggestions.length > 0 ? (
+					<div className="composer-command-menu" role="listbox" aria-label="Slash commands">
+						{commandSuggestions.map(command => (
+							<button
+								type="button"
+								key={command.name}
+								className="composer-command-item"
+								onMouseDown={event => event.preventDefault()}
+								onClick={() => {
+									setText(`/${command.name} `);
+									setCommandMenuOpen(false);
+								}}
+							>
+								<strong>/{command.name}</strong>
+								<small>{command.description ?? command.source}</small>
+							</button>
+						))}
+					</div>
+				) : null}
 				<div className="composer-actions">
 					<input
 						ref={fileRef}
@@ -393,6 +463,20 @@ export function Composer({
 						) : null}
 					</div>
 					<div className="composer-spacer" />
+					{streaming ? (
+						<button
+							type="button"
+							className="composer-text-button composer-queue-button"
+							onClick={() => setStreamingBehavior(mode => (mode === "steer" ? "followUp" : "steer"))}
+							title="Choose how a message is queued while OMP is running"
+						>
+							<span>
+								{streamingBehavior === "steer" ? "Steer" : "Follow-up"}
+								{queuedMessageCount > 0 ? ` · ${queuedMessageCount} queued` : ""}
+							</span>
+							<ChevronDown size={14} strokeWidth={1.8} />
+						</button>
+					) : null}
 					<div className="composer-menu-anchor composer-profile-anchor">
 						<button
 							type="button"
@@ -503,6 +587,103 @@ export function Composer({
 											<MenuCheck selected={currentThinkingLevel === choice.id} />
 										</button>
 									))}
+									<div className="composer-menu-section-title">Queue and lifecycle</div>
+									{onSetSteeringMode ? (
+										<div className="composer-menu-choice-row">
+											<span>Steering queue</span>
+											<div>
+												{(["all", "one-at-a-time"] as const).map(mode => (
+													<button
+														type="button"
+														key={mode}
+														className={steeringMode === mode ? "selected" : ""}
+														onClick={() => onSetSteeringMode(mode)}
+													>
+														{mode === "all" ? "All" : "One"}
+													</button>
+												))}
+											</div>
+										</div>
+									) : null}
+									{onSetFollowUpMode ? (
+										<div className="composer-menu-choice-row">
+											<span>Follow-up queue</span>
+											<div>
+												{(["all", "one-at-a-time"] as const).map(mode => (
+													<button
+														type="button"
+														key={mode}
+														className={followUpMode === mode ? "selected" : ""}
+														onClick={() => onSetFollowUpMode(mode)}
+													>
+														{mode === "all" ? "All" : "One"}
+													</button>
+												))}
+											</div>
+										</div>
+									) : null}
+									{onSetInterruptMode ? (
+										<div className="composer-menu-choice-row">
+											<span>Interrupt mode</span>
+											<div>
+												{(["immediate", "wait"] as const).map(mode => (
+													<button
+														type="button"
+														key={mode}
+														className={interruptMode === mode ? "selected" : ""}
+														onClick={() => onSetInterruptMode(mode)}
+													>
+														{mode === "immediate" ? "Immediate" : "Wait"}
+													</button>
+												))}
+											</div>
+										</div>
+									) : null}
+									{onSetAutoCompaction ? (
+										<button
+											type="button"
+											className="composer-menu-item"
+											onClick={() => onSetAutoCompaction(!autoCompactionEnabled)}
+										>
+											<span>
+												<strong>Auto compaction</strong>
+												<small>{autoCompactionEnabled ? "Enabled" : "Disabled"}</small>
+											</span>
+										</button>
+									) : null}
+									{onSetAutoRetry ? (
+										<button
+											type="button"
+											className="composer-menu-item"
+											onClick={() => onSetAutoRetry(!autoRetryEnabled)}
+										>
+											<span>
+												<strong>Auto retry</strong>
+												<small>{autoRetryEnabled ? "Enabled" : "Disabled"}</small>
+											</span>
+										</button>
+									) : null}
+									{onCompact ? (
+										<button
+											type="button"
+											className="composer-menu-item"
+											disabled={streaming}
+											onClick={onCompact}
+										>
+											<span>
+												<strong>Compact context</strong>
+												<small>Summarize the current session context</small>
+											</span>
+										</button>
+									) : null}
+									{onAbortRetry ? (
+										<button type="button" className="composer-menu-item" onClick={onAbortRetry}>
+											<span>
+												<strong>Abort retry</strong>
+												<small>Stop an automatic retry in progress</small>
+											</span>
+										</button>
+									) : null}
 								</div>
 							</>
 						) : null}

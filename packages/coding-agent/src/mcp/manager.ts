@@ -92,6 +92,18 @@ const STARTUP_TIMEOUT_MS = 250;
  */
 const RECONNECT_BURST_WINDOW_MS = 30_000;
 const RECONNECT_BURST_LIMIT = 5;
+const MCP_DIAGNOSTIC_MAX_LENGTH = 800;
+
+export function sanitizeMcpDiagnosticError(error: string): string {
+	return error
+		.replace(/(bearer\s+)[^\s,;]+/gi, "$1[redacted]")
+		.replace(
+			/((?:api.?key|token|secret|authorization|credential)\s*[=:]\s*)(?:"[^"]*"|'[^']*'|[^\s,;&]+)/gi,
+			"$1[redacted]",
+		)
+		.replace(/([?&][^=&#\s]*(?:key|token|secret|auth)[^=&#\s]*=)[^&#\s]*/gi, "$1[redacted]")
+		.slice(0, MCP_DIAGNOSTIC_MAX_LENGTH);
+}
 
 function trackPromise<T>(promise: Promise<T>): TrackedPromise<T> {
 	const tracked: TrackedPromise<T> = { promise, status: "pending" };
@@ -205,6 +217,7 @@ export class MCPManager {
 	 * crash-storm circuit breaker (see {@link RECONNECT_BURST_LIMIT}).
 	 */
 	#reconnectHistory = new Map<string, number[]>();
+	#lastErrors = new Map<string, string>();
 	/** Monotonic epoch incremented on disconnectAll to invalidate stale reconnections. */
 	#epoch = 0;
 
@@ -391,6 +404,7 @@ export class MCPManager {
 			const validationErrors = validateServerConfig(name, config);
 			if (validationErrors.length > 0) {
 				const message = validationErrors.join("; ");
+				this.#lastErrors.set(name, sanitizeMcpDiagnosticError(message));
 				errors.set(name, message);
 				validationFailures.push({ name, message });
 				reportedErrors.add(name);
@@ -414,6 +428,7 @@ export class MCPManager {
 				});
 			})().then(
 				connection => {
+					this.#lastErrors.delete(name);
 					// Store original config (without resolved tokens) to keep
 					// cache keys stable and avoid leaking rotating credentials.
 					connection.config = config;
@@ -487,6 +502,7 @@ export class MCPManager {
 					if (this.#pendingToolLoads.get(name) !== toolsPromise) return;
 					this.#pendingToolLoads.delete(name);
 					const message = error instanceof Error ? error.message : String(error);
+					this.#lastErrors.set(name, sanitizeMcpDiagnosticError(message));
 					onStatus?.({ type: "failed", serverName: name, error: message });
 					if (!allowBackgroundLogging || reportedErrors.has(name)) return;
 					logger.error("MCP tool load failed", { path: `mcp:${name}`, error: message });
@@ -542,6 +558,7 @@ export class MCPManager {
 					const message =
 						task.tracked.reason instanceof Error ? task.tracked.reason.message : String(task.tracked.reason);
 					errors.set(name, message);
+					this.#lastErrors.set(name, sanitizeMcpDiagnosticError(message));
 					reportedErrors.add(name);
 				} else {
 					const cached = cachedTools.get(name);
@@ -692,6 +709,49 @@ export class MCPManager {
 		return this.#connections.get(name)?.config ?? this.#serverConfigs.get(name);
 	}
 
+	/** Update the in-memory config used by reconnects after a persisted toggle. */
+	setServerConfig(name: string, config: MCPServerConfig): void {
+		this.#serverConfigs.set(name, config);
+		const connection = this.#connections.get(name);
+		if (connection) connection.config = config;
+	}
+
+	/** Return a redacted, UI-safe snapshot of all discovered MCP servers. */
+	getStatusSnapshot(): Array<{
+		name: string;
+		enabled: boolean;
+		status: "connected" | "connecting" | "disconnected";
+		toolCount: number;
+		transport: "stdio" | "http" | "sse" | "unknown";
+		auth: { configured: boolean; oauth: boolean; credentialConfigured: boolean; credentialAvailable: boolean };
+		lastError?: string;
+	}> {
+		return this.getAllServerNames()
+			.sort()
+			.map(name => {
+				const config = this.getServerConfig(name);
+				const toolCount = this.#tools.filter(tool => tool.mcpServerName === name).length;
+				const auth = config?.auth;
+				const credentialAvailable = config
+					? lookupMcpOAuthCredential(this.#authStorage, config) !== undefined
+					: false;
+				return {
+					name,
+					enabled: config?.enabled !== false,
+					status: this.getConnectionStatus(name),
+					transport: config?.type ?? (config && "command" in config ? "stdio" : "unknown"),
+					toolCount,
+					auth: {
+						configured: auth !== undefined || config?.oauth !== undefined,
+						oauth: auth?.type === "oauth" || config?.oauth !== undefined,
+						credentialConfigured: auth?.credentialId !== undefined,
+						credentialAvailable,
+					},
+					lastError: this.#lastErrors.get(name),
+				};
+			});
+	}
+
 	/**
 	 * Wait for a connection to complete (or fail).
 	 */
@@ -730,19 +790,26 @@ export class MCPManager {
 	 */
 	getAllServerNames(): string[] {
 		return Array.from(
-			new Set([...this.#sources.keys(), ...this.#connections.keys(), ...this.#pendingConnections.keys()]),
+			new Set([
+				...this.#sources.keys(),
+				...this.#serverConfigs.keys(),
+				...this.#connections.keys(),
+				...this.#pendingConnections.keys(),
+			]),
 		);
 	}
 
 	/**
 	 * Disconnect from a specific server.
 	 */
-	async disconnectServer(name: string): Promise<void> {
+	async disconnectServer(name: string, options?: { preserveRegistration?: boolean }): Promise<void> {
 		this.#pendingConnections.delete(name);
 		this.#pendingToolLoads.delete(name);
 		this.#pendingReconnections.delete(name);
-		this.#sources.delete(name);
-		this.#serverConfigs.delete(name);
+		if (!options?.preserveRegistration) {
+			this.#sources.delete(name);
+			this.#serverConfigs.delete(name);
+		}
 		this.#pendingResourceRefresh.delete(name);
 		this.#reconnectHistory.delete(name);
 
@@ -794,6 +861,7 @@ export class MCPManager {
 		this.#tools = [];
 		this.#subscribedResources.clear();
 		this.#reconnectHistory.clear();
+		this.#lastErrors.clear();
 	}
 
 	/**
@@ -842,6 +910,7 @@ export class MCPManager {
 		this.#reconnectHistory.set(name, recent);
 
 		if (recent.length > RECONNECT_BURST_LIMIT) {
+			this.#lastErrors.set(name, "Automatic reconnect suspended after repeated transport failures");
 			logger.error("MCP server crashed too many times; suspending automatic reconnects", {
 				path: `mcp:${name}`,
 				crashes: recent.length,
@@ -903,6 +972,7 @@ export class MCPManager {
 			}
 			try {
 				const connection = await this.#connectAndWireServer(name, config, source, reconnectEpoch);
+				this.#lastErrors.delete(name);
 				logger.debug("MCP reconnected", { path: `mcp:${name}`, tools: connection.tools?.length ?? 0 });
 				return connection;
 			} catch (error) {
@@ -924,6 +994,7 @@ export class MCPManager {
 					});
 					await Bun.sleep(delays[attempt]);
 				} else {
+					this.#lastErrors.set(name, sanitizeMcpDiagnosticError(msg));
 					logger.error("MCP reconnect failed after retries", { path: `mcp:${name}`, error: msg });
 					// Don't remove stale tools — keep them in the registry so they
 					// remain selected. Calls will fail with MCP errors, which

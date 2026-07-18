@@ -2092,10 +2092,12 @@ async function executeToolCalls(
 				if (coerced.malformed || result.isError) isError = true;
 			} catch (e) {
 				caughtError = e;
-				result = {
-					content: [{ type: "text", text: e instanceof Error ? e.message : String(e) }],
-					details: {},
-				};
+				result = record.signal.aborted
+					? createToolSignalAbortedResult(record.signal, true)
+					: {
+							content: [{ type: "text", text: e instanceof Error ? e.message : String(e) }],
+							details: {},
+						};
 				isError = true;
 			}
 
@@ -2266,9 +2268,16 @@ async function executeToolCalls(
  */
 export interface SyntheticToolResultDetails {
 	__synthetic: true;
-	source: "assistant_stop_aborted" | "assistant_stop_error" | "assistant_stop_skipped" | "assistant_stop_length";
-	executed: false;
+	source:
+		| "assistant_stop_aborted"
+		| "assistant_stop_error"
+		| "assistant_stop_skipped"
+		| "assistant_stop_length"
+		| "tool_signal_aborted"
+		| "tool_execution_skipped";
+	executed: boolean;
 	upstreamError?: string;
+	interruptionSource?: SteeringInterruptSource | "irc";
 }
 
 function syntheticDetailsFor(
@@ -2349,15 +2358,20 @@ function createAbortedToolResult(
 	return toolResultMessage;
 }
 
-function createToolSignalAbortedResult(signal: AbortSignal): AgentToolResult<unknown> {
+function createToolSignalAbortedResult(
+	signal: AbortSignal,
+	executed = false,
+): AgentToolResult<SyntheticToolResultDetails> {
 	const reason = abortReasonText(signal);
 	return {
 		content: [{ type: "text", text: `Tool was not executed because the run was aborted: ${reason}.` }],
-		details: {},
+		details: { __synthetic: true, source: "tool_signal_aborted", executed },
 	};
 }
 
-function createSkippedToolResult(source: SteeringInterruptSource | "irc" | undefined): AgentToolResult<any> {
+function createSkippedToolResult(
+	source: SteeringInterruptSource | "irc" | undefined,
+): AgentToolResult<SyntheticToolResultDetails> {
 	let reason = "pending steering message";
 	let blocker = "queued message";
 	if (source === "user") {
@@ -2377,6 +2391,11 @@ function createSkippedToolResult(source: SteeringInterruptSource | "irc" | undef
 				text: `Skipped due to ${reason}. Do not count this skipped result as completed work or verification. After the ${blocker} is handled on the next step, retry the skipped tool if it is still needed.`,
 			},
 		],
-		details: {},
+		details: {
+			__synthetic: true,
+			source: "tool_execution_skipped",
+			executed: false,
+			...(source ? { interruptionSource: source } : {}),
+		},
 	};
 }

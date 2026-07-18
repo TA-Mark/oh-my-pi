@@ -8,6 +8,7 @@ import { astEditRenderer } from "./tools/ast-edit";
 import { astGrepRenderer } from "./tools/ast-grep";
 import { bashRenderer } from "./tools/bash";
 import { browserRenderer } from "./tools/browser";
+import { checkpointRenderer, rewindRenderer } from "./tools/checkpoint";
 import { debugRenderer } from "./tools/debug";
 import { editRenderer } from "./tools/edit";
 import { evalRenderer } from "./tools/eval";
@@ -19,7 +20,10 @@ import { goalRenderer } from "./tools/goal";
 import { grepRenderer } from "./tools/grep";
 import { hubRenderer } from "./tools/hub";
 import { inspectImageRenderer } from "./tools/inspect-image";
+import { learnRenderer } from "./tools/learn";
 import { lspRenderer } from "./tools/lsp";
+import { manageSkillRenderer } from "./tools/manage-skill";
+import { memoryEditRenderer } from "./tools/memory-edit";
 import { recallRenderer } from "./tools/memory-recall";
 import { reflectRenderer } from "./tools/memory-reflect";
 import { retainRenderer } from "./tools/memory-retain";
@@ -40,6 +44,7 @@ const RENDERERS: Record<string, ToolRenderer> = {
 	bash: bashRenderer,
 	browser: browserRenderer,
 	puppeteer: browserRenderer,
+	checkpoint: checkpointRenderer,
 	debug: debugRenderer,
 	edit: editRenderer,
 	apply_patch: editRenderer,
@@ -54,12 +59,16 @@ const RENDERERS: Record<string, ToolRenderer> = {
 	github: githubRenderer,
 	goal: goalRenderer,
 	inspect_image: inspectImageRenderer,
+	learn: learnRenderer,
 	hub: hubRenderer,
 	lsp: lspRenderer,
+	manage_skill: manageSkillRenderer,
+	memory_edit: memoryEditRenderer,
 	recall: recallRenderer,
 	reflect: reflectRenderer,
 	retain: retainRenderer,
 	read: readRenderer,
+	rewind: rewindRenderer,
 	report_tool_issue: reportToolIssueRenderer,
 	resolve: resolveRenderer,
 	grep: grepRenderer,

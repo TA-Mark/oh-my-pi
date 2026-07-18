@@ -10,9 +10,15 @@
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import { logger } from "@oh-my-pi/pi-utils";
 import { onHindsightScopeChanged, type Settings } from "../config/settings";
-import type { MemoryBackend, MemoryBackendStartOptions } from "../memory-backend/types";
+import type {
+	MemoryBackend,
+	MemoryBackendSaveInput,
+	MemoryBackendSearchItem,
+	MemoryBackendStartOptions,
+	MemoryBackendStatus,
+} from "../memory-backend/types";
 import type { AgentSession } from "../session/agent-session";
-import { type BankScope, computeBankScope } from "./bank";
+import { type BankScope, computeBankScope, ensureBankExists } from "./bank";
 import { createHindsightClient } from "./client";
 import { isHindsightConfigured, loadHindsightConfig } from "./config";
 import { type HindsightMessage, hasSubstantiveContent } from "./content";
@@ -129,6 +135,102 @@ export const hindsightBackend: MemoryBackend = {
 		if (!primary) return;
 		await primary.flushRetainQueue();
 		await primary.forceRetainCurrentSession();
+	},
+
+	async status({ session }): Promise<MemoryBackendStatus> {
+		const state = session?.getHindsightSessionState();
+		const primary = state?.aliasOf ?? state;
+		if (!primary) {
+			return {
+				backend: "hindsight",
+				active: false,
+				writable: false,
+				searchable: false,
+				message: "Hindsight backend is configured but not initialised for this session.",
+			};
+		}
+		try {
+			await ensureBankExists(primary.client, primary.bankId, primary.config, primary.banksSet);
+			await primary.client.listMemories(primary.bankId, { limit: 1 });
+			return {
+				backend: "hindsight",
+				active: true,
+				writable: true,
+				searchable: true,
+				scope: primary.bankId,
+				retainBank: primary.bankId,
+				recallBanks: [primary.bankId],
+				message: "Hindsight API is reachable.",
+			};
+		} catch (err) {
+			return {
+				backend: "hindsight",
+				active: false,
+				writable: false,
+				searchable: false,
+				scope: primary.bankId,
+				retainBank: primary.bankId,
+				recallBanks: [primary.bankId],
+				message: "Hindsight API health check failed.",
+				error: err instanceof Error ? err.message : String(err),
+			};
+		}
+	},
+
+	async search({ session }, query, options) {
+		const state = session?.getHindsightSessionState();
+		const primary = state?.aliasOf ?? state;
+		if (!primary) {
+			return {
+				backend: "hindsight",
+				query,
+				count: 0,
+				items: [],
+				message: "Hindsight backend is not initialised for this session.",
+			};
+		}
+		if (options?.signal?.aborted) {
+			return { backend: "hindsight", query, count: 0, items: [], message: "Search aborted." };
+		}
+		await ensureBankExists(primary.client, primary.bankId, primary.config, primary.banksSet);
+		const response = await primary.client.recall(primary.bankId, query, {
+			tags: primary.recallTags,
+			tagsMatch: primary.recallTagsMatch,
+			signal: options?.signal,
+		});
+		const limit = Math.min(100, Math.max(1, Math.trunc(options?.limit ?? 20)));
+		const items: MemoryBackendSearchItem[] = response.results.slice(0, limit).map(result => ({
+			id: result.id,
+			content: result.text,
+			source: result.type ?? undefined,
+			timestamp: result.mentioned_at ?? undefined,
+		}));
+		return { backend: "hindsight", query, count: items.length, items };
+	},
+
+	async save({ session }, input: MemoryBackendSaveInput) {
+		const state = session?.getHindsightSessionState();
+		const primary = state?.aliasOf ?? state;
+		if (!primary) {
+			return {
+				backend: "hindsight",
+				stored: 0,
+				message: "Hindsight backend is not initialised for this session.",
+			};
+		}
+		const content = input.content.trim();
+		if (!content) return { backend: "hindsight", stored: 0, message: "Memory content is empty." };
+		await ensureBankExists(primary.client, primary.bankId, primary.config, primary.banksSet);
+		await primary.client.retain(primary.bankId, content, {
+			context: input.context,
+			metadata: {
+				session_id: primary.sessionId,
+				source: input.source ?? "desktop-memory",
+			},
+			tags: primary.retainTags,
+			async: false,
+		});
+		return { backend: "hindsight", stored: 1 };
 	},
 
 	async preCompactionContext(

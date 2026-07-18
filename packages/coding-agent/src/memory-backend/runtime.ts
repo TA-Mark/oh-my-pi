@@ -49,6 +49,14 @@ export function createMemoryRuntimeContext(context: MemoryBackendOperationContex
 	};
 }
 
+export async function runMemoryBackendAction(context: MemoryBackendOperationContext, operation: "clear" | "enqueue") {
+	const settings = context.session?.settings;
+	if (!settings) return unavailableAction("off", operation, "No active agent session.");
+	const backend = await resolveMemoryBackend(settings);
+	await backend[operation](context.agentDir, context.cwd, context.session);
+	return { backend: backend.id, operation, success: true };
+}
+
 export function createSessionMemoryRuntimeContext(
 	session: AgentSession,
 	agentDir: string,
@@ -63,4 +71,8 @@ function unavailableSearch(backend: MemoryBackendId, query: string, message: str
 
 function unavailableSave(backend: MemoryBackendId, message: string) {
 	return { backend, stored: 0, message };
+}
+
+function unavailableAction(backend: MemoryBackendId, operation: "clear" | "enqueue", message: string) {
+	return { backend, operation, success: false, message };
 }

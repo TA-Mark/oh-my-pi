@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, mock, test } from "bun:test";
 
-// ── Controllable fake of the Tauri bridge ────────────────────────────────────
-// The client talks to the engine only through tauri-bridge, so mocking this
+// ── Controllable fake of the Electron bridge ─────────────────────────────────
+// The client talks to the engine only through desktop-bridge, so mocking this
 // module lets us drive frames/exits and observe sent lines without a runtime.
 const bridge = {
 	frameCb: undefined as ((line: string) => void) | undefined,
@@ -24,7 +24,7 @@ const bridge = {
 	},
 };
 
-mock.module("../src/lib/tauri-bridge", () => ({
+mock.module("../src/lib/desktop-bridge", () => ({
 	startEngine: () => Promise.resolve(),
 	stopEngine: () => Promise.resolve(),
 	sendRpcLine: (line: string) => {
@@ -76,6 +76,33 @@ describe("startup", () => {
 		expect(bridge.frameCb).toBeDefined();
 		await client.stop();
 	});
+
+	test("a custom transport isolates a secondary engine from the main bridge", async () => {
+		let frame: ((line: string) => void) | undefined;
+		let stopped = false;
+		const transport = {
+			start: () => Promise.resolve(),
+			stop: () => {
+				stopped = true;
+				return Promise.resolve();
+			},
+			send: () => Promise.resolve(),
+			onFrame: (callback: (line: string) => void) => {
+				frame = callback;
+				return Promise.resolve(() => {});
+			},
+			onStderr: () => Promise.resolve(() => {}),
+			onExit: () => Promise.resolve(() => {}),
+		};
+		const client = new DesktopRpcClient({}, transport);
+		const start = client.start("/tmp/side");
+		await flush();
+		frame?.(JSON.stringify({ type: "ready" }));
+		await start;
+		expect(bridge.sent).toHaveLength(0);
+		await client.stop();
+		expect(stopped).toBe(true);
+	});
 });
 
 describe("request/response correlation", () => {
@@ -95,6 +122,348 @@ describe("request/response correlation", () => {
 		await client.stop();
 	});
 
+	test("subagent transcript preserves incremental offsets and reset state", async () => {
+		const client = await startedClient();
+		const pending = client.getSubagentMessages({ subagentId: "agent-1", fromByte: 24 });
+		const id = lastRequestId();
+		bridge.emitFrame({
+			type: "response",
+			command: "get_subagent_messages",
+			id,
+			success: true,
+			data: {
+				sessionFile: "/tmp/agent-1.jsonl",
+				fromByte: 24,
+				nextByte: 128,
+				reset: false,
+				entries: [{ type: "message" }],
+				messages: [{ role: "assistant", content: "done" }],
+			},
+		});
+
+		const transcript = await pending;
+		expect(transcript.fromByte).toBe(24);
+		expect(transcript.nextByte).toBe(128);
+		expect(transcript.reset).toBe(false);
+		expect(transcript.messages).toEqual([{ role: "assistant", content: "done" }]);
+		await client.stop();
+	});
+
+	test("goal lifecycle sends the canonical objective and token budget", async () => {
+		const client = await startedClient();
+		const pending = client.createGoal("Ship Electron parity", 50_000);
+		const sent = JSON.parse(bridge.sent.at(-1) ?? "{}") as Record<string, unknown>;
+		expect(sent.type).toBe("create_goal");
+		expect(sent.objective).toBe("Ship Electron parity");
+		expect(sent.tokenBudget).toBe(50_000);
+		bridge.emitFrame({
+			type: "response",
+			command: "create_goal",
+			id: sent.id,
+			success: true,
+			data: {
+				goal: {
+					id: "goal-1",
+					objective: "Ship Electron parity",
+					status: "active",
+					tokenBudget: 50_000,
+					tokensUsed: 0,
+					timeUsedSeconds: 0,
+					createdAt: 1,
+					updatedAt: 1,
+				},
+				state: {
+					enabled: true,
+					mode: "active",
+					goal: {
+						id: "goal-1",
+						objective: "Ship Electron parity",
+						status: "active",
+						tokenBudget: 50_000,
+						tokensUsed: 0,
+						timeUsedSeconds: 0,
+						createdAt: 1,
+						updatedAt: 1,
+					},
+				},
+			},
+		});
+		const result = await pending;
+		expect(result.state?.enabled).toBe(true);
+		expect(result.goal?.tokenBudget).toBe(50_000);
+		await client.stop();
+	});
+
+	test("branch, export, and handoff wrappers preserve their RPC results", async () => {
+		const client = await startedClient();
+
+		const branchPending = client.branch("entry-7");
+		let id = lastRequestId();
+		bridge.emitFrame({
+			type: "response",
+			command: "branch",
+			id,
+			success: true,
+			data: { text: "Selected prompt", cancelled: false },
+		});
+		expect(await branchPending).toEqual({ text: "Selected prompt", cancelled: false });
+
+		const exportPending = client.exportHtml();
+		id = lastRequestId();
+		bridge.emitFrame({
+			type: "response",
+			command: "export_html",
+			id,
+			success: true,
+			data: { path: "/tmp/session.html" },
+		});
+		expect(await exportPending).toBe("/tmp/session.html");
+
+		const handoffPending = client.handoff("Preserve diagnostics context");
+		id = lastRequestId();
+		bridge.emitFrame({
+			type: "response",
+			command: "handoff",
+			id,
+			success: true,
+			data: { savedPath: "/tmp/handoff.md" },
+		});
+		expect(await handoffPending).toEqual({ savedPath: "/tmp/handoff.md" });
+		await client.stop();
+	});
+
+	test("new session preserves parent lineage for isolated side-chat forks", async () => {
+		const client = await startedClient();
+		const pending = client.newSession("/tmp/main-session.jsonl");
+		const sent = JSON.parse(bridge.sent.at(-1) ?? "{}") as Record<string, unknown>;
+		expect(sent.type).toBe("new_session");
+		expect(sent.parentSession).toBe("/tmp/main-session.jsonl");
+		bridge.emitFrame({
+			type: "response",
+			command: "new_session",
+			id: sent.id,
+			success: true,
+			data: { cancelled: false },
+		});
+		expect(await pending).toEqual({ cancelled: false });
+		await client.stop();
+	});
+
+	test("artifact preview preserves bounded core metadata", async () => {
+		const client = await startedClient();
+		const pending = client.readArtifact("7", 4096);
+		const sent = JSON.parse(bridge.sent.at(-1) ?? "{}") as Record<string, unknown>;
+		expect(sent.type).toBe("read_artifact");
+		expect(sent.artifactId).toBe("7");
+		expect(sent.maxBytes).toBe(4096);
+		bridge.emitFrame({
+			type: "response",
+			command: "read_artifact",
+			id: sent.id,
+			success: true,
+			data: { id: "7", content: "preview", size: 9000, truncated: true },
+		});
+		expect(await pending).toEqual({ id: "7", content: "preview", size: 9000, truncated: true });
+		await client.stop();
+	});
+
+	test("plugin feature selection uses the canonical runtime command", async () => {
+		const client = await startedClient();
+		const pending = client.setPluginFeatures("review-tools", ["git", "worktree"]);
+		const sent = JSON.parse(bridge.sent.at(-1) ?? "{}") as Record<string, unknown>;
+		expect(sent.type).toBe("set_plugin_features");
+		expect(sent.name).toBe("review-tools");
+		expect(sent.features).toEqual(["git", "worktree"]);
+		bridge.emitFrame({
+			type: "response",
+			command: "set_plugin_features",
+			id: sent.id,
+			success: true,
+			data: {
+				name: "review-tools",
+				version: "1.0.0",
+				enabled: true,
+				enabledFeatures: ["git", "worktree"],
+				availableFeatures: ["git", "worktree", "github"],
+			},
+		});
+		expect((await pending).enabledFeatures).toEqual(["git", "worktree"]);
+		await client.stop();
+	});
+
+	test("marketplace install preserves plugin identity, scope, and refreshed registry metadata", async () => {
+		const client = await startedClient();
+		const pending = client.installMarketplacePlugin("review-tools", "official", "project");
+		const sent = JSON.parse(bridge.sent.at(-1) ?? "{}") as Record<string, unknown>;
+		expect(sent).toMatchObject({
+			type: "install_marketplace_plugin",
+			name: "review-tools",
+			marketplace: "official",
+			scope: "project",
+		});
+		const snapshot = {
+			marketplaces: [{ name: "official", sourceType: "github" as const, updatedAt: "2026-07-18T00:00:00.000Z" }],
+			plugins: [
+				{
+					id: "review-tools@official",
+					name: "review-tools",
+					marketplace: "official",
+					installations: [{ scope: "project" as const, version: "1.0.0", enabled: true, shadowed: false }],
+				},
+			],
+		};
+		bridge.emitFrame({
+			type: "response",
+			command: "install_marketplace_plugin",
+			id: sent.id,
+			success: true,
+			data: snapshot,
+		});
+		expect(await pending).toEqual(snapshot);
+		await client.stop();
+	});
+
+	test("marketplace source lifecycle sends add, update, and remove commands", async () => {
+		const client = await startedClient();
+		const snapshot = {
+			marketplaces: [{ name: "official", sourceType: "github" as const, updatedAt: "2026-07-18T00:00:00.000Z" }],
+			plugins: [],
+		};
+
+		const addPending = client.addMarketplace("anthropics/claude-plugins-official");
+		const add = JSON.parse(bridge.sent.at(-1) ?? "{}") as Record<string, unknown>;
+		expect(add).toMatchObject({ type: "add_marketplace", source: "anthropics/claude-plugins-official" });
+		bridge.emitFrame({ type: "response", command: "add_marketplace", id: add.id, success: true, data: snapshot });
+		expect(await addPending).toEqual(snapshot);
+
+		const updatePending = client.updateMarketplace("official");
+		const update = JSON.parse(bridge.sent.at(-1) ?? "{}") as Record<string, unknown>;
+		expect(update).toMatchObject({ type: "update_marketplace", name: "official" });
+		bridge.emitFrame({
+			type: "response",
+			command: "update_marketplace",
+			id: update.id,
+			success: true,
+			data: snapshot,
+		});
+		expect(await updatePending).toEqual(snapshot);
+
+		const removePending = client.removeMarketplace("official");
+		const remove = JSON.parse(bridge.sent.at(-1) ?? "{}") as Record<string, unknown>;
+		expect(remove).toMatchObject({ type: "remove_marketplace", name: "official" });
+		bridge.emitFrame({
+			type: "response",
+			command: "remove_marketplace",
+			id: remove.id,
+			success: true,
+			data: {
+				marketplaces: [],
+				plugins: [],
+			},
+		});
+		expect(await removePending).toEqual({ marketplaces: [], plugins: [] });
+
+		await client.stop();
+	});
+
+	test("memory save and lifecycle operations preserve the backend results", async () => {
+		const client = await startedClient();
+		const savePending = client.saveMemory("Desktop uses Electron", "parity audit");
+		const save = JSON.parse(bridge.sent.at(-1) ?? "{}") as Record<string, unknown>;
+		expect(save).toMatchObject({
+			type: "save_memory",
+			content: "Desktop uses Electron",
+			context: "parity audit",
+			source: "omp-desktop",
+		});
+		bridge.emitFrame({
+			type: "response",
+			command: "save_memory",
+			id: save.id,
+			success: true,
+			data: { backend: "mnemopi", stored: 1, ids: ["memory-1"] },
+		});
+		expect(await savePending).toEqual({ backend: "mnemopi", stored: 1, ids: ["memory-1"] });
+
+		const enqueuePending = client.enqueueMemory();
+		const enqueue = JSON.parse(bridge.sent.at(-1) ?? "{}") as Record<string, unknown>;
+		expect(enqueue.type).toBe("enqueue_memory");
+		bridge.emitFrame({
+			type: "response",
+			command: "enqueue_memory",
+			id: enqueue.id,
+			success: true,
+			data: { backend: "mnemopi", operation: "enqueue", success: true },
+		});
+		expect(await enqueuePending).toMatchObject({ operation: "enqueue", success: true });
+
+		const clearPending = client.clearMemory();
+		const clear = JSON.parse(bridge.sent.at(-1) ?? "{}") as Record<string, unknown>;
+		expect(clear.type).toBe("clear_memory");
+		bridge.emitFrame({
+			type: "response",
+			command: "clear_memory",
+			id: clear.id,
+			success: true,
+			data: { backend: "mnemopi", operation: "clear", success: true },
+		});
+		expect(await clearPending).toMatchObject({ operation: "clear", success: true });
+		await client.stop();
+	});
+
+	test("MCP sign-out preserves the structured credential-removal result", async () => {
+		const client = await startedClient();
+		const pending = client.unauthMcp("github");
+		const sent = JSON.parse(bridge.sent.at(-1) ?? "{}") as Record<string, unknown>;
+		expect(sent).toMatchObject({ type: "unauth_mcp", serverName: "github" });
+		bridge.emitFrame({
+			type: "response",
+			command: "unauth_mcp",
+			id: sent.id,
+			success: true,
+			data: { serverName: "github", removed: true, status: "disconnected" },
+		});
+		expect(await pending).toEqual({ serverName: "github", removed: true, status: "disconnected" });
+		await client.stop();
+	});
+
+	test("MCP reauthorization allows the headless OAuth flow to outlive normal requests", async () => {
+		const client = await startedClient();
+		const pending = client.reauthMcp("github");
+		const sent = JSON.parse(bridge.sent.at(-1) ?? "{}") as Record<string, unknown>;
+		expect(sent).toMatchObject({ type: "reauth_mcp", serverName: "github" });
+		bridge.emitFrame({
+			type: "response",
+			command: "reauth_mcp",
+			id: sent.id,
+			success: true,
+			data: { serverName: "github", status: "connected", toolCount: 4 },
+		});
+		expect(await pending).toEqual({ serverName: "github", status: "connected", toolCount: 4 });
+		await client.stop();
+	});
+
+	test("browser state preserves the core download policy", async () => {
+		const client = await startedClient();
+		const pending = client.browserState();
+		const id = lastRequestId();
+		bridge.emitFrame({
+			type: "response",
+			command: "browser_list_tabs",
+			id,
+			success: true,
+			data: {
+				tabs: [{ name: "main", url: "https://example.com", state: "alive", backend: "worker" }],
+				downloadPolicy: "deny",
+			},
+		});
+		expect(await pending).toEqual({
+			tabs: [{ name: "main", url: "https://example.com", state: "alive", backend: "worker" }],
+			downloadPolicy: "deny",
+		});
+		await client.stop();
+	});
+
 	test("a response with a mismatched id does not resolve", async () => {
 		const client = await startedClient();
 		let settled = false;
@@ -106,6 +475,81 @@ describe("request/response correlation", () => {
 		expect(settled).toBe(false);
 		await client.stop(); // rejects the still-pending request → avoid unhandled
 		await p.catch(() => {});
+	});
+});
+
+describe("host tool and URI bridge frames", () => {
+	test("dispatches host tool calls and lets the desktop return streamed and final results", async () => {
+		const calls: string[] = [];
+		const client = await startedClient({
+			onHostToolCall: request => {
+				calls.push(request.toolName);
+				void client.sendHostToolUpdate(request.id, { content: [{ type: "text", text: "partial" }] });
+				void client.sendHostToolResult(request.id, { content: [{ type: "text", text: "done" }] });
+			},
+		});
+		bridge.emitFrame({
+			type: "host_tool_call",
+			id: "tool-1",
+			toolCallId: "call-1",
+			toolName: "workspace_lookup",
+			arguments: { query: "README" },
+		});
+		await flush();
+		expect(calls).toEqual(["workspace_lookup"]);
+		expect(bridge.sent.slice(-2).map(line => JSON.parse(line).type)).toEqual([
+			"host_tool_update",
+			"host_tool_result",
+		]);
+		await client.stop();
+	});
+
+	test("fails an unhandled host tool instead of leaving the engine waiting", async () => {
+		const client = await startedClient();
+		bridge.emitFrame({
+			type: "host_tool_call",
+			id: "tool-2",
+			toolCallId: "call-2",
+			toolName: "unregistered",
+			arguments: {},
+		});
+		await flush();
+		const frame = JSON.parse(bridge.sent.at(-1) ?? "{}");
+		expect(frame).toMatchObject({ type: "host_tool_result", id: "tool-2", isError: true });
+		expect(frame.result.content[0].text).toContain("unregistered");
+		await client.stop();
+	});
+
+	test("fails an unhandled host URI request with a structured error", async () => {
+		const client = await startedClient();
+		bridge.emitFrame({ type: "host_uri_request", id: "uri-1", operation: "read", url: "memory://note/1" });
+		await flush();
+		expect(JSON.parse(bridge.sent.at(-1) ?? "{}")).toMatchObject({
+			type: "host_uri_result",
+			id: "uri-1",
+			isError: true,
+		});
+		await client.stop();
+	});
+
+	test("maps rejected host handlers to a result frame", async () => {
+		const client = await startedClient({
+			onHostToolCall: async () => {
+				throw new Error("permission denied");
+			},
+		});
+		bridge.emitFrame({
+			type: "host_tool_call",
+			id: "tool-3",
+			toolCallId: "call-3",
+			toolName: "secure",
+			arguments: {},
+		});
+		await flush();
+		const frame = JSON.parse(bridge.sent.at(-1) ?? "{}");
+		expect(frame).toMatchObject({ type: "host_tool_result", id: "tool-3", isError: true });
+		expect(frame.result.content[0].text).toBe("permission denied");
+		await client.stop();
 	});
 });
 
@@ -142,6 +586,16 @@ describe("error classification (0.5)", () => {
 		await expect(p).rejects.toBeInstanceOf(RpcTransportError);
 		await client.stop();
 	});
+
+	test("can start again after an unexpected engine exit", async () => {
+		const client = await startedClient();
+		bridge.emitExit();
+		const restart = client.start("/tmp/restarted");
+		await flush();
+		bridge.emitFrame({ type: "ready" });
+		await restart;
+		await client.stop();
+	});
 });
 
 describe("cleanup", () => {
@@ -174,6 +628,16 @@ describe("frame classification", () => {
 		await client.stop();
 	});
 
+	test("available command updates route to the command discovery handler", async () => {
+		const events: Array<{ type: string; commands?: Array<{ name: string; source: string }> }> = [];
+		const client = await startedClient({ onEvent: event => events.push(event as (typeof events)[number]) });
+		bridge.emitFrame({ type: "available_commands_update", commands: [{ name: "review", source: "builtin" }] });
+		expect(events).toEqual([
+			{ type: "available_commands_update", commands: [{ name: "review", source: "builtin" }] },
+		]);
+		await client.stop();
+	});
+
 	test("subagent frames trigger onSubagentUpdate", async () => {
 		let hits = 0;
 		const client = await startedClient({ onSubagentUpdate: () => hits++ });
@@ -189,6 +653,14 @@ describe("frame classification", () => {
 		bridge.emitFrame({ type: "extension_ui_request", id: "x1", method: "confirm", title: "t", message: "m" });
 		expect(seen).toHaveLength(1);
 		expect(seen[0].method).toBe("confirm");
+		await client.stop();
+	});
+
+	test("extension runtime errors route to onExtensionError", async () => {
+		const errors: string[] = [];
+		const client = await startedClient({ onExtensionError: error => errors.push(error.error) });
+		bridge.emitFrame({ type: "extension_error", extensionPath: "plugins/demo", event: "onLoad", error: "boom" });
+		expect(errors).toEqual(["boom"]);
 		await client.stop();
 	});
 

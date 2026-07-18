@@ -34,6 +34,11 @@
 	border-color: color-mix(in oklch, var(--tv-err) 40%, var(--tv-border));
 }
 
+.tv-card--cancelled,
+.tv-card--skipped {
+	border-color: color-mix(in oklch, var(--tv-warn) 25%, var(--tv-border));
+}
+
 /* ---- header ---- */
 
 .tv-head {
@@ -74,6 +79,14 @@
 
 .tv-status--err {
 	background: var(--tv-err);
+}
+
+.tv-status--cancelled {
+	background: var(--tv-warn);
+}
+
+.tv-status--skipped {
+	background: var(--tv-faint);
 }
 
 .tv-status--pending {

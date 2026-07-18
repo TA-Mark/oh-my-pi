@@ -326,6 +326,7 @@ describe("RpcInputDispatcher", () => {
 						approvalMode: "write",
 						sessionId: "session-1",
 						autoCompactionEnabled: false,
+						autoRetryEnabled: false,
 						messageCount: 0,
 						queuedMessageCount: 0,
 						todoPhases: [],

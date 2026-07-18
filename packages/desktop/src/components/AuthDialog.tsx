@@ -3,6 +3,8 @@ import { useState } from "react";
 export interface AuthPrompt {
 	provider?: string;
 	url: string;
+	/** Short loopback URL preferred for copying; the full URL remains the open target. */
+	copyUrl?: string;
 	instructions?: string;
 }
 
@@ -17,7 +19,7 @@ export function AuthDialog({ prompt, onOpen, onCancel }: AuthDialogProps) {
 	if (!prompt) return null;
 
 	const copy = () => {
-		navigator.clipboard?.writeText(prompt.url).then(
+		navigator.clipboard?.writeText(prompt.copyUrl ?? prompt.url).then(
 			() => {
 				setCopied(true);
 				setTimeout(() => setCopied(false), 1500);
@@ -37,7 +39,7 @@ export function AuthDialog({ prompt, onOpen, onCancel }: AuthDialogProps) {
 				<input
 					className="dialog-input"
 					readOnly
-					value={prompt.url}
+					value={prompt.copyUrl ?? prompt.url}
 					onFocus={event => event.currentTarget.select()}
 				/>
 				<div className="dialog-actions">

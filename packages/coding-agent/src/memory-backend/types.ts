@@ -70,6 +70,13 @@ export interface MemoryBackendSaveResult {
 	message?: string;
 }
 
+export interface MemoryBackendActionResult {
+	backend: MemoryBackendId;
+	operation: "clear" | "enqueue";
+	success: boolean;
+	message?: string;
+}
+
 export interface MemoryBackendOperationContext {
 	agentDir: string;
 	cwd: string;

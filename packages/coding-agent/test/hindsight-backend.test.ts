@@ -236,6 +236,104 @@ describe("hindsightBackend.start", () => {
 	});
 });
 
+describe("hindsightBackend structured memory lifecycle", () => {
+	beforeEach(() => {
+		resetSettingsForTest();
+	});
+
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
+
+	it("reports remote health and exposes scoped search and save operations", async () => {
+		const settings = Settings.isolated({
+			"memory.backend": "hindsight",
+			"hindsight.apiUrl": "http://localhost:8888",
+			"hindsight.scoping": "global",
+			"hindsight.bankId": "desktop-test",
+		});
+		const session = makeFakeSession({ sessionId: "desktop-memory", settings });
+		const listSpy = vi.spyOn(HindsightApi.prototype, "listMemories").mockResolvedValue({ items: [] } as never);
+		const recallSpy = vi.spyOn(HindsightApi.prototype, "recall").mockResolvedValue({
+			results: [{ id: "memory-1", text: "Use Electron", type: "fact", mentioned_at: "2026-07-18" }],
+		});
+		vi.spyOn(HindsightApi.prototype, "createBank").mockResolvedValue({} as never);
+		const retainSpy = vi.spyOn(HindsightApi.prototype, "retain").mockResolvedValue({});
+
+		await hindsightBackend.start({
+			session: session as never,
+			settings,
+			modelRegistry: {} as never,
+			agentDir: "/tmp",
+			taskDepth: 0,
+		});
+		const context = { session: session as never, agentDir: "/tmp", cwd: "/tmp" };
+		const status = await hindsightBackend.status?.(context);
+		expect(status).toMatchObject({
+			backend: "hindsight",
+			active: true,
+			writable: true,
+			searchable: true,
+			retainBank: "desktop-test",
+		});
+		expect(listSpy).toHaveBeenCalledWith("desktop-test", { limit: 1 });
+
+		const search = await hindsightBackend.search?.(context, "desktop", { limit: 5 });
+		expect(search?.items).toEqual([
+			{
+				id: "memory-1",
+				content: "Use Electron",
+				source: "fact",
+				timestamp: "2026-07-18",
+			},
+		]);
+		expect(recallSpy).toHaveBeenCalledWith("desktop-test", "desktop", expect.objectContaining({ signal: undefined }));
+
+		const saved = await hindsightBackend.save?.(context, {
+			content: "Desktop uses Electron",
+			context: "parity audit",
+			source: "desktop-test",
+		});
+		expect(saved).toEqual({ backend: "hindsight", stored: 1 });
+		expect(retainSpy).toHaveBeenCalledWith(
+			"desktop-test",
+			"Desktop uses Electron",
+			expect.objectContaining({
+				context: "parity audit",
+				metadata: { session_id: "desktop-memory", source: "desktop-test" },
+				async: false,
+			}),
+		);
+	});
+
+	it("surfaces a failed API health probe without claiming the backend is usable", async () => {
+		const settings = Settings.isolated({
+			"memory.backend": "hindsight",
+			"hindsight.apiUrl": "http://localhost:8888",
+		});
+		const session = makeFakeSession({ sessionId: "health-failure", settings });
+		vi.spyOn(HindsightApi.prototype, "createBank").mockResolvedValue({} as never);
+		vi.spyOn(HindsightApi.prototype, "listMemories").mockRejectedValue(new Error("service unavailable"));
+		await hindsightBackend.start({
+			session: session as never,
+			settings,
+			modelRegistry: {} as never,
+			agentDir: "/tmp",
+			taskDepth: 0,
+		});
+
+		expect(
+			await hindsightBackend.status?.({ session: session as never, agentDir: "/tmp", cwd: "/tmp" }),
+		).toMatchObject({
+			backend: "hindsight",
+			active: false,
+			writable: false,
+			searchable: false,
+			error: "service unavailable",
+		});
+	});
+});
+
 describe("hindsightBackend.preCompactionContext", () => {
 	beforeEach(() => {
 		resetSettingsForTest();

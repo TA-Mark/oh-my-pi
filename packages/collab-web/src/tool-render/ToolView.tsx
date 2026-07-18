@@ -42,6 +42,18 @@ interface XdevDispatch {
 	inner: unknown;
 }
 
+type SyntheticDisposition = "cancelled" | "skipped";
+
+/** Core-generated results carry a structured discriminator so hosts never have
+ * to guess cancellation from localized/user-visible result text. */
+function syntheticDisposition(result: ToolResultLike | undefined): SyntheticDisposition | undefined {
+	if (!isRecord(result?.details) || result.details.__synthetic !== true) return undefined;
+	const source = result.details.source;
+	if (source === "assistant_stop_aborted" || source === "tool_signal_aborted") return "cancelled";
+	if (source === "assistant_stop_skipped" || source === "tool_execution_skipped") return "skipped";
+	return undefined;
+}
+
 function executeXdevDispatch(props: ToolViewProps): XdevDispatch | null {
 	if (props.name !== "write" || props.result?.isError === true || !isRecord(props.result?.details)) return null;
 	const xdev = props.result.details.xdev;
@@ -51,13 +63,18 @@ function executeXdevDispatch(props: ToolViewProps): XdevDispatch | null {
 
 export function ToolView(props: ToolViewProps): ReactNode {
 	const [open, setOpen] = useState(props.defaultOpen ?? false);
+	const disposition = syntheticDisposition(props.result);
 	const xdev = executeXdevDispatch(props);
 	const { args, intent: argIntent } = normalizeArgs(props.args);
 	const intent = props.intent?.trim() || argIntent;
 	const name = xdev?.tool ?? props.name;
-	const result = xdev
+	const rawResult = xdev
 		? { content: props.result!.content, details: xdev.inner, isError: props.result!.isError }
 		: props.result;
+	// Cancellation/skipping is neither success nor a tool failure. Preserve the
+	// structured details and result text, but don't make specialized renderers
+	// (for example bash's summary) paint it as an error.
+	const result = disposition && rawResult ? { ...rawResult, isError: false } : rawResult;
 	const renderer = resolveToolRenderer(name);
 	const renderProps: ToolRenderProps = {
 		name,
@@ -67,12 +84,22 @@ export function ToolView(props: ToolViewProps): ReactNode {
 		host: props.host,
 	};
 
-	const isError = props.result?.isError === true;
-	const status = props.running ? "run" : isError ? "err" : props.result ? "ok" : "pending";
+	const isError = props.result?.isError === true && !disposition;
+	const status = props.running
+		? "run"
+		: disposition === "cancelled"
+			? "cancelled"
+			: disposition === "skipped"
+				? "skipped"
+				: isError
+					? "err"
+					: props.result
+						? "ok"
+						: "pending";
 	const partial = props.running && !props.result && props.partial ? stripAnsi(replaceTabs(props.partial)) : "";
 
 	return (
-		<div className={`tv-card${isError ? " tv-card--error" : ""}`}>
+		<div className={`tv-card${isError ? " tv-card--error" : ""}${disposition ? ` tv-card--${disposition}` : ""}`}>
 			<button
 				type="button"
 				className="tv-head"

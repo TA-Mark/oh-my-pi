@@ -73,6 +73,18 @@
 	color: var(--text-dim);
 }
 
+.goal-chip {
+	max-width: 150px;
+	padding: 2px 7px;
+	overflow: hidden;
+	border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+	border-radius: 999px;
+	color: var(--accent);
+	font-size: 11px;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
 .window-tool-controls {
 	display: inline-flex;
 	align-items: center;
@@ -80,6 +92,91 @@
 	margin-left: 4px;
 	padding-left: 8px;
 	border-left: 1px solid var(--border-soft);
+}
+
+.session-workflow-actions {
+	display: inline-flex;
+	align-items: center;
+	gap: 2px;
+	min-width: 0;
+	padding: 3px;
+	border: 1px solid var(--border-soft);
+	border-radius: 9px;
+	background: color-mix(in srgb, var(--bg-elev) 64%, transparent);
+}
+
+.session-workflow-title {
+	padding: 0 7px 0 5px;
+	color: var(--text-faint);
+	font-size: 10px;
+	font-weight: 650;
+	letter-spacing: 0.04em;
+	text-transform: uppercase;
+	white-space: nowrap;
+}
+
+.session-workflow-button {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	gap: 5px;
+	height: 28px;
+	padding: 0 8px;
+	border: 1px solid transparent;
+	border-radius: 6px;
+	background: transparent;
+	color: var(--text);
+	font: 500 11px/1 var(--font-sans);
+	white-space: nowrap;
+	cursor: pointer;
+}
+
+.session-workflow-button:hover:not(:disabled) {
+	border-color: var(--border-soft);
+	background: var(--color-overlay-hover);
+}
+
+.session-workflow-button:focus-visible {
+	outline: 2px solid color-mix(in srgb, var(--accent) 55%, transparent);
+	outline-offset: 1px;
+}
+
+.session-workflow-button:disabled {
+	opacity: 0.45;
+	cursor: default;
+}
+
+.session-workflow-divider {
+	width: 1px;
+	height: 17px;
+	margin: 0 2px;
+	background: var(--border-soft);
+}
+
+.session-workflow-button--goal {
+	color: var(--accent);
+}
+
+.session-workflow-button--active {
+	border-color: color-mix(in srgb, var(--accent) 24%, transparent);
+	background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+
+.session-workflow-status {
+	padding: 2px 4px;
+	border-radius: 999px;
+	background: color-mix(in srgb, currentColor 12%, transparent);
+	font-size: 9px;
+	font-weight: 650;
+}
+
+.session-workflow-status--paused,
+.session-workflow-status--budget-limited {
+	color: var(--color-text-warning);
+}
+
+.session-workflow-button--danger {
+	color: var(--color-text-danger);
 }
 
 .top-icon-button {
@@ -542,4 +639,3 @@
 	white-space: pre-wrap;
 	margin: 8px 0 0;
 }
-

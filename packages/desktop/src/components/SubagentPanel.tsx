@@ -2,11 +2,12 @@ import type { SubagentSnapshot } from "../lib/rpc-protocol";
 
 interface SubagentPanelProps {
 	subagents: SubagentSnapshot[];
+	onSelect?: (agent: SubagentSnapshot) => void;
 }
 
 const ACTIVE = new Set(["running", "active", "pending", "queued", "working"]);
 
-export function SubagentPanel({ subagents }: SubagentPanelProps) {
+export function SubagentPanel({ subagents, onSelect }: SubagentPanelProps) {
 	if (subagents.length === 0) return null;
 	return (
 		<aside className="subagent-panel">
@@ -17,6 +18,14 @@ export function SubagentPanel({ subagents }: SubagentPanelProps) {
 					const kind = ACTIVE.has(agent.status) ? "active" : agent.status;
 					return (
 						<li key={agent.id} className={`subagent-item subagent-${kind}`}>
+							{onSelect ? (
+								<button
+									type="button"
+									className="subagent-open"
+									onClick={() => onSelect(agent)}
+									aria-label={`Open ${agent.agent} transcript`}
+								/>
+							) : null}
 							<span className="subagent-dot" />
 							<span className="subagent-agent">{agent.agent}</span>
 							<span className="subagent-status">{agent.status}</span>
