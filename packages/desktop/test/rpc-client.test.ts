@@ -8,12 +8,16 @@ const bridge = {
 	stderrCb: undefined as ((line: string) => void) | undefined,
 	exitCb: undefined as (() => void) | undefined,
 	sent: [] as string[],
+	starts: [] as Array<string | undefined>,
+	stops: 0,
 	sendShouldReject: false,
 	reset() {
 		this.frameCb = undefined;
 		this.stderrCb = undefined;
 		this.exitCb = undefined;
 		this.sent = [];
+		this.starts = [];
+		this.stops = 0;
 		this.sendShouldReject = false;
 	},
 	emitFrame(obj: unknown) {
@@ -25,8 +29,14 @@ const bridge = {
 };
 
 mock.module("../src/lib/desktop-bridge", () => ({
-	startEngine: () => Promise.resolve(),
-	stopEngine: () => Promise.resolve(),
+	startEngine: (cwd?: string) => {
+		bridge.starts.push(cwd);
+		return Promise.resolve();
+	},
+	stopEngine: () => {
+		bridge.stops += 1;
+		return Promise.resolve();
+	},
 	sendRpcLine: (line: string) => {
 		if (bridge.sendShouldReject) return Promise.reject(new Error("send failed"));
 		bridge.sent.push(line);
@@ -232,6 +242,49 @@ describe("request/response correlation", () => {
 		await client.stop();
 	});
 
+	test("review scopes request concrete Git refs and expose recent commits", async () => {
+		const client = await startedClient();
+
+		const diffPending = client.getWorkspaceDiff("commit", "abc1234");
+		let sent = JSON.parse(bridge.sent.at(-1) ?? "{}") as Record<string, unknown>;
+		expect(sent.type).toBe("get_workspace_diff");
+		expect(sent.scope).toBe("commit");
+		expect(sent.ref).toBe("abc1234");
+		bridge.emitFrame({
+			type: "response",
+			command: "get_workspace_diff",
+			id: sent.id,
+			success: true,
+			data: {
+				files: [
+					{
+						path: "src/app.ts",
+						status: "modified",
+						diff: "@@ -1 +1 @@\n-old\n+new",
+						additions: 1,
+						deletions: 1,
+					},
+				],
+			},
+		});
+		expect((await diffPending)[0]?.path).toBe("src/app.ts");
+
+		const commitsPending = client.listReviewCommits();
+		sent = JSON.parse(bridge.sent.at(-1) ?? "{}") as Record<string, unknown>;
+		expect(sent.type).toBe("list_review_commits");
+		bridge.emitFrame({
+			type: "response",
+			command: "list_review_commits",
+			id: sent.id,
+			success: true,
+			data: { commits: [{ hash: "abc1234", subject: "Refine review UI", committedAt: 1_700_000_000_000 }] },
+		});
+		expect(await commitsPending).toEqual([
+			{ hash: "abc1234", subject: "Refine review UI", committedAt: 1_700_000_000_000 },
+		]);
+		await client.stop();
+	});
+
 	test("new session preserves parent lineage for isolated side-chat forks", async () => {
 		const client = await startedClient();
 		const pending = client.newSession("/tmp/main-session.jsonl");
@@ -285,9 +338,67 @@ describe("request/response correlation", () => {
 				enabled: true,
 				enabledFeatures: ["git", "worktree"],
 				availableFeatures: ["git", "worktree", "github"],
+				settings: [],
 			},
 		});
 		expect((await pending).enabledFeatures).toEqual(["git", "worktree"]);
+		await client.stop();
+	});
+
+	test("plugin settings use schema-aware set and reset commands", async () => {
+		const client = await startedClient();
+		const setPending = client.setPluginSetting("review-tools", "mode", "strict");
+		const setCommand = JSON.parse(bridge.sent.at(-1) ?? "{}") as Record<string, unknown>;
+		expect(setCommand).toMatchObject({
+			type: "set_plugin_setting",
+			name: "review-tools",
+			key: "mode",
+			value: "strict",
+		});
+		bridge.emitFrame({
+			type: "response",
+			command: "set_plugin_setting",
+			id: setCommand.id,
+			success: true,
+			data: {
+				name: "review-tools",
+				version: "1.0.0",
+				enabled: true,
+				enabledFeatures: [],
+				availableFeatures: [],
+				settings: [
+					{
+						key: "mode",
+						type: "enum",
+						secret: false,
+						environmentAvailable: false,
+						configured: true,
+						value: "strict",
+						values: ["normal", "strict"],
+					},
+				],
+			},
+		});
+		expect((await setPending).settings[0]?.value).toBe("strict");
+
+		const resetPending = client.deletePluginSetting("review-tools", "mode");
+		const resetCommand = JSON.parse(bridge.sent.at(-1) ?? "{}") as Record<string, unknown>;
+		expect(resetCommand).toMatchObject({ type: "delete_plugin_setting", name: "review-tools", key: "mode" });
+		bridge.emitFrame({
+			type: "response",
+			command: "delete_plugin_setting",
+			id: resetCommand.id,
+			success: true,
+			data: {
+				name: "review-tools",
+				version: "1.0.0",
+				enabled: true,
+				enabledFeatures: [],
+				availableFeatures: [],
+				settings: [],
+			},
+		});
+		expect((await resetPending).settings).toEqual([]);
 		await client.stop();
 	});
 
@@ -308,6 +419,7 @@ describe("request/response correlation", () => {
 					id: "review-tools@official",
 					name: "review-tools",
 					marketplace: "official",
+					capabilities: ["commands" as const, "agents" as const],
 					installations: [{ scope: "project" as const, version: "1.0.0", enabled: true, shadowed: false }],
 				},
 			],
@@ -440,6 +552,74 @@ describe("request/response correlation", () => {
 			data: { serverName: "github", status: "connected", toolCount: 4 },
 		});
 		expect(await pending).toEqual({ serverName: "github", status: "connected", toolCount: 4 });
+		await client.stop();
+	});
+
+	test("MCP management sends concrete add, test, reload, inventory, and remove commands", async () => {
+		const client = await startedClient();
+		const addPending = client.addMcpServer("files", "project", {
+			type: "stdio",
+			command: "mcp-files",
+			args: ["C:/workspace"],
+		});
+		let sent = JSON.parse(bridge.sent.at(-1) ?? "{}") as Record<string, unknown>;
+		expect(sent).toMatchObject({ type: "add_mcp_server", name: "files", scope: "project" });
+		bridge.emitFrame({
+			type: "response",
+			command: "add_mcp_server",
+			id: sent.id,
+			success: true,
+			data: { serverName: "files", scope: "project", status: "connected", toolCount: 2 },
+		});
+		expect(await addPending).toMatchObject({ status: "connected", toolCount: 2 });
+
+		const inventoryPending = client.getMcpCapabilities();
+		sent = JSON.parse(bridge.sent.at(-1) ?? "{}") as Record<string, unknown>;
+		expect(sent.type).toBe("get_mcp_capabilities");
+		bridge.emitFrame({
+			type: "response",
+			command: "get_mcp_capabilities",
+			id: sent.id,
+			success: true,
+			data: { resources: [], prompts: [], notifications: { enabled: false, servers: [] } },
+		});
+		expect(await inventoryPending).toMatchObject({ resources: [], prompts: [] });
+
+		const testPending = client.testMcpServer("files");
+		sent = JSON.parse(bridge.sent.at(-1) ?? "{}") as Record<string, unknown>;
+		expect(sent).toMatchObject({ type: "test_mcp_server", serverName: "files" });
+		bridge.emitFrame({
+			type: "response",
+			command: "test_mcp_server",
+			id: sent.id,
+			success: true,
+			data: { serverName: "files", connected: true },
+		});
+		expect(await testPending).toMatchObject({ connected: true });
+
+		const reloadPending = client.reloadMcp();
+		sent = JSON.parse(bridge.sent.at(-1) ?? "{}") as Record<string, unknown>;
+		expect(sent.type).toBe("reload_mcp");
+		bridge.emitFrame({
+			type: "response",
+			command: "reload_mcp",
+			id: sent.id,
+			success: true,
+			data: { servers: 1, connected: 1, toolCount: 2, errors: [] },
+		});
+		expect(await reloadPending).toMatchObject({ connected: 1, toolCount: 2 });
+
+		const removePending = client.removeMcpServer("files", "project");
+		sent = JSON.parse(bridge.sent.at(-1) ?? "{}") as Record<string, unknown>;
+		expect(sent).toMatchObject({ type: "remove_mcp_server", serverName: "files", scope: "project" });
+		bridge.emitFrame({
+			type: "response",
+			command: "remove_mcp_server",
+			id: sent.id,
+			success: true,
+			data: { serverName: "files", scope: "project", removed: true },
+		});
+		await removePending;
 		await client.stop();
 	});
 
@@ -729,25 +909,19 @@ describe("lifecycle: crash / restart / workspace switch (1.4)", () => {
 	});
 
 	test("workspace switch: old client stops cleanly, a fresh client starts", async () => {
-		// App creates one client per workspace; switching stops the old and starts new.
-		const first = await startedClient();
-		const pInFlight = first.getState();
-		await first.stop();
-		await expect(pInFlight).rejects.toBeInstanceOf(RpcTransportError);
+		const client = await startedClient();
+		const pInFlight = client.getState();
+		const switched = client.setWorkspace("/tmp/ws2");
+		await flush();
 
-		bridge.reset();
-		const second = await startedClient();
-		const p = second.getState();
-		const id = lastRequestId();
-		bridge.emitFrame({
-			type: "response",
-			command: "get_state",
-			id,
-			success: true,
-			data: { sessionId: "ws2", isStreaming: false },
-		});
-		expect((await p).sessionId).toBe("ws2");
-		await second.stop();
+		await expect(pInFlight).rejects.toBeInstanceOf(RpcTransportError);
+		expect(bridge.starts).toEqual(["/tmp/ws", "/tmp/ws2"]);
+		expect(bridge.stops).toBe(1);
+		expect(bridge.sent.some(line => JSON.parse(line).type === "set_workspace")).toBe(false);
+
+		bridge.emitFrame({ type: "ready" });
+		await expect(switched).resolves.toEqual({ cwd: "/tmp/ws2" });
+		await client.stop();
 	});
 
 	test("stop is idempotent and safe to call twice", async () => {

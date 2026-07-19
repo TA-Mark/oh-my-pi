@@ -35,12 +35,16 @@ import {
 	type ImageContent,
 	type LoginProvider,
 	type MarketplaceSnapshot,
+	type McpCapabilitySnapshot,
+	type McpServerConfigInput,
 	type McpServerStatus,
 	type MemoryActionResult,
 	type MemorySaveResult,
 	type MemorySearchResult,
 	type MemoryStatus,
 	type ModelInfo,
+	type ReviewCommit,
+	type ReviewScope,
 	type RpcCommand,
 	type RpcPluginDescriptor,
 	type RpcResponse,
@@ -251,13 +255,18 @@ export class DesktopRpcClient {
 	}
 
 	/**
-	 * Re-root the live engine at a new project directory and open a fresh task,
-	 * WITHOUT respawning the engine. Used when the user switches projects so the
-	 * process, credentials, and RPC stream stay alive (Codex/Claude-style).
+	 * Restart the engine in a new project directory.
+	 *
+	 * Project discovery is performed while the coding-agent runtime is created.
+	 * Re-rooting the existing RPC session updates file tools, but leaves the
+	 * runtime's captured context files, skills, and system prompt scoped to the
+	 * previous project. A full restart keeps the client handlers/UI alive while
+	 * guaranteeing that every cwd-derived input is rebuilt for the destination.
 	 */
 	async setWorkspace(cwd: string): Promise<{ cwd: string }> {
-		const response = await this.#send({ type: "set_workspace", cwd });
-		return this.#data<{ cwd: string }>(response);
+		await this.stop();
+		await this.start(cwd);
+		return { cwd };
 	}
 
 	async getState(): Promise<SessionState> {
@@ -282,6 +291,16 @@ export class DesktopRpcClient {
 
 	async setPluginFeatures(name: string, features: string[] | null): Promise<RpcPluginDescriptor> {
 		const response = await this.#send({ type: "set_plugin_features", name, features }, 60_000);
+		return this.#data<RpcPluginDescriptor>(response);
+	}
+
+	async setPluginSetting(name: string, key: string, value: unknown): Promise<RpcPluginDescriptor> {
+		const response = await this.#send({ type: "set_plugin_setting", name, key, value }, 60_000);
+		return this.#data<RpcPluginDescriptor>(response);
+	}
+
+	async deletePluginSetting(name: string, key: string): Promise<RpcPluginDescriptor> {
+		const response = await this.#send({ type: "delete_plugin_setting", name, key }, 60_000);
 		return this.#data<RpcPluginDescriptor>(response);
 	}
 
@@ -577,10 +596,15 @@ export class DesktopRpcClient {
 		return this.#data<{ messages?: SessionMessage[] }>(response).messages ?? [];
 	}
 
-	/** Fetch the workspace git diff (changed/untracked files vs HEAD) for the Changes panel. */
-	async getWorkspaceDiff(): Promise<WorkspaceFileChange[]> {
-		const response = await this.#send({ type: "get_workspace_diff" });
+	/** Fetch a concrete Git review scope for the Changes panel. */
+	async getWorkspaceDiff(scope: ReviewScope = "all", ref?: string): Promise<WorkspaceFileChange[]> {
+		const response = await this.#send({ type: "get_workspace_diff", scope, ...(ref ? { ref } : {}) });
 		return this.#data<{ files?: WorkspaceFileChange[] }>(response).files ?? [];
+	}
+
+	async listReviewCommits(limit = 12): Promise<ReviewCommit[]> {
+		const response = await this.#send({ type: "list_review_commits", limit });
+		return this.#data<{ commits?: ReviewCommit[] }>(response).commits ?? [];
 	}
 
 	async listWorkspaceFiles(
@@ -617,6 +641,41 @@ export class DesktopRpcClient {
 	async getMcpStatus(): Promise<McpServerStatus[]> {
 		const response = await this.#send({ type: "get_mcp_status" });
 		return this.#data<{ servers?: McpServerStatus[] }>(response).servers ?? [];
+	}
+
+	async addMcpServer(
+		name: string,
+		scope: "user" | "project",
+		config: McpServerConfigInput,
+	): Promise<{ serverName: string; scope: "user" | "project"; status: string; toolCount: number }> {
+		const response = await this.#send({ type: "add_mcp_server", name, scope, config }, 120_000);
+		return this.#data(response);
+	}
+
+	async removeMcpServer(serverName: string, scope: "user" | "project"): Promise<void> {
+		await this.#send({ type: "remove_mcp_server", serverName, scope }, 120_000);
+	}
+
+	async testMcpServer(
+		serverName: string,
+	): Promise<{ serverName: string; connected: true; serverInfo?: { name: string; version: string } }> {
+		const response = await this.#send({ type: "test_mcp_server", serverName }, 60_000);
+		return this.#data(response);
+	}
+
+	async reloadMcp(): Promise<{
+		servers: number;
+		connected: number;
+		toolCount: number;
+		errors: Array<{ serverName: string; message: string }>;
+	}> {
+		const response = await this.#send({ type: "reload_mcp" }, 120_000);
+		return this.#data(response);
+	}
+
+	async getMcpCapabilities(): Promise<McpCapabilitySnapshot> {
+		const response = await this.#send({ type: "get_mcp_capabilities" }, 60_000);
+		return this.#data<McpCapabilitySnapshot>(response);
 	}
 
 	async reconnectMcp(serverName: string): Promise<unknown> {

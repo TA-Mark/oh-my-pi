@@ -1,12 +1,16 @@
 import { type ToolResultLike, ToolView } from "@oh-my-pi/collab-web/src/tool-render";
 import { useEffect, useRef } from "react";
+import { agentWorkingLabel, DEFAULT_AGENT_DISPLAY_NAME } from "../lib/agent-display-name";
 import type { ChatMessage } from "../lib/reducer";
+import { AgentNameLabel } from "./AgentNameLabel";
 import { Markdown } from "./Markdown";
 
 interface TranscriptProps {
 	messages: ChatMessage[];
 	/** Agent turn is in flight — show a working indicator until output appears. */
 	streaming?: boolean;
+	assistantName?: string;
+	onRenameAssistant?: (name: string) => void;
 }
 
 function ToolBubble({ message }: { message: ChatMessage }) {
@@ -38,7 +42,12 @@ function findScrollParent(element: HTMLElement | null): HTMLElement | null {
 /** Distance in px from the bottom of the scroll container's viewport. */
 const NEAR_BOTTOM_PX = 120;
 
-export function Transcript({ messages, streaming = false }: TranscriptProps) {
+export function Transcript({
+	messages,
+	streaming = false,
+	assistantName = DEFAULT_AGENT_DISPLAY_NAME,
+	onRenameAssistant,
+}: TranscriptProps) {
 	const bottomRef = useRef<HTMLDivElement>(null);
 	// Track whether the user is pinned to the bottom. We only auto-scroll on new
 	// content when they already are — scrolling up to read mid-stream must not be
@@ -87,7 +96,11 @@ export function Transcript({ messages, streaming = false }: TranscriptProps) {
 				const plain = message.role === "user" || message.error;
 				return (
 					<div key={message.id} className={`bubble bubble-${message.role}${message.error ? " bubble-error" : ""}`}>
-						<div className="bubble-role">{message.error ? "error" : message.role}</div>
+						{message.role === "assistant" && !message.error ? (
+							<AgentNameLabel name={assistantName} onRename={onRenameAssistant} />
+						) : (
+							<div className="bubble-role">{message.error ? "error" : message.role}</div>
+						)}
 						{message.images && message.images.length > 0 && (
 							<div className="bubble-images">
 								{message.images.map((img, i) => (
@@ -112,7 +125,7 @@ export function Transcript({ messages, streaming = false }: TranscriptProps) {
 						<span />
 						<span />
 					</span>
-					<span className="thinking-label">OMP is working…</span>
+					<span className="thinking-label">{agentWorkingLabel(assistantName)}</span>
 				</div>
 			) : null}
 			<div ref={bottomRef} />

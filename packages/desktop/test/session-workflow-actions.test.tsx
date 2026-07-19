@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
+import { autoTaskTitle, taskTitleFromPrompt } from "../src/lib/session-title";
 import { SessionWorkflowActions } from "../src/components/SessionWorkflowActions";
 import type { GoalModeState } from "../src/lib/rpc-protocol";
 
@@ -50,4 +51,13 @@ test("shows goal lifecycle actions and status while a goal is active", () => {
 	expect(markup).toContain(">Pause goal<");
 	expect(markup).toContain(">active<");
 	expect(markup).toContain(">Drop<");
+});
+
+test("derives a task name from the first prompt even when the transcript is already populated", () => {
+	const prompt = "Investigate why the router cache tracker is not refreshing";
+
+	expect(autoTaskTitle(undefined, prompt)).toBe("Investigate why the router cache tracker is not...");
+	expect(autoTaskTitle(undefined, "   ")).toBeUndefined();
+	expect(autoTaskTitle("Existing task", prompt)).toBeUndefined();
+	expect(taskTitleFromPrompt("A  task\nwith   collapsed whitespace")).toBe("A task with collapsed whitespace");
 });

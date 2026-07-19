@@ -1,13 +1,12 @@
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import { AppShell, type SessionInfo } from "./components/AppShell";
 import type { AuthPrompt } from "./components/AuthDialog";
-import type { BrowserActivity } from "./components/BrowserPanel";
 import type { ComposerInjection } from "./components/Composer";
 import { composePromptWithContext, type StagedContextItem } from "./components/ContextInspector";
 import { DiagnosticsPanel } from "./components/DiagnosticsPanel";
 import type { WidgetEntry } from "./components/ExtensionWidgets";
 import { HostApprovalDialog } from "./components/HostApprovalDialog";
-import { SettingsPanel } from "./components/SettingsPanel";
+import { type SettingsOperationFeedback, SettingsPanel } from "./components/SettingsPanel";
 import type { SideChatMessage } from "./components/SideChatPanel";
 import type { Toast } from "./components/Toasts";
 import { WelcomeScreen } from "./components/WelcomeScreen";
@@ -51,7 +50,6 @@ import type {
 	ApprovalMode,
 	ArtifactContent,
 	AvailableCommand,
-	BrowserTab,
 	ContextBreakdown,
 	ContextSnapshot,
 	ContextUsage,
@@ -68,11 +66,15 @@ import type {
 	ImageContent,
 	LoginProvider,
 	MarketplaceSnapshot,
+	McpCapabilitySnapshot,
+	McpServerConfigInput,
 	McpServerStatus,
 	MemorySearchResult,
 	MemoryStatus,
 	ModelInfo,
 	PlanModeState,
+	ReviewCommit,
+	ReviewScope,
 	RpcSettingCategory,
 	RpcSettingsSnapshot,
 	ScheduledTask,
@@ -199,7 +201,16 @@ export function App() {
 	// clicks. Reset below when streaming clears (agent_end or engine-stopped).
 	const [aborting, setAborting] = useState(false);
 	const [changes, setChanges] = useState<WorkspaceFileChange[]>([]);
-	const [gitStatus, setGitStatus] = useState<GitStatus>({ branch: null, staged: 0, unstaged: 0, untracked: 0 });
+	const [gitStatus, setGitStatus] = useState<GitStatus>({
+		branch: null,
+		upstream: null,
+		baseBranch: null,
+		branches: [],
+		localBranches: [],
+		staged: 0,
+		unstaged: 0,
+		untracked: 0,
+	});
 	const [worktrees, setWorktrees] = useState<Worktree[]>([]);
 	const [worktreeManagerOpen, setWorktreeManagerOpen] = useState(false);
 	const [worktreesLoading, setWorktreesLoading] = useState(false);
@@ -219,29 +230,30 @@ export function App() {
 	const [contextMemoryBackend, setContextMemoryBackend] = useState<string | null>(null);
 	const [contextUsage, setContextUsage] = useState<ContextUsage | undefined>();
 	const [contextBreakdown, setContextBreakdown] = useState<ContextBreakdown | undefined>();
-	const [browserUrl, setBrowserUrl] = useState("");
-	const [browserSnapshot, setBrowserSnapshot] = useState("");
-	const [browserBusy, setBrowserBusy] = useState(false);
-	const [browserTabs, setBrowserTabs] = useState<BrowserTab[]>([]);
-	const [browserActiveTab, setBrowserActiveTab] = useState("main");
-	const [browserActivity, setBrowserActivity] = useState<BrowserActivity[]>([]);
-	const [browserDownloadPolicy, setBrowserDownloadPolicy] = useState<"deny">("deny");
 	const [sideChatReady, setSideChatReady] = useState(false);
 	const [sideChatStarting, setSideChatStarting] = useState(false);
+	const [sideChatBusy, setSideChatBusy] = useState(false);
 	const [sideChatMessages, setSideChatMessages] = useState<SideChatMessage[]>([]);
 	const [sideChatWorktreePath, setSideChatWorktreePath] = useState<string | null>(null);
+	const [sideChatModels, setSideChatModels] = useState<ModelInfo[]>([]);
+	const [sideChatProviders, setSideChatProviders] = useState<LoginProvider[]>([]);
+	const [sideChatModel, setSideChatModel] = useState<string | undefined>();
 	const [scheduledTasks, setScheduledTasks] = useState<ScheduledTask[]>([]);
 	const [settingsOpen, setSettingsOpen] = useState(false);
 	const [settingsCategory, setSettingsCategory] = useState<RpcSettingCategory>("providers");
 	const [settingsSnapshot, setSettingsSnapshot] = useState<RpcSettingsSnapshot | null>(null);
+	const settingsMutationVersionRef = useRef(0);
 	const [settingsLoading, setSettingsLoading] = useState(false);
 	const [settingsError, setSettingsError] = useState<string | null>(null);
-	const [savingSetting, setSavingSetting] = useState<string | null>(null);
+	const [savingSettings, setSavingSettings] = useState<Set<string>>(() => new Set());
+	const [settingsOperationFeedbacks, setSettingsOperationFeedbacks] = useState<SettingsOperationFeedback[]>([]);
+	const settingsFeedbackTimersRef = useRef<Map<string, number>>(new Map());
 	const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
 	const [diagnostics, setDiagnostics] = useState<DiagnosticsSnapshot | null>(null);
 	const [sessionStats, setSessionStats] = useState<SessionStats | null>(null);
 	const [diagnosticsLoading, setDiagnosticsLoading] = useState(false);
 	const [mcpServers, setMcpServers] = useState<McpServerStatus[]>([]);
+	const [mcpCapabilities, setMcpCapabilities] = useState<McpCapabilitySnapshot | null>(null);
 	const [marketplace, setMarketplace] = useState<MarketplaceSnapshot | null>(null);
 	const [marketplaceError, setMarketplaceError] = useState<string | null>(null);
 	const [memoryStatus, setMemoryStatus] = useState<MemoryStatus | null>(null);
@@ -405,13 +417,34 @@ export function App() {
 		}
 	}, []);
 
+	const loadReview = useCallback(async (scope: ReviewScope, ref?: string): Promise<WorkspaceFileChange[]> => {
+		const client = clientRef.current;
+		if (!client) throw new Error("OMP engine is not ready");
+		return client.getWorkspaceDiff(scope, ref);
+	}, []);
+
+	const loadReviewCommits = useCallback(async (): Promise<ReviewCommit[]> => {
+		const client = clientRef.current;
+		if (!client) throw new Error("OMP engine is not ready");
+		return client.listReviewCommits();
+	}, []);
+
 	const refreshGitStatus = useCallback(async () => {
 		const client = clientRef.current;
 		if (!client) return;
 		try {
 			setGitStatus(await client.getGitStatus());
 		} catch {
-			setGitStatus({ branch: null, staged: 0, unstaged: 0, untracked: 0 });
+			setGitStatus({
+				branch: null,
+				upstream: null,
+				baseBranch: null,
+				branches: [],
+				localBranches: [],
+				staged: 0,
+				unstaged: 0,
+				untracked: 0,
+			});
 		}
 	}, []);
 
@@ -483,127 +516,50 @@ export function App() {
 		});
 	}, []);
 
-	const runBrowser = useCallback(
-		async (
-			label: string,
-			operation: (client: DesktopRpcClient) => Promise<unknown>,
-			onResult: (value: unknown) => void,
-		) => {
-			const client = clientRef.current;
-			if (!client) return;
-			const activityId = `browser-ui-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-			setBrowserActivity(items => [...items, { id: activityId, label, status: "running", timestamp: Date.now() }]);
-			setBrowserBusy(true);
-			try {
-				onResult(await operation(client));
-				setBrowserActivity(items =>
-					items.map(item => (item.id === activityId ? { ...item, status: "done", timestamp: Date.now() } : item)),
-				);
-			} catch (err) {
-				setBrowserActivity(items =>
-					items.map(item => (item.id === activityId ? { ...item, status: "error", timestamp: Date.now() } : item)),
-				);
-				dispatch({ kind: "stderr", line: `browser: ${err instanceof Error ? err.message : String(err)}` });
-			} finally {
-				setBrowserBusy(false);
-			}
+	const showSettingsFeedback = useCallback((feedback: SettingsOperationFeedback) => {
+		const currentTimer = settingsFeedbackTimersRef.current.get(feedback.key);
+		if (currentTimer !== undefined) window.clearTimeout(currentTimer);
+		setSettingsOperationFeedbacks(current => [...current.filter(item => item.key !== feedback.key), feedback]);
+		if (feedback.state !== "saving") {
+			const timer = window.setTimeout(
+				() => {
+					setSettingsOperationFeedbacks(current => current.filter(item => item.key !== feedback.key));
+					settingsFeedbackTimersRef.current.delete(feedback.key);
+				},
+				feedback.state === "error" ? 8000 : 2500,
+			);
+			settingsFeedbackTimersRef.current.set(feedback.key, timer);
+		}
+	}, []);
+	const startSettingOperation = useCallback((key: string) => {
+		setSavingSettings(current => new Set(current).add(key));
+	}, []);
+	const finishSettingOperation = useCallback((key: string) => {
+		setSavingSettings(current => {
+			if (!current.has(key)) return current;
+			const next = new Set(current);
+			next.delete(key);
+			return next;
+		});
+	}, []);
+	useEffect(
+		() => () => {
+			for (const timer of settingsFeedbackTimersRef.current.values()) window.clearTimeout(timer);
+			settingsFeedbackTimersRef.current.clear();
 		},
 		[],
 	);
-	const refreshBrowserTabs = useCallback(async () => {
-		const client = clientRef.current;
-		if (!client) return;
-		try {
-			const state = await client.browserState();
-			setBrowserTabs(state.tabs);
-			setBrowserDownloadPolicy(state.downloadPolicy);
-		} catch (err) {
-			dispatch({ kind: "stderr", line: `browser tabs: ${err instanceof Error ? err.message : String(err)}` });
-		}
-	}, []);
-
-	const browserNavigate = useCallback(
-		(url: string) =>
-			void runBrowser(
-				`Navigate ${url}`,
-				client =>
-					browserTabs.some(tab => tab.name === browserActiveTab)
-						? client.browserNavigate(url, browserActiveTab)
-						: client.browserOpen(url, browserActiveTab),
-				value => {
-					const result = value as { url?: string; text?: string };
-					setBrowserUrl(result.url ?? url);
-					setBrowserSnapshot(result.text ?? "");
-					void refreshBrowserTabs();
-				},
-			),
-		[runBrowser, browserTabs, browserActiveTab, refreshBrowserTabs],
-	);
-	const browserHistory = useCallback(
-		(direction: "back" | "forward" | "reload") =>
-			void runBrowser(
-				`${direction} ${browserActiveTab}`,
-				client => client.browserHistory(direction, browserActiveTab),
-				value => {
-					const result = value as { url?: string; text?: string };
-					setBrowserUrl(result.url ?? browserUrl);
-					setBrowserSnapshot(result.text ?? "");
-				},
-			),
-		[runBrowser, browserUrl, browserActiveTab],
-	);
-	const browserSnapshotRefresh = useCallback(
-		() =>
-			void runBrowser(
-				`Snapshot ${browserActiveTab}`,
-				client => client.browserSnapshot(browserActiveTab),
-				value => {
-					const result = value as { url?: string; snapshot?: string };
-					setBrowserUrl(result.url ?? browserUrl);
-					setBrowserSnapshot(result.snapshot ?? "");
-				},
-			),
-		[runBrowser, browserUrl, browserActiveTab],
-	);
-	const newBrowserTab = useCallback(() => {
-		setBrowserActiveTab(`tab-${Date.now()}`);
-		setBrowserUrl("");
-		setBrowserSnapshot("");
-	}, []);
-	const selectBrowserTab = useCallback((tab: BrowserTab) => {
-		setBrowserActiveTab(tab.name);
-		setBrowserUrl(tab.url);
-		setBrowserSnapshot("");
-	}, []);
-	const closeBrowserTab = useCallback(
-		(name: string) => {
-			const client = clientRef.current;
-			if (!client) return;
-			void client
-				.browserClose(name)
-				.then(async () => {
-					if (name === browserActiveTab) {
-						setBrowserActiveTab("main");
-						setBrowserUrl("");
-						setBrowserSnapshot("");
-					}
-					await refreshBrowserTabs();
-				})
-				.catch(err =>
-					dispatch({ kind: "stderr", line: `browser close: ${err instanceof Error ? err.message : String(err)}` }),
-				);
-		},
-		[browserActiveTab, refreshBrowserTabs],
-	);
-
 	const refreshSettings = useCallback(async () => {
 		const client = clientRef.current;
 		if (!client) return;
+		const mutationVersion = settingsMutationVersionRef.current;
 		setSettingsLoading(true);
 		try {
-			setSettingsSnapshot(await client.getSettings());
+			const snapshot = await client.getSettings();
+			if (mutationVersion === settingsMutationVersionRef.current) setSettingsSnapshot(snapshot);
 			setSettingsError(null);
 		} catch (err) {
+			if (mutationVersion !== settingsMutationVersionRef.current) return;
 			const message = err instanceof Error ? err.message : String(err);
 			setSettingsError(message);
 			dispatch({ kind: "stderr", line: `settings: ${message}` });
@@ -615,33 +571,56 @@ export function App() {
 		async (path: string, value: unknown) => {
 			const client = clientRef.current;
 			if (!client) return;
-			setSavingSetting(path);
+			settingsMutationVersionRef.current += 1;
+			startSettingOperation(path);
+			showSettingsFeedback({ key: path, state: "saving" });
 			try {
-				await client.setSetting(path, value);
-				await refreshSettings();
+				const updated = await client.setSetting(path, value);
+				setSettingsSnapshot(snapshot =>
+					snapshot
+						? {
+								...snapshot,
+								settings: snapshot.settings.map(setting => (setting.path === path ? updated : setting)),
+							}
+						: snapshot,
+				);
+				if (path.startsWith("skills.")) {
+					const contextSnapshot = await client.getContextSnapshot();
+					setContextSkills(contextSnapshot.skills);
+					setContextSkillDetails(contextSnapshot.skillDetails);
+					setContextSkillWarnings(contextSnapshot.skillWarnings);
+				}
+				showSettingsFeedback({ key: path, state: "saved" });
 			} catch (err) {
-				dispatch({ kind: "stderr", line: `setting ${path}: ${err instanceof Error ? err.message : String(err)}` });
+				const message = err instanceof Error ? err.message : String(err);
+				showSettingsFeedback({ key: path, state: "error", message });
+				dispatch({ kind: "stderr", line: `setting ${path}: ${message}` });
 			} finally {
-				setSavingSetting(null);
+				finishSettingOperation(path);
 			}
 		},
-		[refreshSettings],
+		[finishSettingOperation, showSettingsFeedback, startSettingOperation],
 	);
 	const runPluginAction = useCallback(
 		async (key: string, action: (client: DesktopRpcClient) => Promise<unknown>) => {
 			const client = clientRef.current;
 			if (!client) return;
-			setSavingSetting(`plugin:${key}`);
+			const operationKey = `plugin:${key}`;
+			startSettingOperation(operationKey);
+			showSettingsFeedback({ key: operationKey, state: "saving" });
 			try {
 				await action(client);
 				await refreshSettings();
+				showSettingsFeedback({ key: operationKey, state: "saved", message: "Completed" });
 			} catch (err) {
-				dispatch({ kind: "stderr", line: `plugin ${key}: ${err instanceof Error ? err.message : String(err)}` });
+				const message = err instanceof Error ? err.message : String(err);
+				showSettingsFeedback({ key: operationKey, state: "error", message });
+				dispatch({ kind: "stderr", line: `plugin ${key}: ${message}` });
 			} finally {
-				setSavingSetting(null);
+				finishSettingOperation(operationKey);
 			}
 		},
-		[refreshSettings],
+		[finishSettingOperation, refreshSettings, showSettingsFeedback, startSettingOperation],
 	);
 	const refreshMarketplace = useCallback(async () => {
 		const client = clientRef.current;
@@ -659,51 +638,97 @@ export function App() {
 		async (key: string, action: (client: DesktopRpcClient) => Promise<MarketplaceSnapshot>) => {
 			const client = clientRef.current;
 			if (!client) return;
-			setSavingSetting(`marketplace:${key}`);
+			const operationKey = `marketplace:${key}`;
+			startSettingOperation(operationKey);
+			showSettingsFeedback({ key: operationKey, state: "saving" });
 			setMarketplaceError(null);
 			try {
 				setMarketplace(await action(client));
 				await refreshSettings();
+				showSettingsFeedback({ key: operationKey, state: "saved", message: "Completed" });
 			} catch (err) {
 				const message = err instanceof Error ? err.message : String(err);
 				setMarketplaceError(message);
+				showSettingsFeedback({ key: operationKey, state: "error", message });
 				dispatch({
 					kind: "stderr",
 					line: `marketplace ${key}: ${message}`,
 				});
 			} finally {
-				setSavingSetting(null);
+				finishSettingOperation(operationKey);
 			}
 		},
-		[refreshSettings],
+		[finishSettingOperation, refreshSettings, showSettingsFeedback, startSettingOperation],
 	);
 	const refreshMcp = useCallback(async () => {
 		const client = clientRef.current;
-		if (client) setMcpServers(await client.getMcpStatus().catch(() => []));
-	}, []);
+		if (!client) return;
+		try {
+			const [servers, capabilities] = await Promise.all([
+				client.getMcpStatus(),
+				client.getMcpCapabilities().catch(() => null),
+			]);
+			setMcpServers(servers);
+			setMcpCapabilities(capabilities);
+		} catch (err) {
+			const message = err instanceof Error ? err.message : String(err);
+			showSettingsFeedback({ key: "mcp:refresh", state: "error", message });
+			dispatch({ kind: "stderr", line: `mcp status: ${message}` });
+		}
+	}, [showSettingsFeedback]);
 	const refreshMemory = useCallback(async () => {
 		const client = clientRef.current;
-		if (client) setMemoryStatus(await client.getMemoryStatus().catch(() => null));
-	}, []);
-	const searchMemory = useCallback(async (query: string) => {
-		const client = clientRef.current;
-		if (client) setMemorySearch(await client.searchMemory(query).catch(() => null));
-	}, []);
-	const runMemoryAction = useCallback(
-		async (key: string, action: (client: DesktopRpcClient) => Promise<unknown>) => {
+		if (!client) return;
+		try {
+			setMemoryStatus(await client.getMemoryStatus());
+		} catch (err) {
+			const message = err instanceof Error ? err.message : String(err);
+			showSettingsFeedback({ key: "memory:refresh", state: "error", message });
+			dispatch({ kind: "stderr", line: `memory status: ${message}` });
+		}
+	}, [showSettingsFeedback]);
+	const searchMemory = useCallback(
+		async (query: string) => {
 			const client = clientRef.current;
 			if (!client) return;
-			setSavingSetting(`memory:${key}`);
+			const operationKey = "memory:search";
+			startSettingOperation(operationKey);
+			showSettingsFeedback({ key: operationKey, state: "saving", message: "Searching…" });
+			try {
+				setMemorySearch(await client.searchMemory(query));
+				showSettingsFeedback({ key: operationKey, state: "saved", message: "Search complete" });
+			} catch (err) {
+				const message = err instanceof Error ? err.message : String(err);
+				showSettingsFeedback({ key: operationKey, state: "error", message });
+				dispatch({ kind: "stderr", line: `memory search: ${message}` });
+			} finally {
+				finishSettingOperation(operationKey);
+			}
+		},
+		[finishSettingOperation, showSettingsFeedback, startSettingOperation],
+	);
+	const runMemoryAction = useCallback(
+		async (key: string, action: (client: DesktopRpcClient) => Promise<unknown>): Promise<boolean> => {
+			const client = clientRef.current;
+			if (!client) return false;
+			const operationKey = `memory:${key}`;
+			startSettingOperation(operationKey);
+			showSettingsFeedback({ key: operationKey, state: "saving" });
 			try {
 				await action(client);
 				await refreshMemory();
+				showSettingsFeedback({ key: operationKey, state: "saved", message: "Completed" });
+				return true;
 			} catch (err) {
-				dispatch({ kind: "stderr", line: `memory ${key}: ${err instanceof Error ? err.message : String(err)}` });
+				const message = err instanceof Error ? err.message : String(err);
+				showSettingsFeedback({ key: operationKey, state: "error", message });
+				dispatch({ kind: "stderr", line: `memory ${key}: ${message}` });
+				return false;
 			} finally {
-				setSavingSetting(null);
+				finishSettingOperation(operationKey);
 			}
 		},
-		[refreshMemory],
+		[finishSettingOperation, refreshMemory, showSettingsFeedback, startSettingOperation],
 	);
 
 	const refreshContextSnapshot = useCallback(async () => {
@@ -727,17 +752,22 @@ export function App() {
 		async (key: string, action: (client: DesktopRpcClient) => Promise<unknown>) => {
 			const client = clientRef.current;
 			if (!client) return;
-			setSavingSetting(`skill:${key}`);
+			const operationKey = `skill:${key}`;
+			startSettingOperation(operationKey);
+			showSettingsFeedback({ key: operationKey, state: "saving" });
 			try {
 				await action(client);
 				await Promise.all([refreshSettings(), refreshContextSnapshot()]);
+				showSettingsFeedback({ key: operationKey, state: "saved", message: "Completed" });
 			} catch (err) {
-				dispatch({ kind: "stderr", line: `skill ${key}: ${err instanceof Error ? err.message : String(err)}` });
+				const message = err instanceof Error ? err.message : String(err);
+				showSettingsFeedback({ key: operationKey, state: "error", message });
+				dispatch({ kind: "stderr", line: `skill ${key}: ${message}` });
 			} finally {
-				setSavingSetting(null);
+				finishSettingOperation(operationKey);
 			}
 		},
-		[refreshSettings, refreshContextSnapshot],
+		[finishSettingOperation, refreshSettings, refreshContextSnapshot, showSettingsFeedback, startSettingOperation],
 	);
 
 	const dismissToast = useCallback((id: string) => {
@@ -974,27 +1004,46 @@ export function App() {
 
 	const updateHostTools = useCallback(
 		(nextTools: DesktopHostToolConfig[]) => {
+			const previousTools = hostToolsRef.current;
+			const operationKey = "desktop:host-tools";
 			setHostTools(nextTools);
 			hostToolsRef.current = nextTools;
-			void syncHostRegistry(nextTools, workspaceUriEnabledRef.current).catch(error =>
-				addToast(`Host registry failed: ${error instanceof Error ? error.message : String(error)}`, "error"),
-			);
+			startSettingOperation(operationKey);
+			showSettingsFeedback({ key: operationKey, state: "saving" });
+			void syncHostRegistry(nextTools, workspaceUriEnabledRef.current)
+				.then(() => showSettingsFeedback({ key: operationKey, state: "saved" }))
+				.catch(error => {
+					const message = error instanceof Error ? error.message : String(error);
+					setHostTools(previousTools);
+					hostToolsRef.current = previousTools;
+					showSettingsFeedback({ key: operationKey, state: "error", message });
+					addToast(`Host registry failed: ${message}`, "error");
+				})
+				.finally(() => finishSettingOperation(operationKey));
 		},
-		[addToast, syncHostRegistry],
+		[addToast, finishSettingOperation, showSettingsFeedback, startSettingOperation, syncHostRegistry],
 	);
 
 	const updateWorkspaceUri = useCallback(
 		(enabled: boolean) => {
+			const previousEnabled = workspaceUriEnabledRef.current;
+			const operationKey = "desktop:workspace-uri";
 			setWorkspaceUriEnabled(enabled);
 			workspaceUriEnabledRef.current = enabled;
-			void syncHostRegistry(hostToolsRef.current, enabled).catch(error =>
-				addToast(
-					`Host URI registration failed: ${error instanceof Error ? error.message : String(error)}`,
-					"error",
-				),
-			);
+			startSettingOperation(operationKey);
+			showSettingsFeedback({ key: operationKey, state: "saving" });
+			void syncHostRegistry(hostToolsRef.current, enabled)
+				.then(() => showSettingsFeedback({ key: operationKey, state: "saved" }))
+				.catch(error => {
+					const message = error instanceof Error ? error.message : String(error);
+					setWorkspaceUriEnabled(previousEnabled);
+					workspaceUriEnabledRef.current = previousEnabled;
+					showSettingsFeedback({ key: operationKey, state: "error", message });
+					addToast(`Host URI registration failed: ${message}`, "error");
+				})
+				.finally(() => finishSettingOperation(operationKey));
 		},
-		[addToast, syncHostRegistry],
+		[addToast, finishSettingOperation, showSettingsFeedback, startSettingOperation, syncHostRegistry],
 	);
 
 	const respondDialog = useCallback((response: ExtensionUIResponse) => {
@@ -1039,12 +1088,10 @@ export function App() {
 		};
 	}, []);
 
-	// Boot the engine exactly ONCE, when a workspace first exists. Switching
-	// projects afterwards re-roots the live engine over RPC (see `openFolder`)
-	// instead of tearing this client down — so the process, credentials, and RPC
-	// stream survive, matching how Codex/Claude keep running across project
-	// switches. The effect keys off a boolean, not the path, so folder→folder
-	// changes never re-run it.
+	// Boot the client exactly once when a workspace first exists. Project switches
+	// restart the engine through `DesktopRpcClient.setWorkspace` while preserving
+	// this client and its UI event handlers. The effect keys off a boolean, not the
+	// path, so folder-to-folder changes do not create a second client lifecycle.
 	const engineShouldRun = workspace !== null;
 	useEffect(() => {
 		if (!engineShouldRun) return;
@@ -1058,27 +1105,6 @@ export function App() {
 			onEvent: event => {
 				dispatch({ kind: "event", event });
 				if (event.type === "available_commands_update") setAvailableCommands(event.commands);
-				if (event.type === "tool_execution_start" && event.toolName === "browser") {
-					setBrowserActivity(items => [
-						...items.filter(item => item.id !== event.toolCallId),
-						{
-							id: event.toolCallId,
-							label: event.intent || "OMP browser tool",
-							status: "running",
-							timestamp: Date.now(),
-						},
-					]);
-				}
-				if (event.type === "tool_execution_end" && event.toolName === "browser") {
-					setBrowserActivity(items =>
-						items.map(item =>
-							item.id === event.toolCallId
-								? { ...item, status: event.isError ? "error" : "done", timestamp: Date.now() }
-								: item,
-						),
-					);
-					void refreshBrowserTabs();
-				}
 				if (event.type === "plan_mode_changed") {
 					setPlanMode(event.planMode);
 				}
@@ -1130,7 +1156,6 @@ export function App() {
 			try {
 				await client.start(workspaceRef.current ?? undefined);
 				if (cancelled) return;
-				restartAttempts = 0;
 				const [availableModels] = await Promise.all([
 					client.getAvailableModels(),
 					client.getAvailableCommands().then(setAvailableCommands),
@@ -1138,7 +1163,6 @@ export function App() {
 					refreshLoginProviders(),
 					refreshSessions(),
 					refreshContextSnapshot(),
-					refreshBrowserTabs(),
 					refreshGitStatus(),
 				]);
 				if (cancelled) return;
@@ -1147,6 +1171,11 @@ export function App() {
 				await syncHostRegistry(hostToolsRef.current, workspaceUriEnabledRef.current).catch(error =>
 					addToast(`Host registry failed: ${error instanceof Error ? error.message : String(error)}`, "error"),
 				);
+				// Only clear the crash budget after the complete bootstrap contract is
+				// healthy. The RPC process can emit `ready` and then fail while loading
+				// models/native bindings; resetting earlier turns that failure into an
+				// unbounded one-second restart loop.
+				restartAttempts = 0;
 				// Workspace diff can be slow on large repos; run it after the core
 				// state is live so a slow scan never delays models/account/history.
 				void refreshWorkspaceDiff();
@@ -1184,7 +1213,6 @@ export function App() {
 		refreshGitStatus,
 		refreshWorkspaceFiles,
 		refreshContextSnapshot,
-		refreshBrowserTabs,
 		handleExtensionUI,
 		handleExtensionError,
 		handleHostToolCall,
@@ -1371,7 +1399,16 @@ export function App() {
 		setLoginProviders([]);
 		setSessions([]);
 		setChanges([]);
-		setGitStatus({ branch: null, staged: 0, unstaged: 0, untracked: 0 });
+		setGitStatus({
+			branch: null,
+			upstream: null,
+			baseBranch: null,
+			branches: [],
+			localBranches: [],
+			staged: 0,
+			unstaged: 0,
+			untracked: 0,
+		});
 		setWorkspaceEntries([]);
 		setWorkspaceFileContent(null);
 		setSelectedWorkspacePath(null);
@@ -1381,15 +1418,14 @@ export function App() {
 		setContextSkillDetails([]);
 		setContextSkillWarnings([]);
 		setContextMemoryBackend(null);
-		setBrowserUrl("");
-		setBrowserSnapshot("");
-		setBrowserTabs([]);
-		setBrowserActiveTab("main");
-		setBrowserActivity([]);
 		setSideChatReady(false);
 		setSideChatStarting(false);
+		setSideChatBusy(false);
 		setSideChatMessages([]);
 		setSideChatWorktreePath(null);
+		setSideChatModels([]);
+		setSideChatProviders([]);
+		setSideChatModel(undefined);
 		setInjection(undefined);
 		setAuthPrompt(null);
 		setStatuses({});
@@ -1403,9 +1439,10 @@ export function App() {
 		saveLastWorkspace(folder);
 		setWorkspace(folder);
 
-		// Engine already running: re-root it in place (no respawn, no "Waiting for
-		// engine…"), then refresh state for the new project. Only the first-ever
-		// open (no client yet) falls through to the boot effect via setWorkspace.
+		// Engine already running: restart it in the selected directory so project
+		// instructions, skills, settings, tools, and the system prompt are all
+		// discovered from the destination. Only the first-ever open (no client yet)
+		// falls through to the boot effect via setWorkspace.
 		if (client) {
 			try {
 				await client.setWorkspace(folder);
@@ -1549,12 +1586,15 @@ export function App() {
 		const client = new DesktopRpcClient(
 			{
 				onEvent: event => {
+					if (event.type === "agent_start" || event.type === "turn_start") setSideChatBusy(true);
+					if (event.type === "agent_end" || event.type === "turn_end") setSideChatBusy(false);
 					if (event.type !== "message_end" || event.message.role !== "assistant") return;
 					const text = messageText(event.message.content) || event.message.errorMessage || "";
 					if (text) setSideChatMessages(messages => [...messages, { role: "assistant", text }]);
 				},
 				onStatus: next => {
 					setSideChatReady(next === "ready");
+					if (next !== "ready") setSideChatBusy(false);
 					if (next === "stopped" || next === "error") {
 						const deadClient = sideClientRef.current;
 						sideClientRef.current = null;
@@ -1593,11 +1633,20 @@ export function App() {
 						]
 					: [],
 			);
+			const [availableModels, providers, sideState] = await Promise.all([
+				client.getAvailableModels(),
+				client.getLoginProviders(),
+				client.getState(),
+			]);
+			setSideChatModels(availableModels);
+			setSideChatProviders(providers);
+			setSideChatModel(modelLabel(sideState.model?.provider, sideState.model?.id));
 			setSideChatReady(true);
 		} catch (err) {
 			await client.stop().catch(() => {});
 			sideClientRef.current = null;
 			setSideChatReady(false);
+			setSideChatBusy(false);
 			reportError("side chat start failed", err);
 			addToast("Could not start isolated side chat", "error");
 		} finally {
@@ -1614,19 +1663,37 @@ export function App() {
 		workspace,
 	]);
 
+	const onSelectSideChatModel = useCallback(
+		async (provider: string, modelId: string) => {
+			const client = sideClientRef.current;
+			if (!client || !sideChatReady) return;
+			try {
+				await client.setModel(provider, modelId);
+				setSideChatModel(modelLabel(provider, modelId));
+			} catch (err) {
+				reportError("side chat model change failed", err);
+			}
+		},
+		[reportError, sideChatReady],
+	);
+
 	const onSendSideChat = useCallback(
 		async (text: string) => {
 			const client = sideClientRef.current;
 			if (!client || !sideChatReady) return;
 			setSideChatMessages(messages => [...messages, { role: "user", text }]);
+			setSideChatBusy(true);
 			try {
 				await client.prompt(text);
 			} catch (err) {
+				setSideChatBusy(false);
 				reportError("side chat send failed", err);
 				setSideChatMessages(messages => [
 					...messages,
 					{ role: "system", text: err instanceof Error ? err.message : String(err) },
 				]);
+			} finally {
+				setSideChatBusy(false);
 			}
 		},
 		[reportError, sideChatReady],
@@ -1636,6 +1703,7 @@ export function App() {
 		const main = clientRef.current;
 		const side = sideClientRef.current;
 		if (!main || !side || !sideChatReady) return;
+		setSideChatBusy(true);
 		try {
 			const mainState = await main.getState();
 			const transcript = (await main.getMessages())
@@ -1645,11 +1713,13 @@ export function App() {
 				.filter(line => !line.endsWith(": "))
 				.join("\n\n");
 			if (!transcript) {
+				setSideChatBusy(false);
 				addToast("Main task has no transcript to fork", "warning");
 				return;
 			}
 			const { cancelled } = await side.newSession(mainState.sessionFile);
 			if (cancelled) {
+				setSideChatBusy(false);
 				addToast("Side Chat fork was cancelled by an OMP extension", "info");
 				return;
 			}
@@ -1663,7 +1733,9 @@ export function App() {
 				},
 			]);
 			await side.prompt(transcript);
+			setSideChatBusy(false);
 		} catch (err) {
+			setSideChatBusy(false);
 			reportError("side chat fork failed", err);
 			addToast("Could not fork main context", "error");
 		}
@@ -1681,8 +1753,21 @@ export function App() {
 		sideClientRef.current = null;
 		setSideChatReady(false);
 		setSideChatStarting(false);
+		setSideChatBusy(false);
 		if (client) await client.stop();
 	}, []);
+
+	const onStopSideChat = useCallback(async () => {
+		const client = sideClientRef.current;
+		if (!client) return;
+		try {
+			await client.abort();
+		} catch (err) {
+			reportError("side chat stop failed", err);
+		} finally {
+			setSideChatBusy(false);
+		}
+	}, [reportError]);
 
 	const onToggleSideChatWorktree = useCallback(async () => {
 		const main = clientRef.current;
@@ -1995,12 +2080,13 @@ export function App() {
 
 	const onRenameSession = useCallback(
 		(name: string) => {
+			setSession(current => ({ ...current, sessionName: name }));
 			clientRef.current
 				?.setSessionName(name)
-				.then(refreshState)
+				.then(() => Promise.all([refreshState(), refreshSessions()]))
 				.catch(err => reportError("rename failed", err));
 		},
-		[refreshState, reportError],
+		[refreshSessions, refreshState, reportError],
 	);
 
 	const onSelectSession = useCallback(
@@ -2259,21 +2345,7 @@ export function App() {
 					setContextItems([]);
 					setContextImages([]);
 				}}
-				browserUrl={browserUrl}
-				browserSnapshot={browserSnapshot}
-				browserBusy={browserBusy}
-				browserTabs={browserTabs}
-				browserActiveTab={browserActiveTab}
-				browserActivity={browserActivity}
-				browserDownloadPolicy={browserDownloadPolicy}
-				onBrowserOpen={browserNavigate}
-				onBrowserNewTab={newBrowserTab}
-				onBrowserSelectTab={selectBrowserTab}
-				onBrowserCloseTab={closeBrowserTab}
-				onBrowserRefreshTabs={() => void refreshBrowserTabs()}
-				onBrowserHistory={browserHistory}
-				onBrowserSnapshot={browserSnapshotRefresh}
-				onBrowserAddContext={() => addWorkspaceContext("browser://snapshot", browserSnapshot)}
+				onBrowserAddContext={(url, text) => addWorkspaceContext(url, text)}
 				onBrowserExternal={url => void openExternalUrl(url)}
 				onOpenSettings={category => {
 					setSettingsCategory(category);
@@ -2282,25 +2354,25 @@ export function App() {
 				onManageWorktrees={onManageWorktrees}
 				onOpenNewWindow={() => void openNewWindow().catch(err => reportError("open new window failed", err))}
 				onRefreshChanges={refreshWorkspaceDiff}
+				onLoadReview={loadReview}
+				onLoadReviewCommits={loadReviewCommits}
 				onStageHunks={onStageHunks}
 				onUnstage={onUnstage}
 				onRevertFiles={onRevertFiles}
 				onCommit={onCommit}
 				onPush={onPush}
 				onCreatePullRequest={onCreatePullRequest}
-				onTerminalRun={async command => {
-					const client = clientRef.current;
-					if (!client) throw new Error("OMP engine is not ready");
-					return await client.bash(command);
-				}}
-				onTerminalAbort={async () => {
-					await clientRef.current?.abortBash();
-				}}
 				sideChatReady={sideChatReady}
 				sideChatStarting={sideChatStarting}
+				sideChatBusy={sideChatBusy}
 				sideChatMessages={sideChatMessages}
 				sideChatWorktreePath={sideChatWorktreePath}
+				sideChatModels={sideChatModels}
+				sideChatProviders={sideChatProviders}
+				sideChatModel={sideChatModel}
 				onEnsureSideChat={() => void onEnsureSideChat()}
+				onStopSideChat={() => void onStopSideChat()}
+				onSelectSideChatModel={(provider, modelId) => void onSelectSideChatModel(provider, modelId)}
 				onForkSideChat={() => void onForkSideChat()}
 				onAddSideChatResult={onAddSideChatResult}
 				onToggleSideChatWorktree={() => void onToggleSideChatWorktree()}
@@ -2353,8 +2425,13 @@ export function App() {
 				snapshot={settingsSnapshot}
 				loading={settingsLoading}
 				error={settingsError}
-				savingKey={savingSetting}
+				savingKeys={[...savingSettings]}
+				operationFeedbacks={settingsOperationFeedbacks}
+				models={models}
+				loginProviders={loginProviders}
+				activeModel={models.find(model => modelLabel(model.provider, model.id) === session.model)}
 				mcpServers={mcpServers}
+				mcpCapabilities={mcpCapabilities}
 				memoryStatus={memoryStatus}
 				memorySearch={memorySearch}
 				marketplace={marketplace}
@@ -2365,22 +2442,30 @@ export function App() {
 				workspaceUriEnabled={workspaceUriEnabled}
 				onRefresh={refreshSettings}
 				onOpenDiagnostics={() => {
+					setSettingsOpen(false);
 					setDiagnosticsOpen(true);
 					void refreshDiagnostics();
 				}}
 				onSaveSetting={saveSetting}
+				onSelectModel={onSelectModel}
+				onLogin={onLogin}
+				onSetApiKey={onSetApiKey}
+				onLogout={onLogout}
 				onSetPluginEnabled={(name, enabled) =>
 					void runPluginAction(name, client => client.setPluginEnabled(name, enabled))
 				}
 				onSetPluginFeatures={(name, features) =>
 					void runPluginAction(`${name}:features`, client => client.setPluginFeatures(name, features))
 				}
+				onSetPluginSetting={(name, key, value) =>
+					void runPluginAction(`${name}:setting:${key}`, client => client.setPluginSetting(name, key, value))
+				}
+				onDeletePluginSetting={(name, key) =>
+					void runPluginAction(`${name}:setting:${key}`, client => client.deletePluginSetting(name, key))
+				}
 				onInstallPlugin={spec => void runPluginAction(spec, client => client.installPlugin(spec))}
 				onUpdatePlugin={name => void runPluginAction(name, client => client.updatePlugin(name))}
-				onUninstallPlugin={name => {
-					if (window.confirm(`Uninstall plugin ${name}? This removes its installed files.`))
-						void runPluginAction(name, client => client.uninstallPlugin(name));
-				}}
+				onUninstallPlugin={name => void runPluginAction(name, client => client.uninstallPlugin(name))}
 				onRefreshMarketplace={refreshMarketplace}
 				onAddMarketplace={source =>
 					void runMarketplaceAction(`source:add:${source}`, client => client.addMarketplace(source))
@@ -2388,10 +2473,9 @@ export function App() {
 				onUpdateMarketplace={name =>
 					void runMarketplaceAction(`source:update:${name}`, client => client.updateMarketplace(name))
 				}
-				onRemoveMarketplace={name => {
-					if (!window.confirm(`Remove marketplace "${name}"? Installed plugins are not removed.`)) return;
-					void runMarketplaceAction(`source:remove:${name}`, client => client.removeMarketplace(name));
-				}}
+				onRemoveMarketplace={name =>
+					void runMarketplaceAction(`source:remove:${name}`, client => client.removeMarketplace(name))
+				}
 				onInstallMarketplacePlugin={(name, source, scope) =>
 					void runMarketplaceAction(`${name}:${scope}`, client =>
 						client.installMarketplacePlugin(name, source, scope),
@@ -2402,18 +2486,36 @@ export function App() {
 						client.upgradeMarketplacePlugin(pluginId, scope),
 					)
 				}
-				onUninstallMarketplacePlugin={(pluginId, scope) => {
-					if (!window.confirm(`Uninstall marketplace plugin "${pluginId}" from ${scope} scope?`)) return;
+				onUninstallMarketplacePlugin={(pluginId, scope) =>
 					void runMarketplaceAction(`${pluginId}:${scope}:uninstall`, client =>
 						client.uninstallMarketplacePlugin(pluginId, scope),
-					);
-				}}
+					)
+				}
 				onSetMarketplacePluginEnabled={(pluginId, enabled, scope) =>
 					void runMarketplaceAction(`${pluginId}:${scope}:enabled`, client =>
 						client.setMarketplacePluginEnabled(pluginId, enabled, scope),
 					)
 				}
 				onRefreshMcp={refreshMcp}
+				onAddMcpServer={(name: string, scope: "user" | "project", config: McpServerConfigInput) =>
+					void runPluginAction(`mcp:add:${name}`, async client => {
+						await client.addMcpServer(name, scope, config);
+						await refreshMcp();
+					})
+				}
+				onRemoveMcpServer={(name, scope) =>
+					void runPluginAction(`mcp:remove:${name}`, async client => {
+						await client.removeMcpServer(name, scope);
+						await refreshMcp();
+					})
+				}
+				onTestMcpServer={name => void runPluginAction(`mcp:test:${name}`, client => client.testMcpServer(name))}
+				onReloadMcp={() =>
+					void runPluginAction("mcp:reload", async client => {
+						await client.reloadMcp();
+						await refreshMcp();
+					})
+				}
 				onReconnectMcp={name =>
 					void runPluginAction(`mcp:${name}`, async client => {
 						await client.reconnectMcp(name);
@@ -2426,13 +2528,12 @@ export function App() {
 						await refreshMcp();
 					})
 				}
-				onUnauthMcp={name => {
-					if (!window.confirm(`Sign out of MCP server "${name}" and remove its managed OAuth credential?`)) return;
+				onUnauthMcp={name =>
 					void runPluginAction(`mcp:${name}:unauth`, async client => {
 						await client.unauthMcp(name);
 						await refreshMcp();
-					});
-				}}
+					})
+				}
 				onReauthMcp={name =>
 					void runPluginAction(`mcp:${name}:reauth`, async client => {
 						await client.reauthMcp(name);
@@ -2441,15 +2542,9 @@ export function App() {
 				}
 				onRefreshMemory={refreshMemory}
 				onSearchMemory={searchMemory}
-				onSaveMemory={content => void runMemoryAction("save", client => client.saveMemory(content))}
+				onSaveMemory={content => runMemoryAction("save", client => client.saveMemory(content))}
 				onEnqueueMemory={() => void runMemoryAction("enqueue", client => client.enqueueMemory())}
 				onClearMemory={() => {
-					if (
-						!window.confirm(
-							"Clear memory state for the active backend? Hindsight only clears its local recall cache.",
-						)
-					)
-						return;
 					void runMemoryAction("clear", async client => {
 						await client.clearMemory();
 						setMemorySearch(null);
@@ -2458,6 +2553,10 @@ export function App() {
 				onAddMemoryContext={item =>
 					addWorkspaceContext(`memory://${item.id ?? item.source ?? "record"}`, item.content)
 				}
+				onStartNewTask={() => {
+					setSettingsOpen(false);
+					onNewSession();
+				}}
 				onReloadSkills={() => void runSkillAction("reload", client => client.reloadSkills())}
 				onSetSkillEnabled={(name, enabled) =>
 					void runSkillAction(name, client => client.setSkillEnabled(name, enabled))

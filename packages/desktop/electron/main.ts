@@ -1,10 +1,24 @@
-import { app, BrowserWindow, clipboard, dialog, ipcMain, powerMonitor, shell } from "electron";
+import {
+	app,
+	BrowserWindow,
+	clipboard,
+	dialog,
+	ipcMain,
+	powerMonitor,
+	shell,
+	WebContentsView,
+	type Rectangle,
+	type Session,
+} from "electron";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import * as nodeFs from "node:fs";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
+import { spawn as spawnPty, type IPty } from "node-pty";
 import { ScheduledTaskStore } from "./scheduled-tasks";
+import { buildTerminalEnvironment } from "./terminal-environment";
+import { resolveTerminalShell } from "./terminal-shell";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 let windowRef: BrowserWindow | null = null;
@@ -16,6 +30,43 @@ interface EngineRuntime {
 const windows = new Map<number, BrowserWindow>();
 const engines = new Map<number, EngineRuntime>();
 const sideEngines = new Map<number, ChildProcessWithoutNullStreams>();
+interface TerminalRuntime {
+	pty: IPty;
+}
+interface TerminalCreateRequest {
+	id: string;
+	cwd: string;
+	cols: number;
+	rows: number;
+}
+const terminals = new Map<number, Map<string, TerminalRuntime>>();
+interface BrowserViewDescriptor {
+	id: string;
+	title: string;
+	url: string;
+	loading: boolean;
+	canGoBack: boolean;
+	canGoForward: boolean;
+	error: string | null;
+}
+interface BrowserViewRuntime {
+	view: WebContentsView;
+	descriptor: BrowserViewDescriptor;
+}
+interface BrowserWindowRuntime {
+	views: Map<string, BrowserViewRuntime>;
+	activeId: string | null;
+	bounds: Rectangle | null;
+	visible: boolean;
+}
+interface BrowserViewBoundsRequest {
+	x: number;
+	y: number;
+	width: number;
+	height: number;
+}
+const browserViews = new Map<number, BrowserWindowRuntime>();
+const securedBrowserSessions = new WeakSet<Session>();
 interface WorkspaceWatcherRuntime {
 	root: string;
 	watcher: nodeFs.FSWatcher;
@@ -155,6 +206,302 @@ function stopSideEngine(windowId: number): void {
 	child.kill();
 }
 
+function terminalDimensions(value: number, fallback: number, maximum: number): number {
+	if (!Number.isFinite(value)) return fallback;
+	return Math.max(2, Math.min(maximum, Math.floor(value)));
+}
+
+function closeTerminal(windowId: number, terminalId: string): void {
+	const windowTerminals = terminals.get(windowId);
+	const runtime = windowTerminals?.get(terminalId);
+	if (!runtime) return;
+	windowTerminals?.delete(terminalId);
+	if (windowTerminals?.size === 0) terminals.delete(windowId);
+	try {
+		runtime.pty.kill();
+	} catch (error) {
+		logMain("terminal_close_error", {
+			windowId,
+			terminalId,
+			message: error instanceof Error ? error.message : String(error),
+		});
+	}
+}
+
+function stopTerminals(windowId: number): void {
+	const windowTerminals = terminals.get(windowId);
+	if (!windowTerminals) return;
+	for (const terminalId of [...windowTerminals.keys()]) closeTerminal(windowId, terminalId);
+}
+
+function browserWindowRuntime(windowId: number): BrowserWindowRuntime {
+	const existing = browserViews.get(windowId);
+	if (existing) return existing;
+	const runtime: BrowserWindowRuntime = {
+		views: new Map<string, BrowserViewRuntime>(),
+		activeId: null,
+		bounds: null,
+		visible: false,
+	};
+	browserViews.set(windowId, runtime);
+	return runtime;
+}
+
+function browserDescriptor(runtime: BrowserViewRuntime): BrowserViewDescriptor {
+	const contents = runtime.view.webContents;
+	return {
+		...runtime.descriptor,
+		canGoBack: contents.navigationHistory.canGoBack(),
+		canGoForward: contents.navigationHistory.canGoForward(),
+	};
+}
+
+function browserState(windowId: number): { tabs: BrowserViewDescriptor[]; activeId: string | null } {
+	const runtime = browserWindowRuntime(windowId);
+	return {
+		tabs: [...runtime.views.values()].map(browserDescriptor),
+		activeId: runtime.activeId,
+	};
+}
+
+function sendBrowserState(windowId: number): void {
+	sendTo(windowId, "browser-view:state", JSON.stringify(browserState(windowId)));
+}
+
+function validBrowserUrl(value: string): string {
+	const trimmed = value.trim();
+	if (!trimmed || trimmed === "about:blank") return "about:blank";
+	let normalized = trimmed;
+	if (!/^[a-z][a-z\d+.-]*:/i.test(normalized)) {
+		const looksLikeAddress = /^(localhost|\d{1,3}(?:\.\d{1,3}){3}|\[[0-9a-f:]+\]|[^\s]+\.[^\s]+)(?::\d+)?(?:[/?#]|$)/i.test(
+			normalized,
+		);
+		normalized = looksLikeAddress
+			? `https://${normalized}`
+			: `https://www.google.com/search?q=${encodeURIComponent(normalized)}`;
+	}
+	const url = new URL(normalized);
+	if (!["http:", "https:"].includes(url.protocol) || url.username || url.password) {
+		throw new Error("Only credential-free http(s) URLs may be opened in Browser");
+	}
+	return url.toString();
+}
+
+function safeBrowserTitle(title: string, url: string): string {
+	const clean = title.replace(/\s+/g, " ").trim();
+	if (clean) return clean.slice(0, 120);
+	if (url === "about:blank") return "New tab";
+	try {
+		return new URL(url).hostname || "Browser";
+	} catch {
+		return "Browser";
+	}
+}
+
+function configureBrowserSession(browserSession: Session): void {
+	if (securedBrowserSessions.has(browserSession)) return;
+	securedBrowserSessions.add(browserSession);
+	browserSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
+	browserSession.on("will-download", event => event.preventDefault());
+}
+
+function syncBrowserViewVisibility(windowId: number): void {
+	const runtime = browserViews.get(windowId);
+	if (!runtime) return;
+	for (const [id, browser] of runtime.views) {
+		const shouldShow =
+			runtime.visible &&
+			runtime.bounds !== null &&
+			id === runtime.activeId &&
+			browser.descriptor.url !== "about:blank" &&
+			browser.descriptor.error === null;
+		browser.view.setVisible(shouldShow);
+		if (shouldShow && runtime.bounds) browser.view.setBounds(runtime.bounds);
+	}
+}
+
+function createBrowserView(windowId: number, requestedUrl = "about:blank"): BrowserViewDescriptor {
+	const owner = windows.get(windowId);
+	if (!owner || owner.isDestroyed()) throw new Error("Browser window is not available");
+	const runtime = browserWindowRuntime(windowId);
+	if (runtime.views.size >= 12) throw new Error("Browser tab limit reached");
+	const id = `browser-${crypto.randomUUID()}`;
+	const url = validBrowserUrl(requestedUrl);
+	const view = new WebContentsView({
+		webPreferences: {
+			contextIsolation: true,
+			nodeIntegration: false,
+			sandbox: true,
+			partition: "persist:omp-browser",
+		},
+	});
+	view.setBackgroundColor("#ffffff");
+	view.setVisible(false);
+	owner.contentView.addChildView(view);
+	const descriptor: BrowserViewDescriptor = {
+		id,
+		title: url === "about:blank" ? "New tab" : safeBrowserTitle("", url),
+		url,
+		loading: url !== "about:blank",
+		canGoBack: false,
+		canGoForward: false,
+		error: null,
+	};
+	const browser: BrowserViewRuntime = { view, descriptor };
+	runtime.views.set(id, browser);
+	runtime.activeId = id;
+	configureBrowserSession(view.webContents.session);
+
+	const updateNavigation = (nextUrl?: string): void => {
+		if (nextUrl) descriptor.url = nextUrl;
+		descriptor.canGoBack = view.webContents.navigationHistory.canGoBack();
+		descriptor.canGoForward = view.webContents.navigationHistory.canGoForward();
+		descriptor.error = null;
+		syncBrowserViewVisibility(windowId);
+		sendBrowserState(windowId);
+	};
+	view.webContents.on("did-start-loading", () => {
+		descriptor.loading = true;
+		descriptor.error = null;
+		sendBrowserState(windowId);
+	});
+	view.webContents.on("did-stop-loading", () => {
+		descriptor.loading = false;
+		updateNavigation(view.webContents.getURL() || descriptor.url);
+	});
+	view.webContents.on("did-navigate", (_event, nextUrl) => updateNavigation(nextUrl));
+	view.webContents.on("did-navigate-in-page", (_event, nextUrl, isMainFrame) => {
+		if (isMainFrame) updateNavigation(nextUrl);
+	});
+	view.webContents.on("page-title-updated", (_event, title) => {
+		descriptor.title = safeBrowserTitle(title, descriptor.url);
+		sendBrowserState(windowId);
+	});
+	view.webContents.on("did-fail-load", (_event, errorCode, errorDescription, failedUrl, isMainFrame) => {
+		if (!isMainFrame || errorCode === -3) return;
+		descriptor.loading = false;
+		descriptor.url = failedUrl || descriptor.url;
+		descriptor.error = errorDescription;
+		descriptor.title = "Page unavailable";
+		sendBrowserState(windowId);
+	});
+	view.webContents.on("will-navigate", event => {
+		try {
+			validBrowserUrl(event.url);
+		} catch {
+			event.preventDefault();
+		}
+	});
+	view.webContents.setWindowOpenHandler(details => {
+		try {
+			createBrowserView(windowId, details.url);
+			sendBrowserState(windowId);
+		} catch (error) {
+			logMain("browser_new_tab_error", {
+				windowId,
+				message: error instanceof Error ? error.message : String(error),
+			});
+		}
+		return { action: "deny" };
+	});
+	view.webContents.on("destroyed", () => {
+		if (runtime.views.get(id)?.view !== view) return;
+		runtime.views.delete(id);
+		if (runtime.activeId === id) runtime.activeId = runtime.views.keys().next().value ?? null;
+		syncBrowserViewVisibility(windowId);
+		sendBrowserState(windowId);
+	});
+	if (url !== "about:blank") {
+		void view.webContents.loadURL(url).catch(error => {
+			descriptor.loading = false;
+			descriptor.error = error instanceof Error ? error.message : String(error);
+			sendBrowserState(windowId);
+		});
+	}
+	syncBrowserViewVisibility(windowId);
+	sendBrowserState(windowId);
+	return browserDescriptor(browser);
+}
+
+function closeBrowserView(windowId: number, id: string): void {
+	const runtime = browserViews.get(windowId);
+	const browser = runtime?.views.get(id);
+	if (!runtime || !browser) return;
+	runtime.views.delete(id);
+	const owner = windows.get(windowId);
+	if (owner && !owner.isDestroyed()) owner.contentView.removeChildView(browser.view);
+	if (runtime.activeId === id) runtime.activeId = runtime.views.keys().next().value ?? null;
+	browser.view.webContents.close({ waitForBeforeUnload: false });
+	syncBrowserViewVisibility(windowId);
+	sendBrowserState(windowId);
+}
+
+function stopBrowserViews(windowId: number): void {
+	const runtime = browserViews.get(windowId);
+	if (!runtime) return;
+	browserViews.delete(windowId);
+	const owner = windows.get(windowId);
+	for (const browser of runtime.views.values()) {
+		if (owner && !owner.isDestroyed()) owner.contentView.removeChildView(browser.view);
+		if (!browser.view.webContents.isDestroyed()) browser.view.webContents.close({ waitForBeforeUnload: false });
+	}
+}
+
+function requireBrowserView(windowId: number, id: string): BrowserViewRuntime {
+	const browser = browserViews.get(windowId)?.views.get(id);
+	if (!browser) throw new Error("Browser tab is not available");
+	return browser;
+}
+
+function browserBounds(request: BrowserViewBoundsRequest): Rectangle {
+	const coordinate = (value: number): number =>
+		Number.isFinite(value) ? Math.max(0, Math.min(20_000, Math.round(value))) : 0;
+	return {
+		x: coordinate(request.x),
+		y: coordinate(request.y),
+		width: Math.max(1, coordinate(request.width)),
+		height: Math.max(1, coordinate(request.height)),
+	};
+}
+
+async function createTerminal(
+	windowId: number,
+	request: TerminalCreateRequest,
+): Promise<{ id: string; title: string; shell: string; cwd: string }> {
+	if (!/^[A-Za-z0-9_-]{1,80}$/.test(request.id)) throw new Error("invalid terminal id");
+	const windowTerminals = terminals.get(windowId) ?? new Map<string, TerminalRuntime>();
+	if (windowTerminals.has(request.id)) throw new Error("terminal already exists");
+	if (windowTerminals.size >= 8) throw new Error("terminal tab limit reached");
+	const cwd = await fs.realpath(request.cwd);
+	const stat = await fs.stat(cwd);
+	if (!stat.isDirectory()) throw new Error("terminal workspace must be a directory");
+	const spec = resolveTerminalShell();
+	const pty = spawnPty(spec.command, spec.args, {
+		name: "xterm-256color",
+		cols: terminalDimensions(request.cols, 80, 500),
+		rows: terminalDimensions(request.rows, 24, 200),
+		cwd,
+		env: { ...buildTerminalEnvironment(), TERM: "xterm-256color", COLORTERM: "truecolor" },
+		...(process.platform === "win32" ? { useConpty: true } : {}),
+	});
+	windowTerminals.set(request.id, { pty });
+	terminals.set(windowId, windowTerminals);
+	pty.onData(data => sendTo(windowId, "terminal:data", JSON.stringify({ id: request.id, data })));
+	pty.onExit(event => {
+		const current = terminals.get(windowId)?.get(request.id);
+		if (current?.pty !== pty) return;
+		terminals.get(windowId)?.delete(request.id);
+		if (terminals.get(windowId)?.size === 0) terminals.delete(windowId);
+		sendTo(
+			windowId,
+			"terminal:exit",
+			JSON.stringify({ id: request.id, exitCode: event.exitCode, signal: event.signal ?? null }),
+		);
+	});
+	logMain("terminal_start", { windowId, terminalId: request.id, cwd, shell: spec.command, pid: pty.pid });
+	return { id: request.id, title: path.basename(spec.command), shell: spec.command, cwd };
+}
+
 function stopWorkspaceWatcher(windowId: number): void {
 	const runtime = workspaceWatchers.get(windowId);
 	if (!runtime) return;
@@ -261,6 +608,75 @@ function registerIpc(): void {
 		if (!child?.stdin.writable) throw new Error("side engine is not running");
 		child.stdin.write(`${line}\n`);
 	});
+	ipcMain.handle("terminal:create", (event, request: TerminalCreateRequest) =>
+		createTerminal(event.sender.id, request),
+	);
+	ipcMain.handle("terminal:write", (event, terminalId: string, data: string) => {
+		if (data.length > 64 * 1024) throw new Error("terminal input is too large");
+		const runtime = terminals.get(event.sender.id)?.get(terminalId);
+		if (!runtime) throw new Error("terminal is not running");
+		runtime.pty.write(data);
+	});
+	ipcMain.handle("terminal:resize", (event, terminalId: string, cols: number, rows: number) => {
+		const runtime = terminals.get(event.sender.id)?.get(terminalId);
+		if (!runtime) return;
+		runtime.pty.resize(terminalDimensions(cols, 80, 500), terminalDimensions(rows, 24, 200));
+	});
+	ipcMain.handle("terminal:close", (event, terminalId: string) => closeTerminal(event.sender.id, terminalId));
+	ipcMain.handle("browser-view:list", event => browserState(event.sender.id));
+	ipcMain.handle("browser-view:create", (event, url?: string) => createBrowserView(event.sender.id, url));
+	ipcMain.handle("browser-view:activate", (event, id: string) => {
+		const runtime = browserWindowRuntime(event.sender.id);
+		requireBrowserView(event.sender.id, id);
+		runtime.activeId = id;
+		syncBrowserViewVisibility(event.sender.id);
+		sendBrowserState(event.sender.id);
+		return browserState(event.sender.id);
+	});
+	ipcMain.handle("browser-view:close", (event, id: string) => closeBrowserView(event.sender.id, id));
+	ipcMain.handle("browser-view:navigate", async (event, id: string, value: string) => {
+		const browser = requireBrowserView(event.sender.id, id);
+		const url = validBrowserUrl(value);
+		browser.descriptor.loading = true;
+		browser.descriptor.error = null;
+		browser.descriptor.url = url;
+		browser.descriptor.title = safeBrowserTitle("", url);
+		syncBrowserViewVisibility(event.sender.id);
+		sendBrowserState(event.sender.id);
+		if (url === "about:blank") return browserDescriptor(browser);
+		await browser.view.webContents.loadURL(url);
+		return browserDescriptor(browser);
+	});
+	ipcMain.handle("browser-view:history", (event, id: string, action: "back" | "forward" | "reload" | "stop") => {
+		const browser = requireBrowserView(event.sender.id, id);
+		const contents = browser.view.webContents;
+		if (action === "back" && contents.navigationHistory.canGoBack()) contents.navigationHistory.goBack();
+		else if (action === "forward" && contents.navigationHistory.canGoForward()) contents.navigationHistory.goForward();
+		else if (action === "reload") contents.reload();
+		else if (action === "stop") contents.stop();
+	});
+	ipcMain.handle("browser-view:bounds", (event, request: BrowserViewBoundsRequest) => {
+		const runtime = browserWindowRuntime(event.sender.id);
+		runtime.bounds = browserBounds(request);
+		syncBrowserViewVisibility(event.sender.id);
+	});
+	ipcMain.handle("browser-view:visible", (event, visible: boolean) => {
+		const runtime = browserWindowRuntime(event.sender.id);
+		runtime.visible = visible === true;
+		syncBrowserViewVisibility(event.sender.id);
+	});
+	ipcMain.handle("browser-view:extract", async (event, id: string) => {
+		const browser = requireBrowserView(event.sender.id, id);
+		const value: unknown = await browser.view.webContents.executeJavaScript(
+			"({ title: document.title, text: (document.body?.innerText || '').slice(0, 100000) })",
+		);
+		const result = typeof value === "object" && value !== null ? value as Record<string, unknown> : {};
+		return {
+			url: browser.descriptor.url,
+			title: typeof result.title === "string" ? result.title.slice(0, 500) : browser.descriptor.title,
+			text: typeof result.text === "string" ? result.text : "",
+		};
+	});
 	ipcMain.handle("workspace:pick", async () => {
 		const result = await dialog.showOpenDialog({ properties: ["openDirectory"], title: "Open workspace folder" });
 		return result.canceled ? null : result.filePaths[0] ?? null;
@@ -297,6 +713,8 @@ async function createWindow(): Promise<void> {
 	nextWindow.on("closed", () => {
 		stopEngine(windowId);
 		stopSideEngine(windowId);
+		stopTerminals(windowId);
+		stopBrowserViews(windowId);
 		stopWorkspaceWatcher(windowId);
 		windows.delete(windowId);
 		if (windowRef === nextWindow) windowRef = windows.values().next().value ?? null;
@@ -323,6 +741,8 @@ app.on("before-quit", () => {
 	for (const windowId of windows.keys()) {
 		stopEngine(windowId);
 		stopSideEngine(windowId);
+		stopTerminals(windowId);
+		stopBrowserViews(windowId);
 		stopWorkspaceWatcher(windowId);
 	}
 });
