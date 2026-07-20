@@ -66,6 +66,7 @@ export interface ExtractEmbeddedAddonArchiveInput {
 	archivePath: string;
 	files: EmbeddedAddonFile[];
 	targetDir: string;
+	expectedSentinel?: string;
 }
 
 export function extractEmbeddedAddonArchive(input: ExtractEmbeddedAddonArchiveInput): string[];

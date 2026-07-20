@@ -403,11 +403,13 @@ function isSafeEmbeddedAddonFilename(filename) {
 	return filename.length > 0 && path.basename(filename) === filename && !filename.includes("/") && !filename.includes("\\");
 }
 
-function isEmbeddedAddonFileCurrent(targetPath, file) {
+function isEmbeddedAddonFileCurrent(targetPath, file, expectedSentinel) {
 	try {
 		const stat = fs.statSync(targetPath);
 		if (!stat.isFile()) return false;
-		return typeof file.size !== "number" || stat.size === file.size;
+		if (typeof file.size === "number" && stat.size !== file.size) return false;
+		if (expectedSentinel && !fs.readFileSync(targetPath).includes(expectedSentinel)) return false;
+		return true;
 	} catch (err) {
 		if (err && err.code === "ENOENT") return false;
 		throw err;
@@ -429,14 +431,14 @@ function writeEmbeddedAddonFile(targetPath, content) {
 	}
 }
 
-export function extractEmbeddedAddonArchive({ archivePath, files, targetDir }) {
+export function extractEmbeddedAddonArchive({ archivePath, files, targetDir, expectedSentinel }) {
 	const pending = new Map();
 	for (const file of files) {
 		if (!isSafeEmbeddedAddonFilename(file.filename)) {
 			throw new Error(`Unsafe embedded addon filename: ${file.filename}`);
 		}
 		const targetPath = path.join(targetDir, file.filename);
-		if (!isEmbeddedAddonFileCurrent(targetPath, file)) {
+		if (!isEmbeddedAddonFileCurrent(targetPath, file, expectedSentinel)) {
 			pending.set(file.filename, file);
 		}
 	}
@@ -509,8 +511,9 @@ function maybeExtractEmbeddedAddon(ctx, errors) {
 				archivePath: embeddedAddon.archive.filePath,
 				files: embeddedAddon.files,
 				targetDir: ctx.versionedDir,
+				expectedSentinel: ctx.versionSentinelExport,
 			});
-			if (isEmbeddedAddonFileCurrent(targetPath, selectedEmbeddedFile)) {
+			if (isEmbeddedAddonFileCurrent(targetPath, selectedEmbeddedFile, ctx.versionSentinelExport)) {
 				return targetPath;
 			}
 			errors.push(`embedded addon archive (${embeddedAddon.archive.filename}): missing ${selectedEmbeddedFile.filename}`);
@@ -522,7 +525,7 @@ function maybeExtractEmbeddedAddon(ctx, errors) {
 		}
 	}
 
-	if (isEmbeddedAddonFileCurrent(targetPath, selectedEmbeddedFile)) {
+	if (isEmbeddedAddonFileCurrent(targetPath, selectedEmbeddedFile, ctx.versionSentinelExport)) {
 		return targetPath;
 	}
 	if (!selectedEmbeddedFile.filePath) {

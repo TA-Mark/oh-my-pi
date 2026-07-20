@@ -234,4 +234,35 @@ describe("issue 823: standalone-binary native loader path resolution", () => {
 			await fs.rm(testDir, { recursive: true, force: true });
 		}
 	});
+
+	it("replaces a same-size cached addon when its version sentinel is stale", async () => {
+		const testDir = await fs.mkdtemp(path.join(os.tmpdir(), "natives-stale-sentinel-"));
+		try {
+			const archivePath = path.join(testDir, "embedded-addons.win32-x64.tar.gz");
+			const targetDir = path.join(testDir, "cache");
+			await fs.mkdir(targetDir);
+
+			const filename = "pi_natives.win32-x64-baseline.node";
+			const expectedSentinel = "__piNativesV17_0_1";
+			const current = Buffer.from(`native:${expectedSentinel}`);
+			const stale = Buffer.from("x".repeat(current.length));
+			await Bun.write(path.join(targetDir, filename), stale);
+			await Bun.write(
+				archivePath,
+				await new Bun.Archive({ [filename]: current }, { compress: "gzip", level: 9 }).bytes(),
+			);
+
+			const written = extractEmbeddedAddonArchive({
+				archivePath,
+				files: [{ variant: "baseline", filename, size: current.length }],
+				targetDir,
+				expectedSentinel,
+			});
+
+			expect(written).toEqual([path.join(targetDir, filename)]);
+			expect(await fs.readFile(path.join(targetDir, filename), "utf8")).toBe(current.toString());
+		} finally {
+			await fs.rm(testDir, { recursive: true, force: true });
+		}
+	});
 });

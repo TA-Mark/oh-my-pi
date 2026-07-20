@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed compiled OMP binaries repeatedly failing at startup when a same-size stale native addon remained in the versioned cache; embedded extraction now validates the release sentinel and replaces mismatched cache entries automatically.
+
 ## [17.0.1] - 2026-07-16
 
 ### Fixed
