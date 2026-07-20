@@ -107,12 +107,42 @@ export class ScheduledTaskStore {
 
 	async upsert(input: TaskInput & { id?: string }): Promise<ScheduledTask> {
 		if (!input.name.trim() || !input.workspace.trim() || !input.prompt.trim()) throw new Error("name, workspace, and prompt are required");
+		const workspace = input.workspace.trim();
+		if (!path.isAbsolute(workspace)) throw new Error("workspace must be an absolute path");
+		const workspaceStat = await fs.stat(workspace).catch(() => null);
+		if (!workspaceStat?.isDirectory()) throw new Error("workspace must be an existing directory");
 		if (!Number.isFinite(input.intervalMinutes) || input.intervalMinutes < 1) throw new Error("intervalMinutes must be at least 1");
+		if (!Number.isFinite(input.maxRetries)) throw new Error("maxRetries must be a finite number");
 		const existing = input.id ? this.#tasks.find(task => task.id === input.id) : undefined;
+		const intervalMinutes = Math.round(input.intervalMinutes);
 		const maxRetries = Math.max(0, Math.min(5, Math.round(input.maxRetries)));
+		const scheduleChanged = existing !== undefined && existing.intervalMinutes !== intervalMinutes;
+		const reenabled = existing !== undefined && !existing.enabled && input.enabled;
 		const task: ScheduledTask = existing
-			? { ...existing, ...input, maxRetries, name: input.name.trim(), workspace: input.workspace.trim(), prompt: input.prompt.trim(), intervalMinutes: Math.round(input.intervalMinutes), nextRunAt: existing.nextRunAt }
-			: { id: `task_${this.#now()}_${Math.random().toString(36).slice(2)}`, name: input.name.trim(), workspace: input.workspace.trim(), prompt: input.prompt.trim(), intervalMinutes: Math.round(input.intervalMinutes), maxRetries, enabled: input.enabled, nextRunAt: new Date(this.#now() + input.intervalMinutes * 60_000).toISOString(), runs: [] };
+			? {
+					...existing,
+					...input,
+					maxRetries,
+					name: input.name.trim(),
+					workspace,
+					prompt: input.prompt.trim(),
+					intervalMinutes,
+					nextRunAt:
+						scheduleChanged || reenabled
+							? new Date(this.#now() + intervalMinutes * 60_000).toISOString()
+							: existing.nextRunAt,
+				}
+			: {
+					id: `task_${this.#now()}_${Math.random().toString(36).slice(2)}`,
+					name: input.name.trim(),
+					workspace,
+					prompt: input.prompt.trim(),
+					intervalMinutes,
+					maxRetries,
+					enabled: input.enabled,
+					nextRunAt: new Date(this.#now() + intervalMinutes * 60_000).toISOString(),
+					runs: [],
+				};
 		if (existing) this.#tasks = this.#tasks.map(item => item.id === task.id ? task : item);
 		else this.#tasks.push(task);
 		await this.#persist();

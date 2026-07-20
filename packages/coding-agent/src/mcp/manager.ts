@@ -722,7 +722,9 @@ export class MCPManager {
 		enabled: boolean;
 		status: "connected" | "connecting" | "disconnected";
 		toolCount: number;
+		toolNames: string[];
 		transport: "stdio" | "http" | "sse" | "unknown";
+		source?: { provider: string; providerName: string; level: "user" | "project" | "native" };
 		auth: { configured: boolean; oauth: boolean; credentialConfigured: boolean; credentialAvailable: boolean };
 		lastError?: string;
 	}> {
@@ -730,7 +732,11 @@ export class MCPManager {
 			.sort()
 			.map(name => {
 				const config = this.getServerConfig(name);
-				const toolCount = this.#tools.filter(tool => tool.mcpServerName === name).length;
+				const toolNames = this.#tools
+					.filter(tool => tool.mcpServerName === name)
+					.map(tool => tool.name)
+					.sort();
+				const source = this.getSource(name);
 				const auth = config?.auth;
 				const credentialAvailable = config
 					? lookupMcpOAuthCredential(this.#authStorage, config) !== undefined
@@ -740,13 +746,17 @@ export class MCPManager {
 					enabled: config?.enabled !== false,
 					status: this.getConnectionStatus(name),
 					transport: config?.type ?? (config && "command" in config ? "stdio" : "unknown"),
-					toolCount,
+					toolCount: toolNames.length,
+					toolNames,
 					auth: {
 						configured: auth !== undefined || config?.oauth !== undefined,
 						oauth: auth?.type === "oauth" || config?.oauth !== undefined,
 						credentialConfigured: auth?.credentialId !== undefined,
 						credentialAvailable,
 					},
+					source: source
+						? { provider: source.provider, providerName: source.providerName, level: source.level }
+						: undefined,
 					lastError: this.#lastErrors.get(name),
 				};
 			});

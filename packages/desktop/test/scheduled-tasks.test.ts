@@ -14,7 +14,7 @@ afterEach(async () => {
 	);
 });
 
-async function createStore(frames: unknown[]): Promise<ScheduledTaskStore> {
+async function createStore(frames: unknown[], now: () => number = Date.now): Promise<ScheduledTaskStore> {
 	const directory = await fs.mkdtemp(path.join(os.tmpdir(), "omp-desktop-scheduled-"));
 	temporaryDirectories.push(directory);
 	const script = path.join(directory, "fake-engine.mjs");
@@ -31,6 +31,7 @@ process.stdin.on("data", () => {
 		path.join(directory, "scheduled-tasks.json"),
 		() => ({ command: process.execPath, args: [script] }),
 		() => undefined,
+		{ now },
 	);
 	await store.load();
 	await store.upsert({
@@ -70,5 +71,21 @@ describe("ScheduledTaskStore engine protocol", () => {
 
 		expect(store.list()[0].lastStatus).toBe("failed");
 		expect(store.list()[0].lastError).toBe("provider unavailable");
+	});
+
+	test("reschedules from now when an existing task interval changes or is re-enabled", async () => {
+		let now = Date.parse("2026-01-01T00:00:00.000Z");
+		const store = await createStore([], () => now);
+		const original = store.list()[0];
+		expect(original.nextRunAt).toBe("2026-01-01T01:00:00.000Z");
+
+		now += 5 * 60_000;
+		const updated = await store.upsert({ ...original, intervalMinutes: 120 });
+		expect(updated.nextRunAt).toBe("2026-01-01T02:05:00.000Z");
+
+		const paused = await store.upsert({ ...updated, enabled: false });
+		now += 10 * 60_000;
+		const resumed = await store.upsert({ ...paused, enabled: true });
+		expect(resumed.nextRunAt).toBe("2026-01-01T02:15:00.000Z");
 	});
 });

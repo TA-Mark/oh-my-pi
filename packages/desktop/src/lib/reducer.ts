@@ -322,11 +322,16 @@ export function engineInterrupted(state: ViewModel, reason: string): ViewModel {
 				}
 			: message,
 	);
+	const lastMessage = messages.at(-1);
+	const nextMessages =
+		lastMessage?.role === "system" && lastMessage.text === reason
+			? messages
+			: [...messages, { id: newId("n"), role: "system" as const, text: reason }];
 	return {
 		...state,
 		streaming: false,
 		streamingAssistantId: undefined,
-		messages: [...messages, { id: newId("n"), role: "system", text: reason }],
+		messages: nextMessages,
 	};
 }
 

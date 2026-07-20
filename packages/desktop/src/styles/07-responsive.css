@@ -10,37 +10,6 @@
 	font-size: 13px;
 }
 
-.review-floating-actions {
-	position: absolute;
-	left: 50%;
-	bottom: 22px;
-	z-index: 3;
-	display: inline-flex;
-	align-items: center;
-	gap: 4px;
-	padding: 8px;
-	border-radius: 999px;
-	background: var(--color-bg-control);
-	box-shadow: 0 14px 36px rgba(0, 0, 0, 0.38);
-	transform: translateX(-50%);
-}
-
-.review-floating-actions button {
-	display: inline-flex;
-	align-items: center;
-	gap: 7px;
-	padding: 7px 12px;
-	border: none;
-	border-radius: 999px;
-	background: transparent;
-	color: var(--text-dim);
-	font-size: 13px;
-}
-
-.review-floating-actions button:disabled {
-	opacity: 0.45;
-}
-
 .welcome {
 	display: flex;
 	flex-direction: column;
@@ -84,21 +53,13 @@
 }
 
 @container review-panel (max-width: 760px) {
-	.changes-panel--with-navigator .review-workspace {
-		grid-template-columns: minmax(0, 1fr);
-	}
-
-	.review-file-navigator {
-		display: none;
-	}
-
 	.tools-panel-head--review {
-		min-height: 54px;
-		padding: 8px 12px;
+		min-height: 48px;
+		padding: 6px 12px;
 	}
 
 	.changes-head {
-		padding: 8px 12px;
+		padding: 6px 10px;
 	}
 
 	.changes-toolbar {
@@ -128,6 +89,23 @@
 	}
 }
 
+@container review-panel (max-width: 520px) {
+	.changes-panel--with-navigator .review-workspace {
+		grid-template-columns: minmax(0, 1fr);
+	}
+
+	.review-file-navigator {
+		position: absolute;
+		top: 0;
+		right: 0;
+		bottom: 0;
+		z-index: 5;
+		width: min(280px, 82cqw);
+		box-shadow: -16px 0 36px rgba(0, 0, 0, 0.3);
+	}
+
+}
+
 @container review-panel (max-width: 560px) {
 	.changes-actions {
 		width: 100%;
@@ -145,6 +123,7 @@
 	}
 
 	.review-jump-menu {
+		left: auto;
 		right: 0;
 		width: calc(100cqw - 24px);
 	}
@@ -186,21 +165,32 @@
 	}
 }
 
-@media (max-width: 720px) {
+@media (max-width: 960px) {
 	.workspace-tools-panel {
 		position: absolute;
 		top: 0;
 		right: 0;
 		bottom: 0;
 		z-index: 14;
-		width: min(100%, 420px);
+		width: min(92%, 440px);
 		flex: none;
 		box-shadow: -18px 0 42px rgba(0, 0, 0, 0.34);
 	}
 
 	.workspace-tools-panel--review {
-		width: min(100%, 620px) !important;
+		width: min(94%, 680px) !important;
 		flex: none !important;
+	}
+
+	.app-main--workspace-expanded .workspace-tools-panel {
+		left: 0;
+		right: 0;
+		width: auto !important;
+		flex: none !important;
+	}
+
+	.tools-panel-resize-handle {
+		display: none;
 	}
 }
 

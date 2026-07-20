@@ -54,6 +54,17 @@ export async function buildRpcMarketplaceSnapshot(cwd: string): Promise<RpcMarke
 				keywords: plugin.keywords,
 				category: plugin.category,
 				tags: plugin.tags,
+				capabilities: [
+					plugin.commands !== undefined && "commands",
+					plugin.agents !== undefined && "agents",
+					plugin.hooks !== undefined && "hooks",
+					plugin.mcpServers !== undefined && "mcp",
+					plugin.lspServers !== undefined && "lsp",
+					plugin.dapAdapters !== undefined && "dap",
+				].filter(
+					(capability): capability is RpcMarketplacePluginDescriptor["capabilities"][number] =>
+						capability !== false,
+				),
 				installations: installedById.get(id) ?? [],
 			});
 			installedById.delete(id);
@@ -62,7 +73,7 @@ export async function buildRpcMarketplaceSnapshot(cwd: string): Promise<RpcMarke
 	for (const [id, installations] of installedById) {
 		const parsed = parsePluginId(id);
 		if (!parsed) continue;
-		plugins.push({ id, ...parsed, installations });
+		plugins.push({ id, ...parsed, capabilities: [], installations });
 	}
 	plugins.sort((a, b) => a.id.localeCompare(b.id));
 	return {

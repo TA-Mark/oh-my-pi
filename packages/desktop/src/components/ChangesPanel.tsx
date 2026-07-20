@@ -1,10 +1,13 @@
 import {
+	ArrowRight,
+	Check,
 	ChevronDown,
 	ChevronRight,
 	ChevronUp,
 	ExternalLink,
 	FileSearch,
 	FolderOpen,
+	GitBranch,
 	GitCommitHorizontal,
 	GitPullRequestCreate,
 	ListCollapse,
@@ -19,12 +22,26 @@ import {
 } from "lucide-react";
 import type { ReactNode } from "react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { GitStatus, HunkSelection, WorkspaceFileChange } from "../lib/rpc-protocol";
+import { createPortal } from "react-dom";
+import type {
+	GitStatus,
+	HunkSelection,
+	ReviewCommit,
+	ReviewScope,
+	WorkspaceEntry,
+	WorkspaceFileChange,
+} from "../lib/rpc-protocol";
 
 interface ChangesPanelProps {
 	changes: WorkspaceFileChange[];
+	workspaceEntries: WorkspaceEntry[];
+	workspaceFilesLoading: boolean;
+	workspaceFilesTruncated: boolean;
+	onRefreshWorkspaceFiles: (query?: string) => void;
 	gitStatus: GitStatus;
 	onRefresh: () => void;
+	onLoadReview: (scope: ReviewScope, ref?: string) => Promise<WorkspaceFileChange[]>;
+	onLoadReviewCommits: () => Promise<ReviewCommit[]>;
 	onStageHunks: (selections: HunkSelection[]) => void;
 	onUnstage: (files?: string[]) => void;
 	onRevertFiles: (files: string[]) => void;
@@ -79,19 +96,22 @@ interface DiffRenderRange {
 interface FileTreeNode {
 	name: string;
 	path: string;
+	type: "file" | "directory";
 	children: FileTreeNode[];
 	change?: WorkspaceFileChange;
+	hasChanges: boolean;
 }
 
 interface FileTreeDraft {
 	name: string;
 	path: string;
+	type: "file" | "directory";
 	children: Map<string, FileTreeDraft>;
 	change?: WorkspaceFileChange;
 }
 
-const DIFF_ROW_HEIGHT = 27;
-const HUNK_GAP_HEIGHT = 40;
+const DIFF_ROW_HEIGHT = 24;
+const HUNK_GAP_HEIGHT = 32;
 const DIFF_OVERSCAN_PX = 900;
 const INITIAL_DIFF_RENDER_HEIGHT = 1400;
 
@@ -138,6 +158,20 @@ function statusLabel(status: WorkspaceFileChange["status"]): string | null {
 
 function compareChanges(left: WorkspaceFileChange, right: WorkspaceFileChange): number {
 	return left.path.localeCompare(right.path);
+}
+
+function relativeCommitTime(committedAt: number): string {
+	const elapsedSeconds = Math.max(0, Math.floor((Date.now() - committedAt) / 1000));
+	if (elapsedSeconds < 60) return "now";
+	const minutes = Math.floor(elapsedSeconds / 60);
+	if (minutes < 60) return `${minutes}m ago`;
+	const hours = Math.floor(minutes / 60);
+	if (hours < 24) return `${hours}h ago`;
+	const days = Math.floor(hours / 24);
+	if (days < 30) return `${days}d ago`;
+	const months = Math.floor(days / 30);
+	if (months < 12) return `${months}mo ago`;
+	return `${Math.floor(months / 12)}y ago`;
 }
 
 function shouldAutoCollapse(change: WorkspaceFileChange): boolean {
@@ -268,10 +302,11 @@ function scrollRootBounds(scrollRoot: HTMLElement | Window): { top: number; bott
 	return { top: rect.top, bottom: rect.bottom };
 }
 
-function buildFileTree(changes: WorkspaceFileChange[]): FileTreeNode[] {
-	const root: FileTreeDraft = { name: "", path: "", children: new Map() };
-	for (const change of changes) {
-		const parts = change.path.split("/").filter(Boolean);
+function buildFileTree(entries: WorkspaceEntry[], changes: WorkspaceFileChange[]): FileTreeNode[] {
+	const root: FileTreeDraft = { name: "", path: "", type: "directory", children: new Map() };
+	const changesByPath = new Map(changes.map(change => [change.path, change]));
+	const addPath = (entryPath: string, type: "file" | "directory", change?: WorkspaceFileChange): void => {
+		const parts = entryPath.split("/").filter(Boolean);
 		let node = root;
 		let path = "";
 		for (const part of parts) {
@@ -281,37 +316,56 @@ function buildFileTree(changes: WorkspaceFileChange[]): FileTreeNode[] {
 				node = existing;
 				continue;
 			}
-			const next: FileTreeDraft = { name: part, path, children: new Map() };
+			const next: FileTreeDraft = {
+				name: part,
+				path,
+				type: "directory",
+				children: new Map(),
+			};
 			node.children.set(part, next);
 			node = next;
 		}
+		node.type = type;
 		node.change = change;
+	};
+	for (const entry of entries) addPath(entry.path, entry.type, changesByPath.get(entry.path));
+	for (const change of changes) {
+		if (!entries.some(entry => entry.path === change.path)) addPath(change.path, "file", change);
 	}
-	const toNode = (draft: FileTreeDraft): FileTreeNode => ({
-		name: draft.name,
-		path: draft.path,
-		change: draft.change,
-		children: Array.from(draft.children.values())
+	const toNode = (draft: FileTreeDraft): FileTreeNode => {
+		const children = Array.from(draft.children.values())
+			.map(toNode)
 			.sort((left, right) => {
-				if (left.change && !right.change) return 1;
-				if (!left.change && right.change) return -1;
+				if (left.type !== right.type) return left.type === "directory" ? -1 : 1;
+				if (left.change && !right.change) return -1;
+				if (!left.change && right.change) return 1;
 				return left.name.localeCompare(right.name);
-			})
-			.map(toNode),
-	});
+			});
+		return {
+			name: draft.name,
+			path: draft.path,
+			type: draft.type,
+			change: draft.change,
+			children,
+			hasChanges: Boolean(draft.change) || children.some(child => child.hasChanges),
+		};
+	};
 	const compactNode = (node: FileTreeNode): FileTreeNode => {
 		let current = node;
-		while (!current.change && current.children.length === 1 && !current.children[0]?.change) {
+		while (
+			current.type === "directory" &&
+			!current.change &&
+			current.children.length === 1 &&
+			!current.children[0]?.change
+		) {
 			const child = current.children[0];
-			current = { name: `${current.name}/${child.name}`, path: child.path, children: child.children };
+			if (child.type !== "directory") break;
+			current = { ...child, name: `${current.name}/${child.name}` };
 		}
 		return { ...current, children: current.children.map(compactNode) };
 	};
 
-	return Array.from(root.children.values())
-		.sort((left, right) => left.name.localeCompare(right.name))
-		.map(toNode)
-		.map(compactNode);
+	return Array.from(root.children.values()).map(toNode).map(compactNode);
 }
 
 function ChangeBadge({ tone, children }: { tone?: "add" | "del" | "muted"; children: ReactNode }): ReactNode {
@@ -584,6 +638,68 @@ function FileChangeSection({
 
 const MemoizedFileChangeSection = memo(FileChangeSection);
 
+function FileTreeNodeView({
+	node,
+	activePath,
+	onJump,
+	depth,
+}: {
+	node: FileTreeNode;
+	activePath: string | null;
+	onJump: (path: string) => void;
+	depth: number;
+}): ReactNode {
+	const [expanded, setExpanded] = useState(() => node.hasChanges);
+	if (node.type === "file") {
+		const marker =
+			node.change?.status === "added" || node.change?.status === "untracked"
+				? "+"
+				: node.change?.status === "deleted"
+					? "−"
+					: node.change?.status === "renamed"
+						? "R"
+						: node.change
+							? "M"
+							: "";
+		return (
+			<button
+				type="button"
+				className={`review-tree-file${activePath === node.path ? " review-tree-file--active" : ""}${node.change ? " review-tree-file--changed" : ""}`}
+				style={{ paddingLeft: 14 + depth * 20 }}
+				disabled={!node.change}
+				onClick={() => node.change && onJump(node.path)}
+				title={node.change ? node.path : `${node.path} (unchanged)`}
+			>
+				<FileKind path={node.path} />
+				<span>{node.name}</span>
+				{marker ? (
+					<span className={`review-tree-status review-tree-status--${node.change?.status}`}>{marker}</span>
+				) : null}
+			</button>
+		);
+	}
+	return (
+		<div className="review-tree-dir">
+			<button
+				type="button"
+				className={`review-tree-dir-label${node.hasChanges ? " review-tree-dir-label--changed" : ""}`}
+				style={{ paddingLeft: 12 + depth * 20 }}
+				onClick={() => setExpanded(value => !value)}
+				aria-expanded={expanded}
+				aria-label={`${expanded ? "Collapse" : "Expand"} ${node.path}`}
+				title={node.path}
+			>
+				{expanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
+				<span>{node.name}</span>
+				{node.hasChanges ? <span className="review-tree-dir-dot" aria-label="Contains changed files" /> : null}
+			</button>
+			{expanded ? (
+				<FileTree nodes={node.children} activePath={activePath} onJump={onJump} depth={depth + 1} />
+			) : null}
+		</div>
+	);
+}
+
 function FileTree({
 	nodes,
 	activePath,
@@ -597,28 +713,9 @@ function FileTree({
 }): ReactNode {
 	return (
 		<div className="review-tree-group">
-			{nodes.map(node =>
-				node.change ? (
-					<button
-						key={node.path}
-						type="button"
-						className={`review-tree-file${activePath === node.path ? " review-tree-file--active" : ""}`}
-						style={{ paddingLeft: 14 + depth * 20 }}
-						onClick={() => onJump(node.change?.path ?? node.path)}
-					>
-						<FileKind path={node.path} />
-						<span>{node.name}</span>
-					</button>
-				) : (
-					<div key={node.path} className="review-tree-dir">
-						<div className="review-tree-dir-label" style={{ paddingLeft: 12 + depth * 20 }}>
-							<ChevronDown size={15} />
-							<span>{node.name}</span>
-						</div>
-						<FileTree nodes={node.children} activePath={activePath} onJump={onJump} depth={depth + 1} />
-					</div>
-				),
-			)}
+			{nodes.map(node => (
+				<FileTreeNodeView key={node.path} node={node} activePath={activePath} onJump={onJump} depth={depth} />
+			))}
 		</div>
 	);
 }
@@ -626,17 +723,23 @@ function FileTree({
 function ReviewOptions({
 	hiddenCount,
 	stageDisabled,
+	revertDisabled,
 	refreshDisabled,
 	onShowAll,
 	onRefresh,
 	onUnstageAll,
+	onRevertAll,
+	onStageAll,
 }: {
 	hiddenCount: number;
 	stageDisabled: boolean;
+	revertDisabled: boolean;
 	refreshDisabled: boolean;
 	onShowAll: () => void;
 	onRefresh: () => void;
 	onUnstageAll: () => void;
+	onRevertAll: () => void;
+	onStageAll: () => void;
 }): ReactNode {
 	return (
 		<div className="review-options-menu">
@@ -648,10 +751,353 @@ function ReviewOptions({
 				<Undo2 size={14} />
 				Unstage all
 			</button>
+			<button type="button" onClick={onRevertAll} disabled={revertDisabled}>
+				<RotateCcw size={14} />
+				Revert all
+			</button>
+			<button type="button" onClick={onStageAll} disabled={stageDisabled}>
+				<Plus size={14} />
+				Stage all
+			</button>
 			<button type="button" onClick={onShowAll} disabled={hiddenCount === 0}>
 				<PanelRightOpen size={14} />
 				Show hidden files{hiddenCount > 0 ? ` (${hiddenCount})` : ""}
 			</button>
+		</div>
+	);
+}
+
+function CommitOrPushControl({
+	disabled,
+	commitDisabled,
+	pushDisabled,
+	prDisabled,
+	onCommit,
+	onPush,
+	onCreatePullRequest,
+}: {
+	disabled: boolean;
+	commitDisabled: boolean;
+	pushDisabled: boolean;
+	prDisabled: boolean;
+	onCommit: () => void;
+	onPush: () => void;
+	onCreatePullRequest: () => void;
+}): ReactNode {
+	const menuRef = useRef<HTMLDetailsElement>(null);
+	const closeMenu = (): void => menuRef.current?.removeAttribute("open");
+	return (
+		<details ref={menuRef} className="review-commit-control">
+			<summary className="review-commit-primary" aria-label="Commit or push">
+				<GitCommitHorizontal size={15} strokeWidth={1.8} />
+				<span>Commit or push</span>
+				<ChevronDown size={14} strokeWidth={1.8} />
+			</summary>
+			<div className="review-commit-menu">
+				<button
+					type="button"
+					disabled={disabled || commitDisabled}
+					onClick={() => {
+						closeMenu();
+						onCommit();
+					}}
+				>
+					<GitCommitHorizontal size={14} />
+					Commit staged
+				</button>
+				<button
+					type="button"
+					disabled={disabled || pushDisabled}
+					onClick={() => {
+						closeMenu();
+						onPush();
+					}}
+				>
+					<GitPullRequestCreate size={14} />
+					Push branch
+				</button>
+				<button
+					type="button"
+					disabled={disabled || prDisabled}
+					onClick={() => {
+						closeMenu();
+						onCreatePullRequest();
+					}}
+				>
+					<GitPullRequestCreate size={14} />
+					Create pull request
+				</button>
+			</div>
+		</details>
+	);
+}
+
+interface ReviewSelection {
+	scope: ReviewScope;
+	ref?: string;
+	label: string;
+}
+
+interface CommitFlyoutPosition {
+	top: number;
+	left: number;
+	width: number;
+}
+
+function BranchSelector({
+	branch,
+	branches,
+	loading,
+	onSelect,
+}: {
+	branch: string | null;
+	branches: string[];
+	loading: boolean;
+	onSelect: (branch: string) => void;
+}): ReactNode {
+	const [filter, setFilter] = useState("");
+	const [open, setOpen] = useState(false);
+	const menuRef = useRef<HTMLDivElement>(null);
+	const normalizedFilter = filter.trim().toLowerCase();
+	const options = useMemo(
+		() =>
+			[...(branch ? [branch] : []), ...branches]
+				.filter((name, index, all) => all.indexOf(name) === index)
+				.filter(name => !name.endsWith("/HEAD"))
+				.filter(name => name !== "origin" && name !== "upstream")
+				.filter(name => !normalizedFilter || name.toLowerCase().includes(normalizedFilter))
+				.sort((left, right) => {
+					const score = (name: string): number => {
+						if (name === branch) return 0;
+						if (name === "origin/main" || name === "main") return 1;
+						if (!name.includes("/")) return 2;
+						if (name.startsWith("origin/")) return 3;
+						return 4;
+					};
+					return score(left) - score(right) || left.localeCompare(right);
+				})
+				.slice(0, normalizedFilter ? 100 : 50),
+		[branch, branches, normalizedFilter],
+	);
+	useEffect(() => {
+		if (!open) return;
+		const close = (event: PointerEvent): void => {
+			if (event.target instanceof Node && menuRef.current?.contains(event.target)) return;
+			setOpen(false);
+		};
+		const handleEscape = (event: KeyboardEvent): void => {
+			if (event.key === "Escape") setOpen(false);
+		};
+		document.addEventListener("pointerdown", close);
+		document.addEventListener("keydown", handleEscape);
+		return () => {
+			document.removeEventListener("pointerdown", close);
+			document.removeEventListener("keydown", handleEscape);
+		};
+	}, [open]);
+	return (
+		<div ref={menuRef} className={`changes-branch-selector${open ? " changes-branch-selector--open" : ""}`}>
+			<button
+				type="button"
+				className="changes-branch-button"
+				aria-label="Select branch"
+				aria-expanded={open}
+				onClick={() => setOpen(value => !value)}
+			>
+				<GitBranch size={14} strokeWidth={1.8} />
+				<span>{branch ?? "Branch"}</span>
+				<ChevronDown size={14} strokeWidth={1.9} />
+			</button>
+			{open ? (
+				<div className="changes-branch-menu">
+					<label className="changes-branch-search">
+						<Search size={14} strokeWidth={1.8} />
+						<input
+							value={filter}
+							onChange={event => setFilter(event.currentTarget.value)}
+							placeholder="Search branches"
+						/>
+					</label>
+					<div className="changes-branch-menu-label">Branches</div>
+					<div className="changes-branch-list" role="listbox" aria-label="Branches">
+						{options.length === 0 ? (
+							<div className="changes-branch-empty">No matching branches.</div>
+						) : (
+							options.map(name => (
+								<button
+									key={name}
+									type="button"
+									className="changes-branch-option"
+									role="option"
+									aria-selected={name === branch}
+									disabled={loading}
+									onClick={() => {
+										setOpen(false);
+										onSelect(name);
+									}}
+								>
+									<GitBranch size={14} strokeWidth={1.7} />
+									<span>{name}</span>
+									{name === branch ? <Check size={14} strokeWidth={2} /> : null}
+								</button>
+							))
+						)}
+					</div>
+				</div>
+			) : null}
+		</div>
+	);
+}
+
+function ReviewScopeMenu({
+	selection,
+	commits,
+	commitsLoading,
+	reviewLoading,
+	onLoadCommits,
+	onSelect,
+}: {
+	selection: ReviewSelection;
+	commits: ReviewCommit[];
+	commitsLoading: boolean;
+	reviewLoading: boolean;
+	onLoadCommits: () => void;
+	onSelect: (selection: ReviewSelection) => void;
+}): ReactNode {
+	const menuRef = useRef<HTMLDivElement>(null);
+	const commitMenuRef = useRef<HTMLDivElement>(null);
+	const [open, setOpen] = useState(false);
+	const [commitOpen, setCommitOpen] = useState(false);
+	const [commitPosition, setCommitPosition] = useState<CommitFlyoutPosition | null>(null);
+	const closeMenu = (): void => {
+		setOpen(false);
+		setCommitOpen(false);
+	};
+	const select = (next: ReviewSelection): void => {
+		closeMenu();
+		onSelect(next);
+	};
+	const toggleCommitMenu = (): void => {
+		const nextOpen = !commitOpen;
+		setCommitOpen(nextOpen);
+		if (!nextOpen) return;
+
+		const anchor = menuRef.current?.getBoundingClientRect();
+		if (anchor) {
+			const width = Math.min(520, window.innerWidth - 16);
+			const preferredLeft = anchor.left - width - 8;
+			const fallbackLeft = Math.min(window.innerWidth - width - 8, anchor.right + 8);
+			setCommitPosition({
+				top: anchor.bottom + 6,
+				left: preferredLeft >= 8 ? preferredLeft : Math.max(8, fallbackLeft),
+				width,
+			});
+		}
+		onLoadCommits();
+	};
+	const options: Array<{ label: string; selection?: ReviewSelection }> = [
+		{ label: "Unstaged", selection: { scope: "unstaged", label: "Unstaged" } },
+		{ label: "Staged", selection: { scope: "staged", label: "Staged" } },
+		{ label: "Commit" },
+		{ label: "Branch", selection: { scope: "branch", label: "Branch" } },
+		{ label: "Last Turn" },
+	];
+	const isActiveScope = (scope: ReviewScope | undefined): boolean =>
+		scope === selection.scope || (selection.scope === "all" && scope === "unstaged");
+	useEffect(() => {
+		if (!open) return;
+		const close = (event: PointerEvent): void => {
+			if (event.target instanceof Node && menuRef.current?.contains(event.target)) return;
+			if (event.target instanceof Node && commitMenuRef.current?.contains(event.target)) return;
+			closeMenu();
+		};
+		const handleEscape = (event: KeyboardEvent): void => {
+			if (event.key === "Escape") closeMenu();
+		};
+		document.addEventListener("pointerdown", close);
+		document.addEventListener("keydown", handleEscape);
+		return () => {
+			document.removeEventListener("pointerdown", close);
+			document.removeEventListener("keydown", handleEscape);
+		};
+	}, [open]);
+	return (
+		<div ref={menuRef} className={`changes-scope-selector${open ? " changes-scope-selector--open" : ""}`}>
+			<button
+				type="button"
+				className="changes-scope-button"
+				aria-label="Review scope"
+				aria-expanded={open}
+				onClick={() => {
+					if (open) closeMenu();
+					else setOpen(true);
+				}}
+			>
+				<span>{selection.label}</span>
+				<ChevronDown size={14} strokeWidth={1.9} />
+			</button>
+			{open ? (
+				<div className="changes-scope-menu">
+					{options.map(option => (
+						<button
+							key={option.label}
+							type="button"
+							className={
+								isActiveScope(option.selection?.scope) || (option.label === "Commit" && commitOpen)
+									? "changes-scope-option changes-scope-option--active"
+									: "changes-scope-option"
+							}
+							disabled={reviewLoading || option.label === "Last Turn"}
+							title={option.label === "Last Turn" ? "Requires a per-turn workspace checkpoint" : undefined}
+							onClick={() => {
+								if (option.label === "Commit") {
+									toggleCommitMenu();
+									return;
+								}
+								if (option.selection) select(option.selection);
+							}}
+						>
+							<span>{option.label}</span>
+							{isActiveScope(option.selection?.scope) ? (
+								<Check size={14} strokeWidth={2} />
+							) : option.label === "Commit" ? (
+								<ChevronRight size={14} />
+							) : null}
+						</button>
+					))}
+					{commitOpen && commitPosition
+						? createPortal(
+								<div
+									ref={commitMenuRef}
+									className="changes-recent-commits"
+									style={{ top: commitPosition.top, left: commitPosition.left, width: commitPosition.width }}
+								>
+									{commitsLoading ? (
+										<div className="changes-commit-empty">Loading commits…</div>
+									) : commits.length === 0 ? (
+										<div className="changes-commit-empty">No commits found.</div>
+									) : (
+										commits.map(commit => (
+											<button
+												key={commit.hash}
+												type="button"
+												className="changes-commit-option"
+												title={`${commit.subject} (${commit.hash})`}
+												onClick={() => select({ scope: "commit", ref: commit.hash, label: commit.subject })}
+											>
+												<span>{commit.subject}</span>
+												<time dateTime={new Date(commit.committedAt).toISOString()}>
+													{relativeCommitTime(commit.committedAt)}
+												</time>
+											</button>
+										))
+									)}
+								</div>,
+								document.body,
+							)
+						: null}
+				</div>
+			) : null}
 		</div>
 	);
 }
@@ -719,8 +1165,14 @@ function JumpToFileMenu({
 
 export function ChangesPanel({
 	changes,
+	workspaceEntries,
+	workspaceFilesLoading,
+	workspaceFilesTruncated,
+	onRefreshWorkspaceFiles,
 	gitStatus,
 	onRefresh,
+	onLoadReview,
+	onLoadReviewCommits,
 	onStageHunks,
 	onUnstage,
 	onRevertFiles,
@@ -741,11 +1193,18 @@ export function ChangesPanel({
 	const [expandedPaths, setExpandedPaths] = useState<Set<string>>(() => new Set());
 	const [mutating, setMutating] = useState(false);
 	const [refreshing, setRefreshing] = useState(false);
+	const [reviewSelection, setReviewSelection] = useState<ReviewSelection>({ scope: "all", label: "Unstaged" });
+	const [reviewChanges, setReviewChanges] = useState<WorkspaceFileChange[] | null>(null);
+	const [reviewLoading, setReviewLoading] = useState(false);
+	const [reviewError, setReviewError] = useState<string | null>(null);
+	const [recentCommits, setRecentCommits] = useState<ReviewCommit[]>([]);
+	const [commitsLoading, setCommitsLoading] = useState(false);
 	const jumpMenuRef = useRef<HTMLDivElement>(null);
-	const additions = changes.reduce((sum, change) => sum + change.additions, 0);
-	const deletions = changes.reduce((sum, change) => sum + change.deletions, 0);
+	const displayedChanges = reviewChanges ?? changes;
+	const additions = displayedChanges.reduce((sum, change) => sum + change.additions, 0);
+	const deletions = displayedChanges.reduce((sum, change) => sum + change.deletions, 0);
 	const normalizedNavigatorFilter = navigatorFilter.trim().toLowerCase();
-	const orderedChanges = useMemo(() => [...changes].sort(compareChanges), [changes]);
+	const orderedChanges = useMemo(() => [...displayedChanges].sort(compareChanges), [displayedChanges]);
 	const visibleChanges = useMemo(
 		() => orderedChanges.filter(change => !hiddenPaths.has(change.path)),
 		[orderedChanges, hiddenPaths],
@@ -754,25 +1213,72 @@ export function ChangesPanel({
 		() => visibleChanges.filter(change => change.status !== "untracked"),
 		[visibleChanges],
 	);
+	const navigatorEntries = useMemo(
+		() =>
+			normalizedNavigatorFilter
+				? workspaceEntries.filter(entry => entry.path.toLowerCase().includes(normalizedNavigatorFilter))
+				: workspaceEntries,
+		[workspaceEntries, normalizedNavigatorFilter],
+	);
 	const navigatorChanges = useMemo(
 		() =>
 			normalizedNavigatorFilter
 				? visibleChanges.filter(change => change.path.toLowerCase().includes(normalizedNavigatorFilter))
 				: visibleChanges,
-		[visibleChanges, normalizedNavigatorFilter],
+		[normalizedNavigatorFilter, visibleChanges],
 	);
-	const fileTree = useMemo(() => buildFileTree(navigatorChanges), [navigatorChanges]);
+	const fileTree = useMemo(
+		() => buildFileTree(navigatorEntries, navigatorChanges),
+		[navigatorEntries, navigatorChanges],
+	);
 	const activePath =
 		selectedPath && visibleChanges.some(change => change.path === selectedPath)
 			? selectedPath
 			: (visibleChanges[0]?.path ?? null);
+	const reviewReadOnly =
+		reviewSelection.scope === "commit" || reviewSelection.scope === "branch" || reviewSelection.scope === "last_turn";
+
+	const loadSelection = useCallback(
+		async (next: ReviewSelection): Promise<void> => {
+			const effective =
+				next.scope === "branch" && !next.ref
+					? { ...next, ref: gitStatus.baseBranch ?? gitStatus.upstream ?? gitStatus.branch ?? undefined }
+					: next;
+			if (effective.scope === "branch" && !effective.ref) {
+				setReviewError("No base branch is configured for this repository.");
+				return;
+			}
+			setReviewSelection(effective);
+			setReviewLoading(true);
+			setReviewError(null);
+			try {
+				setReviewChanges(await onLoadReview(effective.scope, effective.ref));
+				setHiddenPaths(new Set());
+				setSelectedPath(null);
+			} catch (error) {
+				setReviewError(error instanceof Error ? error.message : String(error));
+			} finally {
+				setReviewLoading(false);
+			}
+		},
+		[gitStatus.baseBranch, gitStatus.branch, gitStatus.upstream, onLoadReview],
+	);
+
+	const loadCommits = useCallback((): void => {
+		if (commitsLoading || recentCommits.length > 0) return;
+		setCommitsLoading(true);
+		onLoadReviewCommits()
+			.then(setRecentCommits)
+			.catch(error => setReviewError(error instanceof Error ? error.message : String(error)))
+			.finally(() => setCommitsLoading(false));
+	}, [commitsLoading, onLoadReviewCommits, recentCommits.length]);
 
 	useEffect(() => {
-		const paths = new Set(changes.map(change => change.path));
+		const paths = new Set(displayedChanges.map(change => change.path));
 		setHiddenPaths(previous => new Set([...previous].filter(path => paths.has(path))));
 		setCollapsedPaths(previous => new Set([...previous].filter(path => paths.has(path))));
 		setExpandedPaths(previous => new Set([...previous].filter(path => paths.has(path))));
-	}, [changes]);
+	}, [displayedChanges]);
 
 	useEffect(() => {
 		if (!jumpOpen) return;
@@ -881,22 +1387,46 @@ export function ChangesPanel({
 		if (refreshing) return;
 		setRefreshing(true);
 		Promise.resolve()
-			.then(onRefresh)
+			.then(() => {
+				if (reviewSelection.scope === "all") return onRefresh();
+				return loadSelection(reviewSelection);
+			})
 			.finally(() => setRefreshing(false));
-	}, [onRefresh, refreshing]);
+	}, [loadSelection, onRefresh, refreshing, reviewSelection]);
 
 	return (
 		<section
 			className={`changes-panel${navigatorOpen ? " changes-panel--with-navigator" : ""}`}
-			aria-busy={mutating || refreshing}
+			aria-busy={mutating || refreshing || reviewLoading}
 		>
 			<div className="changes-head">
-				<div className="changes-summary">
-					<span className="changes-title">Unstaged</span>
-					<span className="changes-count">{changes.length}</span>
-					<ChevronDown size={15} strokeWidth={1.9} />
-					<span className="changes-total changes-total--add">+{additions.toLocaleString()}</span>
-					<span className="changes-total changes-total--del">-{deletions.toLocaleString()}</span>
+				<div className="changes-overview">
+					<div className="changes-summary">
+						<ReviewScopeMenu
+							selection={reviewSelection}
+							commits={recentCommits}
+							commitsLoading={commitsLoading}
+							reviewLoading={reviewLoading}
+							onLoadCommits={loadCommits}
+							onSelect={selection => void loadSelection(selection)}
+						/>
+						<span className="changes-total changes-total--add">+{additions.toLocaleString()}</span>
+						<span className="changes-total changes-total--del">-{deletions.toLocaleString()}</span>
+					</div>
+					<div className="changes-branch-context" aria-label="Branch tracking">
+						<span>{gitStatus.branch ?? "Detached HEAD"}</span>
+						<ArrowRight size={13} strokeWidth={1.8} />
+						<BranchSelector
+							branch={
+								reviewSelection.scope === "branch"
+									? (reviewSelection.ref ?? gitStatus.baseBranch)
+									: gitStatus.baseBranch
+							}
+							branches={gitStatus.localBranches.filter(branch => branch !== gitStatus.branch)}
+							loading={reviewLoading}
+							onSelect={branch => void loadSelection({ scope: "branch", ref: branch, label: "Branch" })}
+						/>
+					</div>
 					{hiddenPaths.size > 0 ? (
 						<button type="button" className="changes-hidden-pill" onClick={showAll}>
 							{hiddenPaths.size} hidden / show
@@ -920,7 +1450,8 @@ export function ChangesPanel({
 						{menuOpen ? (
 							<ReviewOptions
 								hiddenCount={hiddenPaths.size}
-								stageDisabled={disabled || mutating || visibleChanges.length === 0}
+								stageDisabled={disabled || mutating || reviewReadOnly || visibleChanges.length === 0}
+								revertDisabled={disabled || mutating || reviewReadOnly || revertibleChanges.length === 0}
 								refreshDisabled={refreshing}
 								onShowAll={showAll}
 								onRefresh={() => {
@@ -929,6 +1460,14 @@ export function ChangesPanel({
 								}}
 								onUnstageAll={() => {
 									runMutation(() => onUnstage());
+									setMenuOpen(false);
+								}}
+								onRevertAll={() => {
+									runMutation(() => onRevertFiles(revertibleChanges.map(change => change.path)));
+									setMenuOpen(false);
+								}}
+								onStageAll={() => {
+									stageAll();
 									setMenuOpen(false);
 								}}
 							/>
@@ -982,45 +1521,36 @@ export function ChangesPanel({
 						aria-label={navigatorOpen ? "Hide files" : "Show files"}
 						onClick={() => {
 							setJumpOpen(false);
+							if (!navigatorOpen && workspaceEntries.length === 0) onRefreshWorkspaceFiles();
 							setNavigatorOpen(open => !open);
 						}}
 					>
 						<FolderOpen size={16} strokeWidth={1.8} />
 					</button>
 					<span className="changes-action-divider" />
-					<button
-						type="button"
-						className="changes-pill-action"
-						disabled={disabled || mutating || gitStatus.staged === 0}
-						onClick={onCommit}
-					>
-						<GitCommitHorizontal size={15} strokeWidth={1.8} />
-						Commit staged
-					</button>
-					<button
-						type="button"
-						className="changes-pill-action"
-						disabled={disabled || mutating || !gitStatus.branch}
-						onClick={onPush}
-					>
-						<GitPullRequestCreate size={15} strokeWidth={1.8} />
-						Push branch
-					</button>
-					<button
-						type="button"
-						className="changes-pill-action"
-						disabled={disabled || mutating || !gitStatus.branch}
-						onClick={onCreatePullRequest}
-					>
-						<GitPullRequestCreate size={15} strokeWidth={1.8} />
-						Create PR
-					</button>
+					<CommitOrPushControl
+						disabled={disabled || mutating}
+						commitDisabled={gitStatus.staged === 0}
+						pushDisabled={!gitStatus.branch}
+						prDisabled={!gitStatus.branch}
+						onCommit={onCommit}
+						onPush={onPush}
+						onCreatePullRequest={onCreatePullRequest}
+					/>
 				</div>
 			</div>
 			<div className="review-workspace">
 				<div className="changes-list">
+					{reviewLoading ? (
+						<div className="changes-review-state">Loading {reviewSelection.label} diff…</div>
+					) : null}
+					{reviewError ? (
+						<div className="changes-review-state changes-review-state--error">{reviewError}</div>
+					) : null}
 					{visibleChanges.length === 0 ? (
-						<p className="changes-empty">{changes.length === 0 ? "No changes yet." : "No files to show."}</p>
+						<p className="changes-empty">
+							{displayedChanges.length === 0 ? `No changes in ${reviewSelection.label}.` : "No files to show."}
+						</p>
 					) : (
 						visibleChanges.map(change => (
 							<MemoizedFileChangeSection
@@ -1028,7 +1558,7 @@ export function ChangesPanel({
 								change={change}
 								mode={mode}
 								collapsed={isCollapsed(change)}
-								disabled={disabled || mutating}
+								disabled={disabled || mutating || reviewReadOnly}
 								onToggleCollapsed={toggleCollapsed}
 								onSelect={selectPath}
 								onStageFile={stageFile}
@@ -1046,7 +1576,12 @@ export function ChangesPanel({
 								placeholder="Filter files..."
 							/>
 						</div>
-						{fileTree.length === 0 ? (
+						{workspaceFilesTruncated ? (
+							<div className="review-tree-warning">Workspace tree reached the safety limit.</div>
+						) : null}
+						{workspaceFilesLoading && fileTree.length === 0 ? (
+							<div className="review-tree-empty">Loading files…</div>
+						) : fileTree.length === 0 ? (
 							<div className="review-tree-empty">No files to show.</div>
 						) : (
 							<FileTree
@@ -1060,22 +1595,6 @@ export function ChangesPanel({
 					</aside>
 				) : null}
 			</div>
-			{visibleChanges.length > 0 ? (
-				<div className="review-floating-actions">
-					<button
-						type="button"
-						disabled={disabled || mutating || revertibleChanges.length === 0}
-						onClick={() => onRevertFiles(revertibleChanges.map(change => change.path))}
-					>
-						<RotateCcw size={15} />
-						Revert all
-					</button>
-					<button type="button" disabled={disabled || mutating} onClick={stageAll}>
-						<Plus size={15} />
-						Stage all
-					</button>
-				</div>
-			) : null}
 		</section>
 	);
 }

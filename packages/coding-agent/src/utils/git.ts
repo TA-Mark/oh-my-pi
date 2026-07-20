@@ -86,6 +86,12 @@ export interface CommitDetails {
 	readonly message: string;
 }
 
+export interface RecentCommit {
+	readonly hash: string;
+	readonly subject: string;
+	readonly committedAt: number;
+}
+
 export interface CommitOptions {
 	readonly allowEmpty?: boolean;
 	readonly author?: CommitAuthor;
@@ -1430,6 +1436,16 @@ export const log = {
 		return splitLines(
 			await runText(cwd, ["log", `-${count}`, "--oneline", "--no-decorate"], { readOnly: true, signal }),
 		);
+	},
+	/** Recent commit summaries with commit timestamps for review/history surfaces. */
+	async recent(cwd: string, count: number, signal?: AbortSignal): Promise<RecentCommit[]> {
+		const lines = splitLines(
+			await runText(cwd, ["log", `-${count}`, "--pretty=format:%h%x00%s%x00%ct"], { readOnly: true, signal }),
+		);
+		return lines.map(line => {
+			const [hash = "", subject = "", seconds = "0"] = line.split("\0");
+			return { hash, subject, committedAt: Number.parseInt(seconds, 10) * 1000 };
+		});
 	},
 };
 

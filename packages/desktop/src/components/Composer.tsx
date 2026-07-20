@@ -97,6 +97,7 @@ const THINKING_CHOICES: ComposerChoice<ThinkingLevel>[] = [
 	{ id: "medium", label: "Medium", detail: "Balanced reasoning for coding tasks." },
 	{ id: "high", label: "High", detail: "Deeper reasoning for complex changes." },
 	{ id: "xhigh", label: "Extra High", detail: "Maximum OMP reasoning effort." },
+	{ id: "max", label: "Max", detail: "Maximum reasoning supported by this model." },
 ];
 
 /** Read an image File into an `ImageContent` (base64, no data-URL prefix). */
@@ -331,6 +332,20 @@ export function Composer({
 	const modelLabel = composerModelLabel(model);
 	const effortLabel = composerEffortLabel(thinkingLevel);
 	const currentThinkingLevel = thinkingLevel ?? "auto";
+	const thinkingChoices = useMemo(() => {
+		const slash = model?.indexOf("/") ?? -1;
+		const provider = slash >= 0 ? model?.slice(0, slash) : undefined;
+		const id = slash >= 0 ? model?.slice(slash + 1) : model;
+		const selectedModel = models?.find(candidate => candidate.provider === provider && candidate.id === id);
+		if (!selectedModel?.reasoning) return THINKING_CHOICES.filter(choice => choice.id === "off");
+		const supported = selectedModel.thinking?.efforts;
+		if (!supported || supported.length === 0) {
+			return THINKING_CHOICES.filter(choice => choice.id === "off" || choice.id === "auto");
+		}
+		return THINKING_CHOICES.filter(
+			choice => choice.id === "off" || choice.id === "auto" || supported.includes(choice.id),
+		);
+	}, [model, models]);
 	const ApprovalIcon = APPROVAL_ICONS[approvalMode];
 
 	return (
@@ -569,7 +584,7 @@ export function Composer({
 										</div>
 									)}
 									<div className="composer-menu-section-title">Thinking</div>
-									{THINKING_CHOICES.map(choice => (
+									{thinkingChoices.map(choice => (
 										<button
 											type="button"
 											key={choice.id}

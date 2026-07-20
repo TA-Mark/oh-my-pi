@@ -58,42 +58,61 @@ export function ScheduledTasksPanel({ tasks, defaultWorkspace, onSave, onRemove,
 					reset();
 				}}
 			>
-				<input value={name} onChange={event => setName(event.currentTarget.value)} placeholder="Task name" />
-				<input
-					value={workspace}
-					onChange={event => setWorkspace(event.currentTarget.value)}
-					placeholder="Absolute workspace path"
-				/>
-				<textarea
-					value={prompt}
-					onChange={event => setPrompt(event.currentTarget.value)}
-					placeholder="Prompt to run"
-					rows={3}
-				/>
-				<label>
-					Every{" "}
+				<label className="scheduled-task-field">
+					<span>Task name</span>
 					<input
-						type="number"
-						min={1}
-						value={intervalMinutes}
-						onChange={event => setIntervalMinutes(Number(event.currentTarget.value))}
-					/>{" "}
-					minutes
-				</label>
-				<label>
-					Retries{" "}
-					<input
-						type="number"
-						min={0}
-						max={5}
-						value={maxRetries}
-						onChange={event => setMaxRetries(Number(event.currentTarget.value))}
+						value={name}
+						onChange={event => setName(event.currentTarget.value)}
+						placeholder="e.g. Daily review"
 					/>
 				</label>
-				<label>
-					<input type="checkbox" checked={enabled} onChange={event => setEnabled(event.currentTarget.checked)} />{" "}
-					Enabled
+				<label className="scheduled-task-field">
+					<span>Workspace</span>
+					<input
+						value={workspace}
+						onChange={event => setWorkspace(event.currentTarget.value)}
+						placeholder="Absolute workspace path"
+					/>
 				</label>
+				<label className="scheduled-task-field">
+					<span>Prompt</span>
+					<textarea
+						value={prompt}
+						onChange={event => setPrompt(event.currentTarget.value)}
+						placeholder="What should OMP do?"
+						rows={3}
+					/>
+				</label>
+				<div className="scheduled-task-options">
+					<label>
+						<span>Every</span>
+						<input
+							type="number"
+							min={1}
+							value={intervalMinutes}
+							onChange={event => setIntervalMinutes(Number(event.currentTarget.value))}
+						/>{" "}
+						<span>minutes</span>
+					</label>
+					<label>
+						<span>Retries</span>
+						<input
+							type="number"
+							min={0}
+							max={5}
+							value={maxRetries}
+							onChange={event => setMaxRetries(Number(event.currentTarget.value))}
+						/>
+					</label>
+					<label className="scheduled-task-enabled">
+						<input
+							type="checkbox"
+							checked={enabled}
+							onChange={event => setEnabled(event.currentTarget.checked)}
+						/>
+						<span>Enabled</span>
+					</label>
+				</div>
 				<button type="submit">{editing ? "Update task" : "Create task"}</button>
 			</form>
 			<div className="scheduled-task-list">

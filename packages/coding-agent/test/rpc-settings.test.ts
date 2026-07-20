@@ -38,6 +38,28 @@ describe("RPC settings contract", () => {
 		);
 	});
 
+	test("keeps retry and compaction controls in their conceptual desktop tabs", () => {
+		const settings = Settings.isolated();
+		expect(getRpcSettingDescriptor(settings, "retry.maxRetries").category).toBe("retry");
+		expect(getRpcSettingDescriptor(settings, "compaction.strategy").category).toBe("compaction");
+		expect(getRpcSettingDescriptor(settings, "compaction.thresholdTokens")).toMatchObject({
+			category: "compaction",
+			type: "number",
+		});
+	});
+
+	test("keeps MCP discovery controls in the MCP tab with restart activation", () => {
+		const settings = Settings.isolated();
+		expect(getRpcSettingDescriptor(settings, "mcp.enableProjectConfig")).toMatchObject({
+			category: "mcp",
+			activation: "next_engine_restart",
+		});
+		expect(getRpcSettingDescriptor(settings, "mcp.notifications")).toMatchObject({
+			category: "mcp",
+			activation: "immediate",
+		});
+	});
+
 	test("exposes runtime file and model settings to GUI hosts", () => {
 		const settings = Settings.isolated();
 		expect(getRpcSettingDescriptor(settings, "read.defaultLimit").category).toBe("tools");

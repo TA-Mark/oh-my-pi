@@ -25,6 +25,7 @@ describe("MCP registration lifecycle", () => {
 				name: "desktop-test",
 				enabled: false,
 				status: "disconnected",
+				toolNames: [],
 				auth: expect.objectContaining({ credentialAvailable: false }),
 			}),
 		);

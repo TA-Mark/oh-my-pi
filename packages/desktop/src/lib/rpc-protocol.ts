@@ -33,6 +33,22 @@ export interface AvailableCommand {
 	source: string;
 }
 
+export type McpServerConfigInput =
+	| {
+			type?: "stdio";
+			command: string;
+			args?: string[];
+			env?: Record<string, string>;
+			cwd?: string;
+			timeout?: number;
+	  }
+	| {
+			type: "http" | "sse";
+			url: string;
+			headers?: Record<string, string>;
+			timeout?: number;
+	  };
+
 export type RpcCommand =
 	| {
 			id?: string;
@@ -52,6 +68,8 @@ export type RpcCommand =
 	| { id?: string; type: "set_setting"; path: string; value: unknown }
 	| { id?: string; type: "set_plugin_enabled"; name: string; enabled: boolean }
 	| { id?: string; type: "set_plugin_features"; name: string; features: string[] | null }
+	| { id?: string; type: "set_plugin_setting"; name: string; key: string; value: unknown }
+	| { id?: string; type: "delete_plugin_setting"; name: string; key: string }
 	| { id?: string; type: "install_plugin"; spec: string }
 	| { id?: string; type: "update_plugin"; name: string }
 	| { id?: string; type: "uninstall_plugin"; name: string }
@@ -107,13 +125,19 @@ export type RpcCommand =
 	| { id?: string; type: "export_html"; outputPath?: string }
 	| { id?: string; type: "handoff"; customInstructions?: string }
 	| { id?: string; type: "get_messages" }
-	| { id?: string; type: "get_workspace_diff" }
+	| { id?: string; type: "get_workspace_diff"; scope?: ReviewScope; ref?: string }
+	| { id?: string; type: "list_review_commits"; limit?: number }
 	| { id?: string; type: "list_workspace_files"; query?: string; limit?: number }
 	| { id?: string; type: "read_workspace_file"; path: string; maxBytes?: number }
 	| { id?: string; type: "get_context_snapshot" }
 	| { id?: string; type: "reload_skills" }
 	| { id?: string; type: "set_skill_enabled"; name: string; enabled: boolean }
 	| { id?: string; type: "get_mcp_status" }
+	| { id?: string; type: "add_mcp_server"; name: string; scope: "user" | "project"; config: McpServerConfigInput }
+	| { id?: string; type: "remove_mcp_server"; serverName: string; scope: "user" | "project" }
+	| { id?: string; type: "test_mcp_server"; serverName: string }
+	| { id?: string; type: "reload_mcp" }
+	| { id?: string; type: "get_mcp_capabilities" }
 	| { id?: string; type: "reconnect_mcp"; serverName: string }
 	| { id?: string; type: "set_mcp_enabled"; serverName: string; enabled: boolean }
 	| { id?: string; type: "unauth_mcp"; serverName: string }
@@ -282,6 +306,14 @@ export interface WorkspaceFileChange {
 	truncated?: boolean;
 }
 
+export type ReviewScope = "all" | "unstaged" | "staged" | "commit" | "branch" | "last_turn";
+
+export interface ReviewCommit {
+	hash: string;
+	subject: string;
+	committedAt: number;
+}
+
 export type RpcSettingCategory =
 	| "providers"
 	| "tools"
@@ -316,6 +348,23 @@ export interface RpcPluginDescriptor {
 	enabled: boolean;
 	enabledFeatures: string[];
 	availableFeatures: string[];
+	settings: RpcPluginSettingDescriptor[];
+}
+
+export interface RpcPluginSettingDescriptor {
+	key: string;
+	type: "string" | "number" | "boolean" | "enum";
+	description?: string;
+	secret: boolean;
+	env?: string;
+	environmentAvailable: boolean;
+	configured: boolean;
+	value: unknown;
+	defaultValue?: string | number | boolean;
+	values?: string[];
+	min?: number;
+	max?: number;
+	step?: number;
 }
 export interface RpcSettingsSnapshot {
 	settings: RpcSettingDescriptor[];
@@ -334,6 +383,7 @@ export interface MarketplacePluginDescriptor {
 	keywords?: string[];
 	category?: string;
 	tags?: string[];
+	capabilities: Array<"commands" | "agents" | "hooks" | "mcp" | "lsp" | "dap">;
 	installations: Array<{ scope: "user" | "project"; version: string; enabled: boolean; shadowed: boolean }>;
 }
 export interface MarketplaceSnapshot {
@@ -355,6 +405,10 @@ export interface WorkspaceFileContent {
 }
 export interface GitStatus {
 	branch: string | null;
+	upstream: string | null;
+	baseBranch: string | null;
+	branches: string[];
+	localBranches: string[];
 	staged: number;
 	unstaged: number;
 	untracked: number;
@@ -415,7 +469,16 @@ export type ScheduledTaskInput = Pick<
 export interface ContextSnapshot {
 	skills: string[];
 	memoryBackend: string | null;
-	skillDetails: Array<{ name: string; description: string; filePath: string; source: string; hidden?: boolean }>;
+	skillDetails: Array<{
+		name: string;
+		description: string;
+		filePath: string;
+		source: string;
+		provider: string;
+		providerName: string;
+		level: "user" | "project" | "native";
+		hidden?: boolean;
+	}>;
 	skillWarnings: Array<{ skillPath: string; message: string }>;
 }
 export interface McpServerStatus {
@@ -423,9 +486,44 @@ export interface McpServerStatus {
 	enabled: boolean;
 	status: "connected" | "connecting" | "disconnected";
 	toolCount: number;
+	toolNames: string[];
 	transport: "stdio" | "http" | "sse" | "unknown";
+	source?: { provider: string; providerName: string; level: "user" | "project" | "native" };
 	auth: { configured: boolean; oauth: boolean; credentialConfigured: boolean; credentialAvailable: boolean };
 	lastError?: string;
+}
+export interface McpCapabilitySnapshot {
+	resources: Array<{
+		serverName: string;
+		resources: Array<{
+			uri: string;
+			name: string;
+			title?: string;
+			description?: string;
+			mimeType?: string;
+			size?: number;
+		}>;
+		templates: Array<{ uriTemplate: string; name: string; title?: string; description?: string; mimeType?: string }>;
+	}>;
+	prompts: Array<{
+		serverName: string;
+		prompts: Array<{
+			name: string;
+			title?: string;
+			description?: string;
+			arguments?: Array<{ name: string; description?: string; required?: boolean }>;
+		}>;
+	}>;
+	notifications: {
+		enabled: boolean;
+		servers: Array<{
+			serverName: string;
+			toolsChanged: boolean;
+			resourcesChanged: boolean;
+			promptsChanged: boolean;
+			resourceSubscriptions: string[];
+		}>;
+	};
 }
 export interface MemoryStatus {
 	backend: "off" | "local" | "hindsight" | "mnemopi";

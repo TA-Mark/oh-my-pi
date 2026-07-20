@@ -13,6 +13,7 @@
     "productName": "OMP Desktop",
     "icon": "resources/icon.png",
     "files": ["dist/**/*", "dist-electron/**/*"],
+    "asarUnpack": ["**/node_modules/node-pty/**/*"],
     "extraResources": [{ "from": "resources", "to": "." }],
     "directories": { "output": "release" },
     "win": { "target": ["nsis", "msi"] },
@@ -22,7 +23,7 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "electron:compile": "bun build ./electron/main.ts --outfile ./dist-electron/main.js --target node --format esm --external electron && bun build ./electron/preload.ts --outfile ./dist-electron/preload.cjs --target node --format cjs --external electron",
+    "electron:compile": "bun build ./electron/main.ts --outfile ./dist-electron/main.js --target node --format esm --external electron --external node-pty && bun build ./electron/preload.ts --outfile ./dist-electron/preload.cjs --target node --format cjs --external electron",
     "electron:dev": "bun run build && bun run electron:compile && electron .",
     "electron:build": "bun run build && bun run electron:compile && electron-builder",
     "sidecar": "bun scripts/build-sidecar.ts",
@@ -35,12 +36,15 @@
     "fmt": "biome format --write ."
   },
   "dependencies": {
+    "@xterm/addon-fit": "catalog:",
+    "@xterm/xterm": "catalog:",
     "react": "catalog:",
     "react-dom": "catalog:",
     "marked": "catalog:",
     "lucide-react": "catalog:",
     "@oh-my-pi/collab-web": "workspace:*",
-    "@oh-my-pi/pi-wire": "catalog:"
+    "@oh-my-pi/pi-wire": "catalog:",
+    "node-pty": "catalog:"
   },
   "devDependencies": {
     "@playwright/test": "1.61.1",
@@ -51,6 +55,7 @@
     "@typescript/native-preview": "catalog:",
     "electron": "43.1.0",
     "electron-builder": "^26.15.3",
+    "happy-dom": "20.10.6",
     "typescript": "catalog:",
     "vite": "catalog:"
   },

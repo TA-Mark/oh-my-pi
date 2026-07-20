@@ -111,6 +111,13 @@ describe("engine interruption (0.4)", () => {
 		expect(s.messages.at(-1)?.role).toBe("system");
 		expect(s.messages.at(-1)?.text).toBe("Engine stopped");
 	});
+
+	test("collapses consecutive notices for the same transport interruption", () => {
+		const once = engineInterrupted(initialViewModel, "Engine stopped");
+		const repeated = engineInterrupted(once, "Engine stopped");
+
+		expect(repeated.messages.filter(message => message.role === "system")).toHaveLength(1);
+	});
 });
 
 describe("assistant error passthrough", () => {

@@ -6,8 +6,8 @@
 }
 
 .changes-summary {
-	gap: 8px;
-	font-size: 16px;
+	gap: 7px;
+	font-size: 14px;
 	white-space: nowrap;
 	flex: 1 1 190px;
 }
@@ -21,20 +21,20 @@
 
 .changes-title {
 	color: var(--text);
-	font-size: 16px;
-	font-weight: 500;
+	font-size: 14px;
+	font-weight: 600;
 }
 
 .changes-count {
-	padding: 2px 8px;
+	padding: 2px 7px;
 	border-radius: 999px;
 	background: var(--color-overlay-active);
 	color: var(--text-dim);
-	font-size: 13px;
+	font-size: 12px;
 }
 
 .changes-total {
-	font-size: 15px;
+	font-size: 13px;
 	font-variant-numeric: tabular-nums;
 }
 
@@ -62,13 +62,13 @@
 }
 
 .changes-icon-button {
-	width: 30px;
-	height: 30px;
+	width: 28px;
+	height: 28px;
 	display: inline-flex;
 	align-items: center;
 	justify-content: center;
 	border: 1px solid transparent;
-	border-radius: 8px;
+	border-radius: 7px;
 	background: transparent;
 	color: var(--text-faint);
 	cursor: pointer;
@@ -109,16 +109,16 @@
 }
 
 .changes-pill-action {
-	height: 34px;
+	height: 32px;
 	display: inline-flex;
 	align-items: center;
-	gap: 8px;
-	padding: 0 13px;
+	gap: 7px;
+	padding: 0 11px;
 	border: 1px solid var(--border);
-	border-radius: 12px;
+	border-radius: 10px;
 	background: var(--color-bg-elevated);
 	color: var(--text);
-	font-size: 15px;
+	font-size: 13px;
 	cursor: pointer;
 	white-space: nowrap;
 }
@@ -188,9 +188,11 @@
 .review-jump-menu {
 	position: absolute;
 	top: calc(100% + 8px);
-	right: -86px;
+	left: 0;
+	right: auto;
 	z-index: 6;
-	width: min(452px, calc(100vw - 48px), 86cqw);
+	box-sizing: border-box;
+	width: min(452px, calc(100vw - 48px), calc(100cqw - 24px));
 	max-height: min(314px, calc(100vh - 124px));
 	display: flex;
 	flex-direction: column;
@@ -328,6 +330,7 @@
 }
 
 .review-workspace {
+	position: relative;
 	min-height: 0;
 	display: grid;
 	grid-template-columns: minmax(0, 1fr);
@@ -335,7 +338,7 @@
 }
 
 .changes-panel--with-navigator .review-workspace {
-	grid-template-columns: minmax(0, 1fr) minmax(220px, 32%);
+	grid-template-columns: minmax(0, 1fr) minmax(240px, 36%);
 }
 
 .changes-list {
@@ -392,12 +395,12 @@
 	display: flex;
 	align-items: center;
 	justify-content: space-between;
-	gap: 14px;
-	min-height: 42px;
-	padding: 0 clamp(12px, 3cqw, 20px) 0 clamp(14px, 4cqw, 32px);
+	gap: 10px;
+	min-height: 36px;
+	padding: 0 clamp(8px, 2cqw, 12px);
 	border-bottom: 1px solid var(--color-border-subtle);
 	background: var(--color-bg-elevated);
-	font-size: 16px;
+	font-size: 13px;
 	min-width: 0;
 }
 
@@ -497,10 +500,10 @@
 }
 
 .review-diff {
-	padding: 0 0 14px;
+	padding: 0 0 12px;
 	font-family: var(--font-mono);
-	font-size: 14px;
-	line-height: 1.55;
+	font-size: 12px;
+	line-height: 1.45;
 	min-width: 0;
 	overflow-x: auto;
 	overflow-anchor: none;
@@ -515,24 +518,24 @@
 }
 
 .review-hunk-gap {
-	height: 40px;
-	min-height: 40px;
+	height: 32px;
+	min-height: 32px;
 	display: grid;
-	grid-template-columns: 58px minmax(0, 1fr);
+	grid-template-columns: 46px minmax(0, 1fr);
 	align-items: center;
 	gap: 0;
-	margin: 0 14px;
+	margin: 0;
 	padding: 0;
 	color: var(--text-dim);
 	font-family: var(--font-mono);
-	font-size: 14px;
+	font-size: 12px;
 	background: var(--color-bg-control);
-	border-radius: 8px;
+	border-radius: 0;
 	overflow: hidden;
 }
 
 .review-diff--unified .review-hunk-gap {
-	grid-template-columns: 58px minmax(0, 1fr);
+	grid-template-columns: 46px minmax(0, 1fr);
 }
 
 .review-hunk-gap-controls {
@@ -549,25 +552,25 @@
 .review-hunk-gap-label {
 	display: flex;
 	align-items: center;
-	min-height: 40px;
-	padding: 0 10px;
+	min-height: 32px;
+	padding: 0 8px;
 	border-radius: 0;
 	background: transparent;
 	color: var(--text-dim);
 }
 
 .review-diff-row {
-	height: 27px;
-	min-height: 27px;
+	height: 24px;
+	min-height: 24px;
 	display: grid;
-	grid-template-columns: 60px 60px 22px minmax(0, 1fr);
+	grid-template-columns: 44px 44px 18px minmax(0, 1fr);
 	align-items: center;
-	padding-right: 16px;
+	padding-right: 8px;
 }
 
 .review-split-row {
-	height: 27px;
-	min-height: 27px;
+	height: 24px;
+	min-height: 24px;
 	display: grid;
 	grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
 }
@@ -575,9 +578,9 @@
 .review-split-side {
 	min-width: 0;
 	display: grid;
-	grid-template-columns: 64px 24px minmax(0, 1fr);
+	grid-template-columns: 48px 20px minmax(0, 1fr);
 	align-items: center;
-	padding-right: 12px;
+	padding-right: 6px;
 	border-right: 1px solid var(--color-border-subtle);
 }
 
@@ -588,7 +591,7 @@
 .review-line-no {
 	color: var(--color-text-secondary);
 	text-align: right;
-	padding-right: 14px;
+	padding-right: 8px;
 	user-select: none;
 	font-variant-numeric: tabular-nums;
 }
@@ -646,21 +649,21 @@
 	min-width: 0;
 	display: flex;
 	flex-direction: column;
-	gap: 8px;
-	padding: 12px 10px 20px;
+	gap: 6px;
+	padding: 8px 8px 16px;
 	border-left: 1px solid var(--border-soft);
 	background: var(--color-bg-canvas);
 	overflow: hidden;
 }
 
 .review-filter {
-	height: 34px;
+	height: 30px;
 	display: flex;
 	align-items: center;
 	gap: 8px;
-	padding: 0 10px;
+	padding: 0 8px;
 	border: 1px solid var(--border);
-	border-radius: 9px;
+	border-radius: 8px;
 	background: var(--color-bg-elevated);
 	color: var(--text-faint);
 }
@@ -672,11 +675,17 @@
 	outline: none;
 	background: transparent;
 	color: var(--text);
-	font-size: 13px;
+	font-size: 12px;
 }
 
 .review-filter input::placeholder {
 	color: var(--text-faint);
+}
+
+.review-tree-warning {
+	padding: 2px 8px 5px;
+	color: var(--color-text-warning);
+	font-size: 11px;
 }
 
 .review-tree-group {
@@ -693,24 +702,24 @@
 
 .review-tree-dir-label,
 .review-tree-file {
-	height: 32px;
+	height: 28px;
 	display: flex;
 	align-items: center;
-	gap: 9px;
+	gap: 7px;
 	min-width: 0;
 	color: var(--text-dim);
 }
 
 .review-tree-dir-label {
-	font-size: 13px;
+	font-size: 12px;
 }
 
 .review-tree-file {
 	width: 100%;
 	border: none;
-	border-radius: 8px;
+	border-radius: 7px;
 	background: transparent;
-	font-size: 13px;
+	font-size: 12px;
 	text-align: left;
 	cursor: pointer;
 }
@@ -721,4 +730,3 @@
 	text-overflow: ellipsis;
 	white-space: nowrap;
 }
-

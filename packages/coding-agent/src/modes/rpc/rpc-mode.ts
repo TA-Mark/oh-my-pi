@@ -18,7 +18,16 @@ import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import { getOAuthProviders } from "@oh-my-pi/pi-ai/oauth";
 import { PROVIDER_REGISTRY } from "@oh-my-pi/pi-ai/registry";
 import { isZodSchema, zodToWireSchema } from "@oh-my-pi/pi-ai/utils/schema";
-import { $env, getAgentDir, isEnoent, isRecord, readJsonl, Snowflake, setProjectDir } from "@oh-my-pi/pi-utils";
+import {
+	$env,
+	getAgentDir,
+	getMCPConfigPath,
+	isEnoent,
+	isRecord,
+	readJsonl,
+	Snowflake,
+	setProjectDir,
+} from "@oh-my-pi/pi-utils";
 import { reset as resetCapabilities } from "../../capability";
 import { applyProviderGlobalsFromSettings } from "../../config/provider-globals";
 import { clearPluginRootsAndCaches, resolveActiveProjectRegistryPath } from "../../discovery/helpers";
@@ -33,7 +42,8 @@ import { PluginManager } from "../../extensibility/plugins/manager";
 import { buildSkillPromptMessage, parseSkillInvocation } from "../../extensibility/skills";
 import { loadSlashCommands } from "../../extensibility/slash-commands";
 import { resolveLocalUrlToPath } from "../../internal-urls";
-import { setMcpServerEnabled, updateMCPServer } from "../../mcp/config-writer";
+import { connectToServer, disconnectServer } from "../../mcp/client";
+import { addMCPServer, removeMCPServer, setMcpServerEnabled, updateMCPServer } from "../../mcp/config-writer";
 import type { MCPManager } from "../../mcp/manager";
 import {
 	mcpOAuthCredentialIdsForServerUrl,
@@ -62,9 +72,11 @@ import { isRpcHostUriResult, RpcHostUriBridge } from "./host-uris";
 import { buildRpcMarketplaceSnapshot, createRpcMarketplaceManager } from "./rpc-marketplace";
 import {
 	buildRpcSettingsSnapshot,
+	deleteRpcPluginSetting,
 	getRpcPluginDescriptor,
 	setRpcPluginEnabled,
 	setRpcPluginFeatures,
+	setRpcPluginSetting,
 	setRpcSetting,
 } from "./rpc-settings";
 import { RpcSubagentRegistry, readRpcSubagentTranscript } from "./rpc-subagents";
@@ -82,6 +94,7 @@ import type {
 	RpcHostUriResult,
 	RpcPlanModeState,
 	RpcResponse,
+	RpcReviewScope,
 	RpcSessionState,
 	RpcSessionSummary,
 	RpcSubagentSubscriptionLevel,
@@ -179,7 +192,11 @@ function untrackedDiff(relPath: string, content: string): string {
  * vs HEAD (staged + unstaged), plus untracked files rendered as new-file diffs.
  * Returns `[]` when `cwd` is not inside a git repository.
  */
-async function buildWorkspaceDiff(cwd: string): Promise<RpcWorkspaceFileChange[]> {
+async function buildWorkspaceDiff(
+	cwd: string,
+	scope: RpcReviewScope = "all",
+	selectedRef?: string,
+): Promise<RpcWorkspaceFileChange[]> {
 	// Bound every git subprocess so a repo rooted at a huge directory (e.g. the
 	// home dir) can't stall the sequential RPC loop for minutes.
 	const signal = AbortSignal.timeout(WORKSPACE_DIFF_TIMEOUT_MS);
@@ -187,17 +204,38 @@ async function buildWorkspaceDiff(cwd: string): Promise<RpcWorkspaceFileChange[]
 	if (!root) return [];
 
 	const out: RpcWorkspaceFileChange[] = [];
+	const ref = selectedRef?.trim();
+	const includeUntracked = scope === "all" || scope === "unstaged" || scope === "last_turn";
 
 	// Tracked changes vs HEAD (falls back to the index diff when there is no HEAD yet).
 	try {
-		let raw = await git.diff(root, { base: "HEAD", allowFailure: true, signal });
-		if (!raw.trim()) {
-			// No commits yet, or nothing vs HEAD — combine unstaged + staged.
-			const [unstaged, staged] = await Promise.all([
-				git.diff(root, { allowFailure: true, signal }),
-				git.diff(root, { cached: true, allowFailure: true, signal }),
-			]);
-			raw = [staged, unstaged].filter(part => part.trim()).join("\n");
+		let raw: string;
+		switch (scope) {
+			case "unstaged":
+				raw = await git.diff(root, { allowFailure: true, signal });
+				break;
+			case "staged":
+				raw = await git.diff(root, { cached: true, allowFailure: true, signal });
+				break;
+			case "commit":
+				if (!ref) throw new Error("A commit is required for commit review");
+				raw = await git.show(root, ref, { format: "", signal });
+				break;
+			case "branch":
+				if (!ref) throw new Error("A base branch is required for branch review");
+				raw = await git.diff(root, { base: ref, head: "HEAD", allowFailure: true, signal });
+				break;
+			case "last_turn":
+			case "all":
+				raw = await git.diff(root, { base: "HEAD", allowFailure: true, signal });
+				if (!raw.trim()) {
+					const [unstaged, staged] = await Promise.all([
+						git.diff(root, { allowFailure: true, signal }),
+						git.diff(root, { cached: true, allowFailure: true, signal }),
+					]);
+					raw = [staged, unstaged].filter(part => part.trim()).join("\n");
+				}
+				break;
 		}
 		for (const file of git.diff.parseFiles(raw)) {
 			const isDelete = /^--- a\/.+\n\+\+\+ \/dev\/null/m.test(file.content);
@@ -211,47 +249,49 @@ async function buildWorkspaceDiff(cwd: string): Promise<RpcWorkspaceFileChange[]
 				truncated: file.isBinary,
 			});
 		}
-	} catch {
+	} catch (err) {
+		if (scope === "commit" || scope === "branch") throw err;
 		// Diff failed unexpectedly (or timed out) — fall through with whatever tracked entries we have.
 	}
 
 	// Untracked files: git diff omits them, so synthesize new-file diffs.
-	try {
-		const untracked = await git.ls.untracked(root, signal);
-		const known = new Set(out.map(entry => entry.path));
-		// Cap the count: an accidentally huge root (home dir) can list tens of
-		// thousands of files, and inlining each one's content is prohibitive.
-		let scanned = 0;
-		for (const relPath of untracked) {
-			if (known.has(relPath)) continue;
-			if (scanned >= MAX_UNTRACKED_FILES || signal.aborted) break;
-			scanned += 1;
-			let diff = "";
-			let additions = 0;
-			let truncated = false;
-			try {
-				const file = Bun.file(`${root}/${relPath}`);
-				if (file.size > MAX_UNTRACKED_DIFF_BYTES) {
-					truncated = true;
-				} else {
-					const content = await file.text();
-					diff = untrackedDiff(relPath, content);
-					additions = countDiffLines(diff).additions;
+	if (includeUntracked)
+		try {
+			const untracked = await git.ls.untracked(root, signal);
+			const known = new Set(out.map(entry => entry.path));
+			// Cap the count: an accidentally huge root (home dir) can list tens of
+			// thousands of files, and inlining each one's content is prohibitive.
+			let scanned = 0;
+			for (const relPath of untracked) {
+				if (known.has(relPath)) continue;
+				if (scanned >= MAX_UNTRACKED_FILES || signal.aborted) break;
+				scanned += 1;
+				let diff = "";
+				let additions = 0;
+				let truncated = false;
+				try {
+					const file = Bun.file(`${root}/${relPath}`);
+					if (file.size > MAX_UNTRACKED_DIFF_BYTES) {
+						truncated = true;
+					} else {
+						const content = await file.text();
+						diff = untrackedDiff(relPath, content);
+						additions = countDiffLines(diff).additions;
+					}
+				} catch {
+					truncated = true; // binary or unreadable
 				}
-			} catch {
-				truncated = true; // binary or unreadable
+				out.push({ path: relPath, status: "untracked", diff, additions, deletions: 0, truncated });
 			}
-			out.push({ path: relPath, status: "untracked", diff, additions, deletions: 0, truncated });
+		} catch {
+			// ls-files failed (or timed out) — skip untracked enumeration.
 		}
-	} catch {
-		// ls-files failed (or timed out) — skip untracked enumeration.
-	}
 
 	out.sort((a, b) => a.path.localeCompare(b.path));
 	return out;
 }
 
-const MAX_WORKSPACE_ENTRIES = 5000;
+const MAX_WORKSPACE_ENTRIES = 25_000;
 const DEFAULT_FILE_PREVIEW_BYTES = 256 * 1024;
 const MAX_ARTIFACT_PREVIEW_BYTES = 1024 * 1024;
 const DEFAULT_ARTIFACT_PREVIEW_BYTES = 256 * 1024;
@@ -317,6 +357,47 @@ async function listWorkspaceEntries(
 	const root = await fs.realpath(cwd);
 	const limit = Math.max(1, Math.min(MAX_WORKSPACE_ENTRIES, requestedLimit ?? MAX_WORKSPACE_ENTRIES));
 	const normalizedQuery = query.trim().toLowerCase();
+	try {
+		const [tracked, untracked] = await Promise.all([git.ls.files(root), git.ls.untracked(root)]);
+		const files = new Set<string>();
+		const directories = new Set<string>();
+		for (const candidate of [...tracked, ...untracked]) {
+			const normalized = candidate
+				.split(path.sep)
+				.join("/")
+				.replace(/^\.\/+/, "");
+			if (!normalized || normalized.startsWith("../") || path.isAbsolute(normalized)) continue;
+			files.add(normalized);
+			const parts = normalized.split("/");
+			parts.pop();
+			let parent = "";
+			for (const part of parts) {
+				parent = parent ? `${parent}/${part}` : part;
+				directories.add(parent);
+			}
+		}
+		const gitEntries: RpcWorkspaceEntry[] = [
+			...Array.from(directories, directory => ({
+				path: directory,
+				name: directory.slice(directory.lastIndexOf("/") + 1),
+				type: "directory" as const,
+				size: null,
+				mtimeMs: null,
+			})),
+			...Array.from(files, file => ({
+				path: file,
+				name: file.slice(file.lastIndexOf("/") + 1),
+				type: "file" as const,
+				size: null,
+				mtimeMs: null,
+			})),
+		]
+			.filter(entry => !normalizedQuery || entry.path.toLowerCase().includes(normalizedQuery))
+			.sort((a, b) => a.path.localeCompare(b.path));
+		return { entries: gitEntries.slice(0, limit), truncated: gitEntries.length > limit };
+	} catch {
+		// Non-git workspaces still use the guarded filesystem traversal below.
+	}
 	const entries: RpcWorkspaceEntry[] = [];
 	const pending = [root];
 	let truncated = false;
@@ -342,21 +423,12 @@ async function listWorkspaceEntries(
 			if (!child.isDirectory() && !child.isFile()) continue;
 			if (child.isDirectory()) pending.push(absolute);
 			if (normalizedQuery && !relative.toLowerCase().includes(normalizedQuery)) continue;
-			let size: number | null = null;
-			let mtimeMs: number | null = null;
-			try {
-				const stat = await fs.stat(absolute);
-				size = child.isFile() ? stat.size : null;
-				mtimeMs = stat.mtimeMs;
-			} catch {
-				// Entry changed during the walk; keep the path with unknown metadata.
-			}
 			entries.push({
 				path: relative,
 				name: child.name,
 				type: child.isDirectory() ? "directory" : "file",
-				size,
-				mtimeMs,
+				size: null,
+				mtimeMs: null,
 			});
 		}
 	}
@@ -603,6 +675,7 @@ export function dispatchRpcInputFrame(parsed: unknown, deps: RpcInputFrameDeps):
 		command.type === "bash" ||
 		command.type === "list_sessions" ||
 		command.type === "get_workspace_diff" ||
+		command.type === "list_review_commits" ||
 		command.type === "get_available_models" ||
 		command.type === "get_available_commands" ||
 		command.type === "get_login_providers" ||
@@ -1324,6 +1397,22 @@ export async function runRpcMode(
 		void emitAvailableCommandsUpdate();
 	});
 	await emitAvailableCommandsUpdate();
+	const reloadMcpRuntime = async () => {
+		if (!mcpManager) throw new Error("MCP is not enabled for this session");
+		await mcpManager.disconnectAll();
+		const result = await mcpManager.discoverAndConnect({
+			enableProjectConfig: session.settings.get("mcp.enableProjectConfig") ?? true,
+			filterExa: true,
+			filterBrowser: session.settings.get("browser.enabled") ?? false,
+		});
+		await session.refreshMCPTools(mcpManager.getTools());
+		return {
+			servers: mcpManager.getAllServerNames().length,
+			connected: mcpManager.getConnectedServers().length,
+			toolCount: mcpManager.getTools().length,
+			errors: Array.from(result.errors, ([serverName, message]) => ({ serverName, message })),
+		};
+	};
 
 	// Handle a single command
 	const handleCommand = async (command: RpcCommand): Promise<RpcResponse> => {
@@ -1581,11 +1670,13 @@ export async function runRpcMode(
 					const setting = await setRpcSetting(session.settings, command.path, command.value);
 					if (setting.path === "retry.enabled") session.setAutoRetryEnabled(setting.value === true);
 					if (setting.path === "compaction.enabled") session.setAutoCompactionEnabled(setting.value === true);
+					if (setting.path === "mcp.notifications") mcpManager?.setNotificationsEnabled(setting.value === true);
 					if (setting.category === "providers") {
 						applyProviderGlobalsFromSettings(session.settings);
 						await session.modelRegistry.refresh();
 					}
-					if (["tools", "skills", "memory"].includes(setting.category)) await session.refreshBaseSystemPrompt();
+					if (setting.category === "skills") await session.refreshSkills();
+					else if (["tools", "memory"].includes(setting.category)) await session.refreshBaseSystemPrompt();
 					return success(id, "set_setting", setting);
 				} catch (err) {
 					return error(id, "set_setting", err instanceof Error ? err.message : String(err));
@@ -1617,6 +1708,27 @@ export async function runRpcMode(
 					return success(id, "set_plugin_features", plugin);
 				} catch (err) {
 					return error(id, "set_plugin_features", err instanceof Error ? err.message : String(err));
+				}
+			}
+
+			case "set_plugin_setting":
+			case "delete_plugin_setting": {
+				if (session.isStreaming)
+					return error(id, command.type, "Cannot change plugin settings while a response is in progress");
+				try {
+					const plugin =
+						command.type === "set_plugin_setting"
+							? await setRpcPluginSetting(
+									session.sessionManager.getCwd(),
+									command.name,
+									command.key,
+									command.value,
+								)
+							: await deleteRpcPluginSetting(session.sessionManager.getCwd(), command.name, command.key);
+					await reloadPluginState();
+					return success(id, command.type, plugin);
+				} catch (err) {
+					return error(id, command.type, err instanceof Error ? err.message : String(err));
 				}
 			}
 
@@ -1923,8 +2035,26 @@ export async function runRpcMode(
 			}
 
 			case "get_workspace_diff": {
-				const files = await buildWorkspaceDiff(session.sessionManager.getCwd());
-				return success(id, "get_workspace_diff", { files });
+				try {
+					const files = await buildWorkspaceDiff(
+						session.sessionManager.getCwd(),
+						command.scope ?? "all",
+						command.ref,
+					);
+					return success(id, "get_workspace_diff", { files });
+				} catch (err) {
+					return error(id, "get_workspace_diff", err instanceof Error ? err.message : String(err));
+				}
+			}
+
+			case "list_review_commits": {
+				try {
+					const limit = Math.max(1, Math.min(command.limit ?? 12, 30));
+					const commits = await git.log.recent(session.sessionManager.getCwd(), limit);
+					return success(id, "list_review_commits", { commits });
+				} catch (err) {
+					return error(id, "list_review_commits", err instanceof Error ? err.message : String(err));
+				}
 			}
 
 			case "list_workspace_files": {
@@ -1982,6 +2112,9 @@ export async function runRpcMode(
 						description: skill.description,
 						filePath: skill.filePath,
 						source: skill.source,
+						provider: skill._source?.provider ?? skill.source.split(":", 1)[0] ?? "unknown",
+						providerName: skill._source?.providerName ?? skill.source.split(":", 1)[0] ?? "Unknown",
+						level: skill._source?.level ?? "user",
 						hidden: skill.hide,
 					})),
 					skillWarnings: session.skillWarnings,
@@ -2022,6 +2155,105 @@ export async function runRpcMode(
 
 			case "get_mcp_status": {
 				return success(id, "get_mcp_status", { servers: mcpManager?.getStatusSnapshot() ?? [] });
+			}
+
+			case "add_mcp_server": {
+				if (!mcpManager) return error(id, "add_mcp_server", "MCP is not enabled for this session");
+				try {
+					const cwd = session.sessionManager.getCwd();
+					await addMCPServer(getMCPConfigPath(command.scope, cwd), command.name, command.config);
+					await reloadMcpRuntime();
+					return success(id, "add_mcp_server", {
+						serverName: command.name,
+						scope: command.scope,
+						status: mcpManager.getConnectionStatus(command.name),
+						toolCount: mcpManager.getTools().filter(tool => tool.mcpServerName === command.name).length,
+					});
+				} catch (err) {
+					return error(id, "add_mcp_server", err instanceof Error ? err.message : String(err));
+				}
+			}
+
+			case "remove_mcp_server": {
+				if (!mcpManager) return error(id, "remove_mcp_server", "MCP is not enabled for this session");
+				try {
+					const cwd = session.sessionManager.getCwd();
+					await removeMCPServer(getMCPConfigPath(command.scope, cwd), command.serverName);
+					await reloadMcpRuntime();
+					return success(id, "remove_mcp_server", {
+						serverName: command.serverName,
+						scope: command.scope,
+						removed: true,
+					});
+				} catch (err) {
+					return error(id, "remove_mcp_server", err instanceof Error ? err.message : String(err));
+				}
+			}
+
+			case "test_mcp_server": {
+				if (!mcpManager) return error(id, "test_mcp_server", "MCP is not enabled for this session");
+				try {
+					const config = mcpManager.getServerConfig(command.serverName);
+					if (!config) return error(id, "test_mcp_server", `MCP server not found: ${command.serverName}`);
+					const resolved = await mcpManager.prepareConfig(config);
+					const connection = await connectToServer(`rpc-test-${command.serverName}`, resolved);
+					const serverInfo = connection.serverInfo;
+					await disconnectServer(connection);
+					return success(id, "test_mcp_server", {
+						serverName: command.serverName,
+						connected: true,
+						serverInfo,
+					});
+				} catch (err) {
+					return error(id, "test_mcp_server", err instanceof Error ? err.message : String(err));
+				}
+			}
+
+			case "reload_mcp": {
+				try {
+					return success(id, "reload_mcp", await reloadMcpRuntime());
+				} catch (err) {
+					return error(id, "reload_mcp", err instanceof Error ? err.message : String(err));
+				}
+			}
+
+			case "get_mcp_capabilities": {
+				if (!mcpManager) return error(id, "get_mcp_capabilities", "MCP is not enabled for this session");
+				try {
+					const connected = mcpManager.getConnectedServers();
+					await Promise.all(
+						connected.flatMap(serverName => [
+							mcpManager.refreshServerResources(serverName),
+							mcpManager.refreshServerPrompts(serverName),
+						]),
+					);
+					const notificationState = mcpManager.getNotificationState();
+					return success(id, "get_mcp_capabilities", {
+						resources: connected.map(serverName => ({
+							serverName,
+							...(mcpManager.getServerResources(serverName) ?? { resources: [], templates: [] }),
+						})),
+						prompts: connected.map(serverName => ({
+							serverName,
+							prompts: mcpManager.getServerPrompts(serverName) ?? [],
+						})),
+						notifications: {
+							enabled: notificationState.enabled,
+							servers: connected.map(serverName => {
+								const capabilities = mcpManager.getConnection(serverName)?.capabilities;
+								return {
+									serverName,
+									toolsChanged: capabilities?.tools?.listChanged === true,
+									resourcesChanged: capabilities?.resources?.listChanged === true,
+									promptsChanged: capabilities?.prompts?.listChanged === true,
+									resourceSubscriptions: Array.from(notificationState.subscriptions.get(serverName) ?? []),
+								};
+							}),
+						},
+					});
+				} catch (err) {
+					return error(id, "get_mcp_capabilities", err instanceof Error ? err.message : String(err));
+				}
 			}
 
 			case "reconnect_mcp": {
@@ -2309,9 +2541,34 @@ export async function runRpcMode(
 			case "get_git_status": {
 				try {
 					const cwd = session.sessionManager.getCwd();
-					const [summary, head] = await Promise.all([git.status.summary(cwd), git.head.resolve(cwd)]);
+					const [summary, head, branches, localBranches, defaultBranchName] = await Promise.all([
+						git.status.summary(cwd),
+						git.head.resolve(cwd),
+						git.branch.list(cwd, { all: true }).catch((): string[] => []),
+						git.branch.list(cwd).catch((): string[] => []),
+						git.branch.default(cwd).catch(() => null),
+					]);
+					const branchName = head?.kind === "ref" ? head.branchName : null;
+					const [remoteName, mergeRef] = branchName
+						? await Promise.all([
+								git.config.getBranch(cwd, branchName, "remote"),
+								git.config.getBranch(cwd, branchName, "merge"),
+							])
+						: [undefined, undefined];
+					const upstream =
+						remoteName && mergeRef ? `${remoteName}/${mergeRef.replace(/^refs\/heads\//, "")}` : null;
+					const baseCandidates = defaultBranchName
+						? [`origin/${defaultBranchName}`, `upstream/${defaultBranchName}`, defaultBranchName]
+						: ["origin/main", "upstream/main", "main", "origin/master", "master"];
+					const baseBranch =
+						baseCandidates.find(candidate => branches.includes(candidate) && candidate !== branchName) ??
+						(upstream?.split("/").at(-1) !== branchName ? upstream : null);
 					return success(id, "get_git_status", {
-						branch: head?.kind === "ref" ? head.branchName : null,
+						branch: branchName,
+						upstream,
+						baseBranch,
+						branches,
+						localBranches,
 						staged: summary?.staged ?? 0,
 						unstaged: summary?.unstaged ?? 0,
 						untracked: summary?.untracked ?? 0,

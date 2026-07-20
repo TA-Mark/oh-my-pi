@@ -21,3 +21,4 @@
 @import "./07-responsive.css"; /* welcome + @container/@media geometry */
 @import "./08-codex-overrides.css"; /* Codex density/light/polish passes */
 @import "./09-container.css"; /* composer container-query collapse (LAST) */
+@import "./10-ui-contract.css"; /* canonical typography, controls and panel geometry */

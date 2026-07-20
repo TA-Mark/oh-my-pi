@@ -1488,7 +1488,7 @@ export async function runRootCommand(
 			notifs.push({ kind: "error", message: modelRegistryError.message });
 		}
 
-		if (!isInteractive && !session.model) {
+		if (!isInteractive && mode !== "rpc" && mode !== "rpc-ui" && !session.model) {
 			if (modelRegistryError) {
 				process.stderr.write(`${chalk.red(modelRegistryError.message)}\n\n`);
 			}

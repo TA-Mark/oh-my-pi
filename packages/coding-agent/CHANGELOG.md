@@ -7,13 +7,23 @@
 - Added additive RPC parity for desktop settings/plugins, safe workspace file previews, context inspection, MCP and memory lifecycle, browser tabs, and Git/worktree management.
 - Added a bounded `read_artifact` RPC command so GUI hosts can preview session and subagent artifacts without receiving filesystem paths.
 - Added RPC control for per-plugin feature selection with live plugin and skill discovery reload.
+- Added schema-aware RPC inspection, validation, update, and reset support for plugin-defined settings without exposing stored secret values.
 - Added GUI-safe MCP OAuth reauthorization/sign-out commands plus redacted connection diagnostics and credential-availability status.
+- Added GUI RPC lifecycle parity for MCP server add/remove/test/reload and live resource, prompt, and notification-capability inspection.
 - Added scoped plugin marketplace RPC discovery/source lifecycle/install/update/uninstall/enable operations for GUI hosts.
 - Added structured memory save/consolidate/clear RPC lifecycle actions and Hindsight backend health, scoped search, and explicit save support.
+- Added structured provider name and scope metadata for skills exposed to GUI hosts.
 
 ### Changed
 
 - Replaced the Desktop source-regex RPC drift check with a compile-time parity contract covering every core command and success-response discriminant.
+
+### Fixed
+
+- Fixed RPC and Desktop hosts repeatedly losing the engine when no model credentials are configured; protocol mode now starts without an active model so clients can complete login and model selection.
+- Fixed Desktop settings classifying Retry and Context Compaction controls as generic advanced tools, and restored non-secret token-budget controls that were incorrectly filtered as credentials.
+- Fixed Desktop settings classifying MCP discovery and notification controls as generic advanced tools, and enriched GUI MCP status with the real discovery source and currently mounted tool names.
+- Fixed RPC skill setting changes rebuilding the prompt without first rediscovering skills from the updated sources.
 
 ## [17.0.1] - 2026-07-16
 
