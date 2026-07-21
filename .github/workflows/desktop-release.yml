@@ -31,9 +31,11 @@ jobs:
       - name: Install dependencies (bun)
         uses: ./.github/actions/bun-install
 
-      - name: Build OMP sidecar
+      - name: Check desktop package
         shell: bash
-        run: bun --cwd=packages/desktop run sidecar
+        run: |
+          bun --cwd=packages/desktop run check
+          bun --cwd=packages/desktop run test
 
       - name: Build Electron installer
         shell: bash
@@ -80,6 +82,9 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install dependencies (bun)
         uses: ./.github/actions/bun-install
+      - name: Build OMP sidecar
+        shell: pwsh
+        run: bun --cwd=packages/desktop run sidecar
       - name: Run source and sidecar RPC smoke tests
         shell: pwsh
         run: |

@@ -1,11 +1,13 @@
 import { Bug, Download, RefreshCw, X } from "lucide-react";
 import type { DiagnosticsSnapshot } from "../lib/desktop-bridge";
+import type { SessionTimelineEntry } from "../lib/reducer";
 import type { SessionStats } from "../lib/rpc-protocol";
 
 interface DiagnosticsPanelProps {
 	open: boolean;
 	snapshot: DiagnosticsSnapshot | null;
 	sessionStats: SessionStats | null;
+	timeline: SessionTimelineEntry[];
 	loading: boolean;
 	onRefresh: () => void;
 	onExport: () => void;
@@ -16,11 +18,13 @@ export function DiagnosticsPanel({
 	open,
 	snapshot,
 	sessionStats,
+	timeline,
 	loading,
 	onRefresh,
 	onExport,
 	onClose,
 }: DiagnosticsPanelProps) {
+	const recentTimeline = timeline.slice(-30).reverse();
 	if (!open) return null;
 	return (
 		<div className="settings-layer">
@@ -56,8 +60,38 @@ export function DiagnosticsPanel({
 				</header>
 				<div className="diagnostics-content">
 					{loading ? <p>Collecting redacted diagnostics…</p> : null}
+					<section className="diagnostics-section" aria-label="Session timeline">
+						<div className="diagnostics-section-head">
+							<h3>Session timeline</h3>
+							<span>{recentTimeline.length} recent events</span>
+						</div>
+						{recentTimeline.length > 0 ? (
+							<ol className="diagnostics-timeline">
+								{recentTimeline.map(entry => (
+									<li
+										key={entry.id}
+										className={`diagnostics-timeline-item diagnostics-timeline-item--${entry.tone}`}
+									>
+										<time dateTime={new Date(entry.at).toISOString()}>
+											{new Date(entry.at).toLocaleTimeString([], {
+												hour: "2-digit",
+												minute: "2-digit",
+												second: "2-digit",
+											})}
+										</time>
+										<span className="diagnostics-timeline-body">
+											<strong>{entry.label}</strong>
+											{entry.detail ? <span>{entry.detail}</span> : null}
+										</span>
+									</li>
+								))}
+							</ol>
+						) : (
+							<p>No session events yet.</p>
+						)}
+					</section>
 					{snapshot ? (
-						<>
+						<section className="diagnostics-section" aria-label="Diagnostics snapshot">
 							<div className="diagnostics-summary">
 								<span>OMP Desktop {snapshot.appVersion}</span>
 								<span>
@@ -73,7 +107,7 @@ export function DiagnosticsPanel({
 								{sessionStats ? <span>Tokens: {sessionStats.tokens.total.toLocaleString()}</span> : null}
 							</div>
 							<pre>{snapshot.logTail || "No Electron log entries."}</pre>
-						</>
+						</section>
 					) : !loading ? (
 						<p>No diagnostics collected yet.</p>
 					) : null}

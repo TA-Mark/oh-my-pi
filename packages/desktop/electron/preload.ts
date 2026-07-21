@@ -5,6 +5,8 @@ const api = {
 	stopEngine: () => ipcRenderer.invoke("engine:stop"),
 	sendRpcLine: (line: string) => ipcRenderer.invoke("engine:send", line),
 	pickWorkspaceFolder: () => ipcRenderer.invoke("workspace:pick"),
+	resolveWorkspace: (requested?: string) => ipcRenderer.invoke("workspace:resolve", requested),
+	rememberWorkspace: (workspace: string) => ipcRenderer.invoke("workspace:remember", workspace),
 	startWorkspaceWatcher: (root: string) => ipcRenderer.invoke("workspace:watch:start", root),
 	stopWorkspaceWatcher: () => ipcRenderer.invoke("workspace:watch:stop"),
 	onWorkspaceFilesChanged: (cb: (value: { root: string; paths: string[] }) => void) => {

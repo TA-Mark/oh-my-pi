@@ -44,6 +44,7 @@ import type {
 	RpcSettingDescriptor,
 	RpcSettingsSnapshot,
 } from "../lib/rpc-protocol";
+import type { LocalConfirmOptions } from "./DialogHost";
 
 const HOST_ACTIONS: Array<{
 	action: HostToolAction;
@@ -536,10 +537,7 @@ export interface SettingsOperationFeedback {
 	message?: string;
 }
 
-interface PendingConfirmation {
-	title: string;
-	message: string;
-	confirmLabel: string;
+interface PendingConfirmation extends LocalConfirmOptions {
 	onConfirm: () => void;
 }
 
@@ -566,6 +564,7 @@ export interface SettingsPanelProps {
 	activeModel?: Pick<ModelInfo, "provider" | "id">;
 	onRefresh: () => void;
 	onOpenDiagnostics: () => void;
+	confirmDialog: (confirmation: LocalConfirmOptions) => Promise<boolean>;
 	onSaveSetting: (path: string, value: unknown) => void;
 	onSelectModel: (provider: string, id: string) => void;
 	onLogin: (providerId: string) => void;
@@ -1297,10 +1296,6 @@ export function SettingsPanel(props: SettingsPanelProps) {
 	const [mcpDraftError, setMcpDraftError] = useState<string | null>(null);
 	const [apiKeyProviderId, setApiKeyProviderId] = useState<string | null>(null);
 	const [apiKeyDraft, setApiKeyDraft] = useState("");
-	const [confirmation, setConfirmation] = useState<PendingConfirmation | null>(null);
-	const confirmationRef = useRef<PendingConfirmation | null>(null);
-	const confirmationTriggerRef = useRef<HTMLElement | null>(null);
-	const confirmationWasOpenRef = useRef(false);
 	const [pluginSpec, setPluginSpec] = useState("");
 	const [marketplaceSource, setMarketplaceSource] = useState("");
 	const [pluginPane, setPluginPane] = useState<"installed" | "discover" | "sources">("installed");
@@ -1322,19 +1317,26 @@ export function SettingsPanel(props: SettingsPanelProps) {
 	const isSavingPrefix = (prefix: string) => props.savingKeys.some(key => key.startsWith(prefix));
 	const hostBusy = isSavingPrefix("desktop:");
 	const latestFeedback = props.operationFeedbacks.at(-1) ?? null;
-	confirmationRef.current = confirmation;
 	onCloseRef.current = props.onClose;
-	useEffect(() => {
-		if (confirmationWasOpenRef.current && !confirmation) {
-			const frame = window.requestAnimationFrame(() => confirmationTriggerRef.current?.focus());
-			confirmationWasOpenRef.current = false;
-			return () => window.cancelAnimationFrame(frame);
-		}
-		confirmationWasOpenRef.current = confirmation !== null;
-	}, [confirmation]);
 	useEffect(() => {
 		if (props.open && props.initialCategory) setCategory(props.initialCategory);
 	}, [props.open, props.initialCategory]);
+	useEffect(() => {
+		if (!props.open) {
+			didAutoOpenMcpRef.current = false;
+			return;
+		}
+		if (category !== "mcp" || didAutoOpenMcpRef.current) return;
+		const target =
+			props.mcpServers.find(
+				server =>
+					server.enabled &&
+					(server.status === "disconnected" || (server.auth.oauth && !server.auth.credentialAvailable)),
+			) ?? props.mcpServers[0];
+		if (!target) return;
+		setOpenMcpServer(target.name);
+		didAutoOpenMcpRef.current = true;
+	}, [category, props.mcpServers, props.open]);
 	useEffect(() => {
 		if (!props.open) return;
 		previousFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -1344,17 +1346,11 @@ export function SettingsPanel(props: SettingsPanelProps) {
 		const onKeyDown = (event: KeyboardEvent) => {
 			if (event.key === "Escape") {
 				event.preventDefault();
-				if (confirmationRef.current) {
-					setConfirmation(null);
-					return;
-				}
 				onCloseRef.current();
 				return;
 			}
 			if (event.key !== "Tab" || !panelRef.current) return;
-			const focusRoot = confirmationRef.current
-				? panelRef.current.querySelector<HTMLElement>(".settings-confirm-dialog")
-				: panelRef.current;
+			const focusRoot = panelRef.current;
 			if (!focusRoot) return;
 			const focusable = Array.from(
 				focusRoot.querySelectorAll<HTMLElement>(
@@ -1367,43 +1363,24 @@ export function SettingsPanel(props: SettingsPanelProps) {
 				return;
 			}
 			const first = focusable[0];
-			const last = focusable.at(-1) ?? first;
-			if (event.shiftKey && document.activeElement === first) {
-				event.preventDefault();
-				last.focus();
-			} else if (!event.shiftKey && document.activeElement === last) {
+			const last = focusable.at(-1);
+			const active = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+			if (!event.shiftKey && active === last) {
 				event.preventDefault();
 				first.focus();
+			} else if (event.shiftKey && active === first) {
+				event.preventDefault();
+				last?.focus();
 			}
 		};
 		window.addEventListener("keydown", onKeyDown);
 		return () => {
-			window.cancelAnimationFrame(frame);
 			window.removeEventListener("keydown", onKeyDown);
+			window.cancelAnimationFrame(frame);
 			document.body.style.overflow = previousOverflow;
 			previousFocusRef.current?.focus();
 		};
 	}, [props.open]);
-	useEffect(() => {
-		if (props.open) props.onRefresh();
-	}, [props.open, props.onRefresh]);
-	useEffect(() => {
-		if (props.open && category === "mcp") props.onRefreshMcp();
-	}, [props.open, category, props.onRefreshMcp]);
-	useEffect(() => {
-		if (!props.open || category !== "mcp" || didAutoOpenMcpRef.current || props.mcpServers.length === 0) return;
-		didAutoOpenMcpRef.current = true;
-		const attentionServer = props.mcpServers.find(server => server.enabled && server.status === "disconnected");
-		setOpenMcpServer((attentionServer ?? props.mcpServers[0]).name);
-	}, [category, props.mcpServers, props.open]);
-	useEffect(() => {
-		if (props.open && category === "memory") props.onRefreshMemory();
-	}, [
-		props.open,
-		category,
-		props.onRefreshMemory,
-		props.snapshot?.settings.find(setting => setting.path === "memory.backend")?.value,
-	]);
 	useEffect(() => {
 		if (!props.open || category !== "memory") return;
 		const configured = props.snapshot?.settings.find(setting => setting.path === "memory.backend")?.value;
@@ -1793,7 +1770,7 @@ export function SettingsPanel(props: SettingsPanelProps) {
 			</section>
 		</div>
 	);
-	const settingByPath = (path: string) => settings.find(setting => setting.path === path);
+	const settingByPath = (path: string) => props.snapshot?.settings.find(setting => setting.path === path);
 	const renderFriendlySettings = (paths: string[], copy: Record<string, { label: string; description: string }>) =>
 		paths.flatMap(path => {
 			const setting = settingByPath(path);
@@ -1809,19 +1786,23 @@ export function SettingsPanel(props: SettingsPanelProps) {
 				/>,
 			];
 		});
-	const renderFeatureSwitch = (setting: RpcSettingDescriptor | undefined, label: string) => (
-		<button
-			type="button"
-			className={`settings-feature-switch${setting?.value === true ? " is-on" : ""}`}
-			role="switch"
-			aria-checked={setting?.value === true}
-			disabled={!setting || isSaving(setting.path)}
-			onClick={() => setting && props.onSaveSetting(setting.path, setting.value !== true)}
-		>
-			<span aria-hidden="true" />
-			{label}
-		</button>
-	);
+	const renderFeatureSwitch = (setting: RpcSettingDescriptor | undefined, label: string, fallbackPath?: string) => {
+		const path = setting?.path ?? fallbackPath;
+		const checked = setting?.value === true;
+		return (
+			<button
+				type="button"
+				className={`settings-feature-switch${checked ? " is-on" : ""}`}
+				role="switch"
+				aria-checked={checked}
+				disabled={!path || isSaving(path)}
+				onClick={() => path && props.onSaveSetting(path, !checked)}
+			>
+				<span aria-hidden="true" />
+				{label}
+			</button>
+		);
+	};
 	const renderRetryDashboard = () => {
 		const enabled = settingByPath("retry.enabled");
 		const maxRetries = settingByPath("retry.maxRetries")?.value;
@@ -2191,7 +2172,7 @@ export function SettingsPanel(props: SettingsPanelProps) {
 									type="button"
 									className={`${selected ? "is-selected" : ""}${active ? " is-active" : ""}`}
 									aria-pressed={selected}
-									disabled={!backendSetting || isSaving("memory.backend")}
+									disabled={isSaving("memory.backend")}
 									onClick={() => setPreviewMemoryBackend(backend.id)}
 								>
 									<span className="memory-backend-icon">
@@ -2274,7 +2255,7 @@ export function SettingsPanel(props: SettingsPanelProps) {
 								<button
 									type="button"
 									className="settings-primary-button"
-									disabled={!backendSetting || isSaving("memory.backend")}
+									disabled={isSaving("memory.backend")}
 									onClick={() => props.onSaveSetting("memory.backend", previewBackend)}
 								>
 									{isSaving("memory.backend") ? "Activating..." : `Activate ${previewDefinition.label}`}
@@ -2878,6 +2859,7 @@ export function SettingsPanel(props: SettingsPanelProps) {
 		const skillSetting = (path: string) => skillSettings.find(setting => setting.path === path);
 		const enabled = skillSetting("skills.enabled");
 		const commands = skillSetting("skills.enableSkillCommands");
+		const discoveryEnabled = enabled?.value === true || (!enabled && props.skillDetails.length > 0);
 		const hiddenCount = props.skillDetails.filter(skill => skill.hidden).length;
 		const activeSourceCount = new Set(props.skillDetails.map(skill => `${skill.provider}:${skill.level}`)).size;
 		const visibleSkills = props.skillDetails.filter(skill =>
@@ -2932,14 +2914,14 @@ export function SettingsPanel(props: SettingsPanelProps) {
 		const advancedPaths = ["skills.customDirectories", "skills.includeSkills", "skills.ignoredSkills"];
 		return (
 			<div className="skill-settings-page">
-				<section className={`skill-status-hero${enabled?.value === true ? " is-ready" : ""}`}>
+				<section className={`skill-status-hero${discoveryEnabled ? " is-ready" : ""}`}>
 					<div className="skill-status-copy">
 						<span className="skill-status-icon">
 							<ShieldCheck size={20} />
 						</span>
 						<div>
 							<strong>
-								{enabled?.value === true
+								{discoveryEnabled
 									? `${props.skillDetails.length} skill${props.skillDetails.length === 1 ? "" : "s"} available`
 									: "Skill discovery is off"}
 							</strong>
@@ -2950,7 +2932,7 @@ export function SettingsPanel(props: SettingsPanelProps) {
 						</div>
 					</div>
 					<div className="skill-status-actions">
-						{renderFeatureSwitch(enabled, enabled?.value === true ? "Enabled" : "Disabled")}
+						{renderFeatureSwitch(enabled, discoveryEnabled ? "Enabled" : "Disabled", "skills.enabled")}
 						<button type="button" disabled={isSaving("skill:reload")} onClick={props.onReloadSkills}>
 							<RefreshCw size={14} />
 							Reload discovery
@@ -3016,8 +2998,8 @@ export function SettingsPanel(props: SettingsPanelProps) {
 														className={setting?.value === true ? "is-on" : ""}
 														role="switch"
 														aria-checked={setting?.value === true}
-														disabled={!setting || enabled?.value !== true || isSaving(path)}
-														onClick={() => setting && props.onSaveSetting(path, setting.value !== true)}
+														disabled={enabled?.value === false || isSaving(path)}
+														onClick={() => props.onSaveSetting(path, setting?.value !== true)}
 													>
 														<span aria-hidden="true" />
 														{label}
@@ -3044,6 +3026,7 @@ export function SettingsPanel(props: SettingsPanelProps) {
 							{renderFeatureSwitch(
 								commands,
 								commands?.value === true ? "/skill commands on" : "/skill commands off",
+								"skills.enableSkillCommands",
 							)}
 							{hiddenCount > 0 ? <span>{hiddenCount} hidden</span> : null}
 						</div>
@@ -3109,9 +3092,9 @@ export function SettingsPanel(props: SettingsPanelProps) {
 					) : (
 						<div className="plugin-empty-state">
 							<ShieldCheck size={22} />
-							<strong>{enabled?.value === true ? "No skills discovered" : "Skill discovery is disabled"}</strong>
+							<strong>{discoveryEnabled ? "No skills discovered" : "Skill discovery is disabled"}</strong>
 							<span>
-								{enabled?.value === true
+								{discoveryEnabled
 									? "Add a valid SKILL.md to an enabled source or review discovery warnings below."
 									: "Enable discovery to load skills from the configured sources."}
 							</span>
@@ -3739,8 +3722,17 @@ export function SettingsPanel(props: SettingsPanelProps) {
 	};
 	const CategoryIcon = selectedCategory.icon;
 	const confirmAction = (confirmation: PendingConfirmation) => {
-		confirmationTriggerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-		setConfirmation(confirmation);
+		void props
+			.confirmDialog({
+				title: confirmation.title,
+				message: confirmation.message,
+				confirmLabel: confirmation.confirmLabel,
+				cancelLabel: confirmation.cancelLabel,
+				danger: confirmation.danger ?? true,
+			})
+			.then(confirmed => {
+				if (confirmed) confirmation.onConfirm();
+			});
 	};
 	if (!props.open) return null;
 	return (
@@ -4037,38 +4029,6 @@ export function SettingsPanel(props: SettingsPanelProps) {
 						) : null}
 					</div>
 				</div>
-				{confirmation ? (
-					<div className="settings-confirm-layer">
-						<div
-							className="settings-confirm-dialog"
-							role="alertdialog"
-							aria-modal="true"
-							aria-labelledby={`${titleId}-confirmation-title`}
-							aria-describedby={`${titleId}-confirmation-message`}
-						>
-							<div className="settings-confirm-icon" aria-hidden="true">
-								<ShieldCheck size={20} />
-							</div>
-							<h2 id={`${titleId}-confirmation-title`}>{confirmation.title}</h2>
-							<p id={`${titleId}-confirmation-message`}>{confirmation.message}</p>
-							<div className="settings-confirm-actions">
-								<button type="button" autoFocus onClick={() => setConfirmation(null)}>
-									Cancel
-								</button>
-								<button
-									type="button"
-									className="settings-danger-button settings-danger-button--solid"
-									onClick={() => {
-										confirmation.onConfirm();
-										setConfirmation(null);
-									}}
-								>
-									{confirmation.confirmLabel}
-								</button>
-							</div>
-						</div>
-					</div>
-				) : null}
 			</section>
 		</div>
 	);

@@ -1,6 +1,7 @@
 import { Bot, GitBranch, MessageCircle, Plus, Send, Square, X } from "lucide-react";
 import { type KeyboardEvent, useEffect, useRef, useState } from "react";
-import type { LoginProvider, ModelInfo } from "../lib/rpc-protocol";
+import type { ContextBreakdown, ContextUsage, LoginProvider, ModelInfo } from "../lib/rpc-protocol";
+import { contextBreakdownRows } from "./ContextInspector";
 import { ModelPicker } from "./ModelPicker";
 
 export interface SideChatMessage {
@@ -21,6 +22,10 @@ interface SideChatPanelProps {
 	models: ModelInfo[];
 	providers: LoginProvider[];
 	model?: string;
+	contextUsage?: ContextUsage;
+	contextBreakdown?: ContextBreakdown;
+	contextSkills: string[];
+	contextMemoryBackend: string | null;
 	onSelectModel: (provider: string, modelId: string) => void;
 	onToggleWorktree: () => void;
 	onSend: (text: string) => void;
@@ -50,6 +55,10 @@ export function SideChatPanel({
 	models,
 	providers,
 	model,
+	contextUsage,
+	contextBreakdown,
+	contextSkills,
+	contextMemoryBackend,
 	onSelectModel,
 	onToggleWorktree,
 	onSend,
@@ -89,6 +98,12 @@ export function SideChatPanel({
 	};
 
 	const statusLabel = starting ? "Starting isolated session" : busy ? "Thinking" : ready ? "Ready" : "Not running";
+	const breakdownRows = contextBreakdownRows(contextBreakdown);
+	const contextSummary = contextUsage
+		? `${contextUsage.tokens.toLocaleString()} / ${contextUsage.contextWindow.toLocaleString()} tokens`
+		: ready
+			? "No context sample yet"
+			: "Start session to inspect";
 	return (
 		<div className="side-chat-panel">
 			<header className="side-chat-header">
@@ -133,6 +148,42 @@ export function SideChatPanel({
 					</button>
 				</div>
 			</div>
+
+			<details className="side-chat-context" open={Boolean(contextUsage || contextBreakdown)}>
+				<summary>
+					<span>Context inspector</span>
+					<small>{contextSummary}</small>
+				</summary>
+				<div className="side-chat-context-body">
+					{contextUsage ? (
+						<div className="side-chat-context-meter">
+							<div>
+								<span>Core context</span>
+								<strong>{Math.round(contextUsage.percent)}%</strong>
+							</div>
+							<i style={{ width: `${Math.min(100, contextUsage.percent)}%` }} />
+						</div>
+					) : (
+						<p>
+							{ready ? "Send or fork a message to refresh context usage." : "Side Chat has no running context."}
+						</p>
+					)}
+					{breakdownRows.length ? (
+						<div className="side-chat-context-rows">
+							{breakdownRows.map(row => (
+								<div key={row.label}>
+									<span>{row.label}</span>
+									<strong>{row.tokens.toLocaleString()}</strong>
+								</div>
+							))}
+						</div>
+					) : null}
+					<div className="side-chat-context-tags">
+						<span>{contextMemoryBackend ? `Memory: ${contextMemoryBackend}` : "Memory: off"}</span>
+						<span>{contextSkills.length ? `Skills: ${contextSkills.join(", ")}` : "Skills: none"}</span>
+					</div>
+				</div>
+			</details>
 
 			<div className="side-chat-messages" aria-live="polite">
 				{messages.length === 0 ? (

@@ -34,6 +34,18 @@ For a frontend-only Vite session:
 bun --cwd packages/desktop run dev
 ```
 
+After a manual source or upstream update, desktop commands verify their local
+workspace dependencies before running. If a package is missing or an exact
+version is stale (for example `happy-dom` after a production-only install), the
+guard repairs the hoisted workspace with `bun install --frozen-lockfile`:
+
+```sh
+bun --cwd packages/desktop run deps:ensure
+```
+
+`build`, `check`, and `test` invoke this guard automatically. Test-only packages
+remain development dependencies and are not added to the packaged application.
+
 The development main process runs the source engine through Bun. Set
 `OMP_ENGINE_PATH` to use a compiled OMP binary instead.
 
@@ -48,6 +60,7 @@ bun --cwd packages/desktop run electron:build
 ```
 
 `sidecar` builds the current `packages/coding-agent` source and stages
-`resources/omp.exe` (or the platform equivalent). `electron:build` produces NSIS
-and MSI installers under `release/` on Windows. Auto-update is intentionally disabled
+`resources/omp.exe` (or the platform equivalent). `electron:build` runs that
+sidecar step before Electron Builder, then produces installers under `release/`
+on Windows. Auto-update is intentionally disabled
 until a signed update endpoint is configured.

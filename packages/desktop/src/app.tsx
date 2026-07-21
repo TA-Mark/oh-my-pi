@@ -4,6 +4,14 @@ import type { AuthPrompt } from "./components/AuthDialog";
 import type { ComposerInjection } from "./components/Composer";
 import { composePromptWithContext, type StagedContextItem } from "./components/ContextInspector";
 import { DiagnosticsPanel } from "./components/DiagnosticsPanel";
+import {
+	type LocalConfirmOptions,
+	LocalDialogHost,
+	type LocalDialogInput,
+	type LocalDialogRequest,
+	type LocalDialogResult,
+	type LocalPromptOptions,
+} from "./components/DialogHost";
 import type { WidgetEntry } from "./components/ExtensionWidgets";
 import { HostApprovalDialog } from "./components/HostApprovalDialog";
 import { type SettingsOperationFeedback, SettingsPanel } from "./components/SettingsPanel";
@@ -21,7 +29,9 @@ import {
 	openExternalUrl,
 	openNewWindow,
 	pickWorkspaceFolder,
+	rememberWorkspace,
 	removeScheduledTask,
+	resolveWorkspace,
 	revealItem,
 	runScheduledTaskNow,
 	sideEngineTransport,
@@ -60,6 +70,7 @@ import type {
 	ExtensionUIResponse,
 	GitStatus,
 	GoalModeState,
+	GuidedGoalMessage,
 	HostToolCallRequest,
 	HostUriRequest,
 	HunkSelection,
@@ -80,11 +91,13 @@ import type {
 	ScheduledTask,
 	ScheduledTaskInput,
 	SessionMessage,
+	SessionState,
 	SessionStats,
 	SessionSummary,
 	SubagentMessagesSnapshot,
 	SubagentSnapshot,
 	ThinkingLevel,
+	VibeModeState,
 	WorkspaceEntry,
 	WorkspaceFileChange,
 	WorkspaceFileContent,
@@ -128,6 +141,10 @@ const EMPTY_SESSION: SessionInfo = { messageCount: 0 };
 const DIALOG_METHODS = new Set(["select", "confirm", "input", "editor"]);
 const LAST_WORKSPACE_KEY = "omp.desktop.lastWorkspace";
 
+type PendingLocalDialog = LocalDialogRequest & {
+	resolve: (result: LocalDialogResult) => void;
+};
+
 function loadLastWorkspace(): string | null {
 	try {
 		return window.localStorage.getItem(LAST_WORKSPACE_KEY);
@@ -170,7 +187,10 @@ function messageText(content: unknown): string {
 const REFRESH_EVENTS = new Set(["agent_end", "auto_compaction_end", "thinking_level_changed", "goal_updated"]);
 
 export function App() {
+	// Paint the last project immediately while Electron validates it in the
+	// background. This keeps the New Task shell visible during IPC startup.
 	const [workspace, setWorkspace] = useState<string | null>(() => loadLastWorkspace());
+	const [workspaceResolved, setWorkspaceResolved] = useState(false);
 	const [vm, dispatch] = useReducer(rootReducer, initialViewModel);
 	const [status, setStatus] = useState<EngineStatus>("idle");
 	const [statusDetail, setStatusDetail] = useState<string | undefined>();
@@ -187,6 +207,7 @@ export function App() {
 	selectedSubagentRef.current = selectedSubagent;
 	subagentTranscriptRef.current = subagentTranscript;
 	const [dialogQueue, setDialogQueue] = useState<ExtensionUIRequest[]>([]);
+	const [localDialog, setLocalDialog] = useState<PendingLocalDialog | null>(null);
 	const [toasts, setToasts] = useState<Toast[]>([]);
 	const [loginProviders, setLoginProviders] = useState<LoginProvider[]>([]);
 	const [sessions, setSessions] = useState<SessionSummary[]>([]);
@@ -238,6 +259,10 @@ export function App() {
 	const [sideChatModels, setSideChatModels] = useState<ModelInfo[]>([]);
 	const [sideChatProviders, setSideChatProviders] = useState<LoginProvider[]>([]);
 	const [sideChatModel, setSideChatModel] = useState<string | undefined>();
+	const [sideChatContextUsage, setSideChatContextUsage] = useState<ContextUsage | undefined>();
+	const [sideChatContextBreakdown, setSideChatContextBreakdown] = useState<ContextBreakdown | undefined>();
+	const [sideChatContextSkills, setSideChatContextSkills] = useState<string[]>([]);
+	const [sideChatContextMemoryBackend, setSideChatContextMemoryBackend] = useState<string | null>(null);
 	const [scheduledTasks, setScheduledTasks] = useState<ScheduledTask[]>([]);
 	const [settingsOpen, setSettingsOpen] = useState(false);
 	const [settingsCategory, setSettingsCategory] = useState<RpcSettingCategory>("providers");
@@ -285,6 +310,7 @@ export function App() {
 	const [docTitle, setDocTitle] = useState<string | undefined>();
 	const [planMode, setPlanMode] = useState<PlanModeState | undefined>();
 	const [goalMode, setGoalMode] = useState<GoalModeState | undefined>();
+	const [vibeMode, setVibeMode] = useState<VibeModeState | undefined>();
 	// Mirror of planMode read synchronously in the optimistic toggle, so a failed
 	// `set_plan_mode` reverts to the exact prior snapshot without a stale closure.
 	const planModeRef = useRef<PlanModeState | undefined>(undefined);
@@ -297,13 +323,58 @@ export function App() {
 	// boot effect runs so the (once-only) engine start reads the correct directory
 	// without re-subscribing on every project switch.
 	const workspaceRef = useRef<string | null>(workspace);
+	useEffect(() => {
+		let active = true;
+		void resolveWorkspace(loadLastWorkspace() ?? undefined).then(nextWorkspace => {
+			if (!active) return;
+			workspaceRef.current = nextWorkspace;
+			saveLastWorkspace(nextWorkspace);
+			void rememberWorkspace(nextWorkspace).catch(() => {});
+			setWorkspace(nextWorkspace);
+			setWorkspaceResolved(true);
+		});
+		return () => {
+			active = false;
+		};
+	}, []);
 	// Set while the app intentionally reaps the engine (unmount / update install) so
 	// the in-flight requests it rejects don't surface as "Login failed" style toasts.
 	const userStoppingRef = useRef(false);
+	// Engine/plugin discovery emits informational `notice` frames while the
+	// sidecar is mounting MCP and xd:// tools. They are useful during a live task
+	// but should not become the first visible row in a fresh New Task.
+	const suppressStartupNoticesRef = useRef(true);
 	const hostToolsRef = useRef<DesktopHostToolConfig[]>([]);
 	const workspaceUriEnabledRef = useRef(false);
 	const hostApprovalResolversRef = useRef(new Map<string, (approved: boolean) => void>());
 	const hostControllersRef = useRef(new Map<string, AbortController>());
+	const localDialogIdRef = useRef(0);
+	const requestLocalDialog = useCallback((request: LocalDialogInput): Promise<LocalDialogResult> => {
+		const { promise, resolve } = Promise.withResolvers<LocalDialogResult>();
+		localDialogIdRef.current += 1;
+		setLocalDialog({ ...request, id: `local-${localDialogIdRef.current}`, resolve } as PendingLocalDialog);
+		return promise;
+	}, []);
+	const respondLocalDialog = useCallback((result: LocalDialogResult): void => {
+		setLocalDialog(current => {
+			if (current) current.resolve(result);
+			return null;
+		});
+	}, []);
+	const confirmDialog = useCallback(
+		async (options: LocalConfirmOptions): Promise<boolean> => {
+			const result = await requestLocalDialog({ kind: "confirm", ...options });
+			return result.confirmed;
+		},
+		[requestLocalDialog],
+	);
+	const promptText = useCallback(
+		async (options: LocalPromptOptions): Promise<string | null> => {
+			const result = await requestLocalDialog({ kind: "prompt", ...options });
+			return result.confirmed ? (result.value ?? "") : null;
+		},
+		[requestLocalDialog],
+	);
 	hostToolsRef.current = hostTools;
 	workspaceUriEnabledRef.current = workspaceUriEnabled;
 
@@ -348,6 +419,7 @@ export function App() {
 			});
 			setPlanMode(state.planMode);
 			setGoalMode(state.goalMode);
+			setVibeMode(state.vibeMode);
 			setContextUsage(state.contextUsage);
 			setContextBreakdown(state.contextBreakdown);
 		} catch {
@@ -464,7 +536,7 @@ export function App() {
 	}, []);
 
 	useEffect(() => {
-		if (!workspace) return;
+		if (!workspace || !workspaceResolved) return;
 		let disposed = false;
 		let unlisten: () => void = () => {};
 		void onWorkspaceFilesChanged(change => {
@@ -495,7 +567,7 @@ export function App() {
 			unlisten();
 			void stopWorkspaceWatcher();
 		};
-	}, [workspace, refreshWorkspaceDiff, refreshGitStatus, refreshWorkspaceFiles]);
+	}, [workspace, workspaceResolved, refreshWorkspaceDiff, refreshGitStatus, refreshWorkspaceFiles]);
 
 	const openWorkspaceFile = useCallback(async (filePath: string) => {
 		const client = clientRef.current;
@@ -576,14 +648,16 @@ export function App() {
 			showSettingsFeedback({ key: path, state: "saving" });
 			try {
 				const updated = await client.setSetting(path, value);
-				setSettingsSnapshot(snapshot =>
-					snapshot
-						? {
-								...snapshot,
-								settings: snapshot.settings.map(setting => (setting.path === path ? updated : setting)),
-							}
-						: snapshot,
-				);
+				setSettingsSnapshot(snapshot => {
+					if (!snapshot) return { settings: [updated], plugins: [] };
+					const replaced = snapshot.settings.some(setting => setting.path === path);
+					return {
+						...snapshot,
+						settings: replaced
+							? snapshot.settings.map(setting => (setting.path === path ? updated : setting))
+							: [...snapshot.settings, updated],
+					};
+				});
 				if (path.startsWith("skills.")) {
 					const contextSnapshot = await client.getContextSnapshot();
 					setContextSkills(contextSnapshot.skills);
@@ -747,6 +821,33 @@ export function App() {
 			setContextMemoryBackend(null);
 		}
 	}, []);
+
+	const resetSideChatContext = useCallback(() => {
+		setSideChatContextUsage(undefined);
+		setSideChatContextBreakdown(undefined);
+		setSideChatContextSkills([]);
+		setSideChatContextMemoryBackend(null);
+	}, []);
+
+	const refreshSideChatContext = useCallback(async () => {
+		const client = sideClientRef.current;
+		if (!client) {
+			resetSideChatContext();
+			return;
+		}
+		try {
+			const [state, snapshot] = await Promise.all([
+				client.getState(),
+				client.getContextSnapshot().catch(() => null),
+			]);
+			setSideChatContextUsage(state.contextUsage);
+			setSideChatContextBreakdown(state.contextBreakdown);
+			setSideChatContextSkills(snapshot?.skills ?? []);
+			setSideChatContextMemoryBackend(snapshot?.memoryBackend ?? null);
+		} catch {
+			resetSideChatContext();
+		}
+	}, [resetSideChatContext]);
 
 	const runSkillAction = useCallback(
 		async (key: string, action: (client: DesktopRpcClient) => Promise<unknown>) => {
@@ -1092,7 +1193,7 @@ export function App() {
 	// restart the engine through `DesktopRpcClient.setWorkspace` while preserving
 	// this client and its UI event handlers. The effect keys off a boolean, not the
 	// path, so folder-to-folder changes do not create a second client lifecycle.
-	const engineShouldRun = workspace !== null;
+	const engineShouldRun = workspace !== null && workspaceResolved;
 	useEffect(() => {
 		if (!engineShouldRun) return;
 		let cancelled = false;
@@ -1103,6 +1204,10 @@ export function App() {
 
 		const client = new DesktopRpcClient({
 			onEvent: event => {
+				if (event.type === "notice" && suppressStartupNoticesRef.current) return;
+				if (event.type === "agent_start" || event.type === "message_start") {
+					suppressStartupNoticesRef.current = false;
+				}
 				dispatch({ kind: "event", event });
 				if (event.type === "available_commands_update") setAvailableCommands(event.commands);
 				if (event.type === "plan_mode_changed") {
@@ -1156,6 +1261,23 @@ export function App() {
 			try {
 				await client.start(workspaceRef.current ?? undefined);
 				if (cancelled) return;
+				// Desktop always opens into a draft task. If the engine restored a
+				// previous transcript (for example because autoResume is enabled in the
+				// user's CLI config), rotate it before hydrating the shell. Empty sessions
+				// are already suitable drafts, so this is idempotent across renderer
+				// remounts and app-server reconnects.
+				const startupState: SessionState = await client.getState();
+				if (startupState.messageCount > 0) {
+					const { cancelled: newTaskCancelled } = await client.newSession();
+					if (newTaskCancelled) {
+						dispatch({ kind: "seed", messages: await client.getMessages() });
+					} else {
+						dispatch({ kind: "reset" });
+						setSession(EMPTY_SESSION);
+						setSubagents([]);
+					}
+				}
+				if (cancelled) return;
 				const [availableModels] = await Promise.all([
 					client.getAvailableModels(),
 					client.getAvailableCommands().then(setAvailableCommands),
@@ -1201,7 +1323,11 @@ export function App() {
 			cancelled = true;
 			if (restartTimer) clearTimeout(restartTimer);
 			clientRef.current = null;
-			void client.stop();
+			// The Electron main process owns the sidecar for the lifetime of the
+			// window. Detach the renderer client so a remount/reload does not pay the
+			// engine cold-start cost again; explicit workspace changes and app quit
+			// still call stop() and reap it.
+			client.disconnect();
 		};
 	}, [
 		engineShouldRun,
@@ -1289,7 +1415,15 @@ export function App() {
 		async (files: string[]) => {
 			const client = clientRef.current;
 			if (!client || files.length === 0) return;
-			if (!window.confirm("Revert selected tracked changes? This permanently discards local edits.")) return;
+			if (
+				!(await confirmDialog({
+					title: "Revert changes",
+					message: "Revert selected tracked changes? This permanently discards local edits.",
+					confirmLabel: "Revert",
+					danger: true,
+				}))
+			)
+				return;
 			try {
 				await client.revertFiles(files);
 				await Promise.all([refreshWorkspaceDiff(), refreshGitStatus()]);
@@ -1299,15 +1433,29 @@ export function App() {
 				addToast(err instanceof Error ? err.message : "Could not revert changes", "error");
 			}
 		},
-		[addToast, refreshGitStatus, refreshWorkspaceDiff, reportError],
+		[addToast, confirmDialog, refreshGitStatus, refreshWorkspaceDiff, reportError],
 	);
 
 	const onCommit = useCallback(async () => {
 		const client = clientRef.current;
 		if (!client || gitStatus.staged === 0) return;
-		const message = window.prompt("Commit message")?.trim();
+		const message = (
+			await promptText({
+				title: "Commit changes",
+				message: `${gitStatus.staged} staged file${gitStatus.staged === 1 ? "" : "s"} will be committed.`,
+				placeholder: "Commit message",
+				confirmLabel: "Continue",
+			})
+		)?.trim();
 		if (!message) return;
-		if (!window.confirm(`Commit ${gitStatus.staged} staged file${gitStatus.staged === 1 ? "" : "s"}?`)) return;
+		if (
+			!(await confirmDialog({
+				title: "Create commit",
+				message: `Commit ${gitStatus.staged} staged file${gitStatus.staged === 1 ? "" : "s"}?`,
+				confirmLabel: "Commit",
+			}))
+		)
+			return;
 		try {
 			const result = await client.commit(message);
 			await Promise.all([refreshWorkspaceDiff(), refreshGitStatus()]);
@@ -1316,12 +1464,18 @@ export function App() {
 			reportError("commit failed", err);
 			addToast(err instanceof Error ? err.message : "Could not create commit", "error");
 		}
-	}, [addToast, gitStatus.staged, refreshGitStatus, refreshWorkspaceDiff, reportError]);
+	}, [addToast, confirmDialog, gitStatus.staged, promptText, refreshGitStatus, refreshWorkspaceDiff, reportError]);
 
 	const onPush = useCallback(async () => {
 		const client = clientRef.current;
 		if (!client || !gitStatus.branch) return;
-		if (!window.confirm(`Push branch ${gitStatus.branch} to its configured remote? This publishes local commits.`))
+		if (
+			!(await confirmDialog({
+				title: "Push branch",
+				message: `Push branch ${gitStatus.branch} to its configured remote? This publishes local commits.`,
+				confirmLabel: "Push",
+			}))
+		)
 			return;
 		try {
 			await client.push();
@@ -1331,15 +1485,35 @@ export function App() {
 			const detail = err instanceof Error ? err.message : String(err);
 			addToast(/auth|credential|login|network|remote/i.test(detail) ? `Push failed: ${detail}` : detail, "error");
 		}
-	}, [addToast, gitStatus.branch, reportError]);
+	}, [addToast, confirmDialog, gitStatus.branch, reportError]);
 
 	const onCreatePullRequest = useCallback(async () => {
 		const client = clientRef.current;
 		if (!client || !gitStatus.branch) return;
-		const title = window.prompt("Pull request title")?.trim();
+		const title = (
+			await promptText({
+				title: "Create pull request",
+				message: `Branch: ${gitStatus.branch}`,
+				placeholder: "Pull request title",
+				confirmLabel: "Continue",
+			})
+		)?.trim();
 		if (!title) return;
-		const body = window.prompt("Pull request description", "") ?? "";
-		if (!window.confirm(`Create a GitHub pull request from ${gitStatus.branch}?`)) return;
+		const body =
+			(await promptText({
+				title: "Pull request description",
+				initialValue: "",
+				multiline: true,
+				confirmLabel: "Continue",
+			})) ?? "";
+		if (
+			!(await confirmDialog({
+				title: "Open pull request",
+				message: `Create a GitHub pull request from ${gitStatus.branch}?`,
+				confirmLabel: "Create PR",
+			}))
+		)
+			return;
 		try {
 			const url = await client.createPullRequest(title, body);
 			addToast("Pull request created", "info");
@@ -1352,7 +1526,7 @@ export function App() {
 				"error",
 			);
 		}
-	}, [addToast, gitStatus.branch, reportError]);
+	}, [addToast, confirmDialog, gitStatus.branch, promptText, reportError]);
 
 	const onStageHunks = useCallback(
 		async (selections: HunkSelection[]) => {
@@ -1437,6 +1611,7 @@ export function App() {
 		const client = clientRef.current;
 		workspaceRef.current = folder;
 		saveLastWorkspace(folder);
+		void rememberWorkspace(folder).catch(() => {});
 		setWorkspace(folder);
 
 		// Engine already running: restart it in the selected directory so project
@@ -1496,11 +1671,32 @@ export function App() {
 	const onCreateWorktree = useCallback(async () => {
 		const client = clientRef.current;
 		if (!client || !workspace) return;
-		const ref = window.prompt("Git ref for the new worktree", gitStatus.branch ?? "HEAD")?.trim();
+		const ref = (
+			await promptText({
+				title: "Create worktree",
+				message: "Git ref for the new worktree.",
+				initialValue: gitStatus.branch ?? "HEAD",
+				confirmLabel: "Continue",
+			})
+		)?.trim();
 		if (!ref) return;
-		const worktreePath = window.prompt("Absolute worktree path", `${workspace}-worktree`)?.trim();
+		const worktreePath = (
+			await promptText({
+				title: "Worktree path",
+				message: "Absolute path for the new worktree.",
+				initialValue: `${workspace}-worktree`,
+				confirmLabel: "Continue",
+			})
+		)?.trim();
 		if (!worktreePath) return;
-		if (!window.confirm(`Create permanent worktree at ${worktreePath} from ${ref}?`)) return;
+		if (
+			!(await confirmDialog({
+				title: "Create worktree",
+				message: `Create permanent worktree at ${worktreePath} from ${ref}?`,
+				confirmLabel: "Create",
+			}))
+		)
+			return;
 		setWorktreeMutatingPath(worktreePath);
 		try {
 			await client.createWorktree(worktreePath, ref);
@@ -1512,7 +1708,7 @@ export function App() {
 		} finally {
 			setWorktreeMutatingPath(null);
 		}
-	}, [addToast, gitStatus.branch, refreshWorktrees, reportError, workspace]);
+	}, [addToast, confirmDialog, gitStatus.branch, promptText, refreshWorktrees, reportError, workspace]);
 
 	const onOpenWorktree = useCallback(
 		async (worktreePath: string) => {
@@ -1561,7 +1757,15 @@ export function App() {
 			const warning = force
 				? `Force-remove ${worktreePath}? Uncommitted changes in that worktree will be lost.`
 				: `Remove worktree ${worktreePath}? Git will refuse if it contains uncommitted changes.`;
-			if (!window.confirm(warning)) return;
+			if (
+				!(await confirmDialog({
+					title: force ? "Force-remove worktree" : "Remove worktree",
+					message: warning,
+					confirmLabel: force ? "Force remove" : "Remove",
+					danger: true,
+				}))
+			)
+				return;
 			setWorktreeMutatingPath(worktreePath);
 			try {
 				await client.removeWorktree(worktreePath, force);
@@ -1577,7 +1781,7 @@ export function App() {
 				setWorktreeMutatingPath(null);
 			}
 		},
-		[addToast, refreshWorktrees, reportError],
+		[addToast, confirmDialog, refreshWorktrees, reportError],
 	);
 
 	const onEnsureSideChat = useCallback(async () => {
@@ -1587,7 +1791,10 @@ export function App() {
 			{
 				onEvent: event => {
 					if (event.type === "agent_start" || event.type === "turn_start") setSideChatBusy(true);
-					if (event.type === "agent_end" || event.type === "turn_end") setSideChatBusy(false);
+					if (event.type === "agent_end" || event.type === "turn_end") {
+						setSideChatBusy(false);
+						void refreshSideChatContext();
+					}
 					if (event.type !== "message_end" || event.message.role !== "assistant") return;
 					const text = messageText(event.message.content) || event.message.errorMessage || "";
 					if (text) setSideChatMessages(messages => [...messages, { role: "assistant", text }]);
@@ -1598,6 +1805,7 @@ export function App() {
 					if (next === "stopped" || next === "error") {
 						const deadClient = sideClientRef.current;
 						sideClientRef.current = null;
+						resetSideChatContext();
 						void deadClient?.stop();
 					}
 				},
@@ -1642,11 +1850,13 @@ export function App() {
 			setSideChatProviders(providers);
 			setSideChatModel(modelLabel(sideState.model?.provider, sideState.model?.id));
 			setSideChatReady(true);
+			await refreshSideChatContext();
 		} catch (err) {
 			await client.stop().catch(() => {});
 			sideClientRef.current = null;
 			setSideChatReady(false);
 			setSideChatBusy(false);
+			resetSideChatContext();
 			reportError("side chat start failed", err);
 			addToast("Could not start isolated side chat", "error");
 		} finally {
@@ -1658,6 +1868,8 @@ export function App() {
 		handleHostToolCancel,
 		resolveHostUriForClient,
 		reportError,
+		refreshSideChatContext,
+		resetSideChatContext,
 		sideChatStarting,
 		sideChatWorktreePath,
 		workspace,
@@ -1693,10 +1905,11 @@ export function App() {
 					{ role: "system", text: err instanceof Error ? err.message : String(err) },
 				]);
 			} finally {
+				await refreshSideChatContext();
 				setSideChatBusy(false);
 			}
 		},
-		[reportError, sideChatReady],
+		[refreshSideChatContext, reportError, sideChatReady],
 	);
 
 	const onForkSideChat = useCallback(async () => {
@@ -1733,13 +1946,14 @@ export function App() {
 				},
 			]);
 			await side.prompt(transcript);
+			await refreshSideChatContext();
 			setSideChatBusy(false);
 		} catch (err) {
 			setSideChatBusy(false);
 			reportError("side chat fork failed", err);
 			addToast("Could not fork main context", "error");
 		}
-	}, [addToast, reportError, sideChatReady]);
+	}, [addToast, refreshSideChatContext, reportError, sideChatReady]);
 
 	const onAddSideChatResult = useCallback(() => {
 		const result = [...sideChatMessages].reverse().find(message => message.role === "assistant");
@@ -1754,8 +1968,9 @@ export function App() {
 		setSideChatReady(false);
 		setSideChatStarting(false);
 		setSideChatBusy(false);
+		resetSideChatContext();
 		if (client) await client.stop();
-	}, []);
+	}, [resetSideChatContext]);
 
 	const onStopSideChat = useCallback(async () => {
 		const client = sideClientRef.current;
@@ -1773,7 +1988,14 @@ export function App() {
 		const main = clientRef.current;
 		if (!main || !workspace) return;
 		if (sideChatWorktreePath) {
-			if (!window.confirm(`Remove isolated worktree at ${sideChatWorktreePath}? Git will refuse if it is dirty.`))
+			if (
+				!(await confirmDialog({
+					title: "Remove Side Chat worktree",
+					message: `Remove isolated worktree at ${sideChatWorktreePath}? Git will refuse if it is dirty.`,
+					confirmLabel: "Remove",
+					danger: true,
+				}))
+			)
 				return;
 			try {
 				await stopSideChat();
@@ -1787,9 +2009,23 @@ export function App() {
 			return;
 		}
 		const defaultPath = `${workspace.replace(/[\\/]+$/, "")}-side-chat`;
-		const requestedPath = window.prompt("Absolute path for Side Chat worktree", defaultPath)?.trim();
+		const requestedPath = (
+			await promptText({
+				title: "Side Chat worktree",
+				message: "Absolute path for the isolated Side Chat worktree.",
+				initialValue: defaultPath,
+				confirmLabel: "Continue",
+			})
+		)?.trim();
 		if (!requestedPath || !gitStatus.branch) return;
-		if (!window.confirm(`Create isolated Side Chat worktree at ${requestedPath}?`)) return;
+		if (
+			!(await confirmDialog({
+				title: "Create Side Chat worktree",
+				message: `Create isolated Side Chat worktree at ${requestedPath}?`,
+				confirmLabel: "Create",
+			}))
+		)
+			return;
 		try {
 			await stopSideChat();
 			await main.createWorktree(requestedPath, gitStatus.branch);
@@ -1799,7 +2035,16 @@ export function App() {
 			reportError("create side chat worktree failed", err);
 			addToast("Could not create isolated worktree", "error");
 		}
-	}, [addToast, gitStatus.branch, reportError, sideChatWorktreePath, stopSideChat, workspace]);
+	}, [
+		addToast,
+		confirmDialog,
+		gitStatus.branch,
+		promptText,
+		reportError,
+		sideChatWorktreePath,
+		stopSideChat,
+		workspace,
+	]);
 
 	const onSaveScheduledTask = useCallback(
 		async (input: ScheduledTaskInput) => {
@@ -1816,7 +2061,15 @@ export function App() {
 
 	const onRemoveScheduledTask = useCallback(
 		async (id: string) => {
-			if (!window.confirm("Remove this scheduled task?")) return;
+			if (
+				!(await confirmDialog({
+					title: "Remove scheduled task",
+					message: "Remove this scheduled task?",
+					confirmLabel: "Remove",
+					danger: true,
+				}))
+			)
+				return;
 			try {
 				await removeScheduledTask(id);
 				addToast("Scheduled task removed", "info");
@@ -1825,12 +2078,19 @@ export function App() {
 				addToast(err instanceof Error ? err.message : "Could not remove scheduled task", "error");
 			}
 		},
-		[addToast, reportError],
+		[addToast, confirmDialog, reportError],
 	);
 
 	const onRunScheduledTask = useCallback(
 		async (id: string) => {
-			if (!window.confirm("Run this scheduled task now?")) return;
+			if (
+				!(await confirmDialog({
+					title: "Run scheduled task",
+					message: "Run this scheduled task now?",
+					confirmLabel: "Run now",
+				}))
+			)
+				return;
 			try {
 				await runScheduledTaskNow(id);
 				addToast("Scheduled task started", "info");
@@ -1839,11 +2099,12 @@ export function App() {
 				addToast(err instanceof Error ? err.message : "Could not run scheduled task", "error");
 			}
 		},
-		[addToast, reportError],
+		[addToast, confirmDialog, reportError],
 	);
 
 	const onSend = useCallback(
 		(text: string, images: ImageContent[], streamingBehavior?: "steer" | "followUp") => {
+			suppressStartupNoticesRef.current = false;
 			dispatch({ kind: "user", text, images });
 			// Flip the streaming flag optimistically so the composer shows Stop and the
 			// transcript shows a working indicator immediately, without waiting for the
@@ -2001,26 +2262,112 @@ export function App() {
 		[reportError],
 	);
 
-	const onCreateGoal = useCallback(() => {
+	const onCreateGoal = useCallback(async () => {
 		const client = clientRef.current;
 		if (!client) return;
-		const objective = window.prompt("Goal objective:", "");
-		if (!objective?.trim()) return;
-		const budgetInput = window.prompt("Optional positive token budget (leave blank for none):", "");
+		const objective = (
+			await promptText({
+				title: "Create goal",
+				message: "What should OMP work toward?",
+				placeholder: "Goal objective",
+				confirmLabel: "Continue",
+			})
+		)?.trim();
+		if (!objective) return;
+		const budgetInput = await promptText({
+			title: "Goal token budget",
+			message: "Optional positive token budget. Leave blank for none.",
+			initialValue: "",
+			confirmLabel: "Create goal",
+		});
 		if (budgetInput === null) return;
 		const tokenBudget = budgetInput.trim() ? Number.parseInt(budgetInput.trim(), 10) : undefined;
 		if (tokenBudget !== undefined && (!Number.isInteger(tokenBudget) || tokenBudget <= 0)) {
 			addToast("Goal token budget must be a positive integer.", "error");
 			return;
 		}
-		void client
-			.createGoal(objective.trim(), tokenBudget)
-			.then(result => {
-				setGoalMode(result.state ?? undefined);
-				addToast("Goal mode started.", "info");
-			})
-			.catch(error => reportError("create goal failed", error));
-	}, [addToast, reportError]);
+		try {
+			const result = await client.createGoal(objective, tokenBudget);
+			setGoalMode(result.state ?? undefined);
+			addToast("Goal mode started.", "info");
+		} catch (error) {
+			reportError("create goal failed", error);
+		}
+	}, [addToast, promptText, reportError]);
+
+	const onCreateGuidedGoal = useCallback(async () => {
+		const client = clientRef.current;
+		if (!client) return;
+		try {
+			const initial = (
+				await promptText({
+					title: "Guided goal",
+					message: "Describe the outcome. OMP will ask follow-up questions, then draft a durable goal.",
+					placeholder: "Ship the desktop workflow parity gaps",
+					multiline: true,
+					confirmLabel: "Start guide",
+				})
+			)?.trim();
+			if (!initial) return;
+			const sideSessionId =
+				typeof globalThis.crypto?.randomUUID === "function"
+					? globalThis.crypto.randomUUID()
+					: `${Date.now()}-${Math.random()}`;
+			const messages: GuidedGoalMessage[] = [{ role: "user", content: initial }];
+			let latestDraftObjective: string | undefined;
+			for (let turn = 0; turn < 6; turn++) {
+				const result = await client.guidedGoalTurn(messages, sideSessionId);
+				if (result.objective?.trim()) latestDraftObjective = result.objective.trim();
+				if (result.kind === "question") {
+					messages.push({ role: "assistant", content: result.question });
+					const answer = (
+						await promptText({
+							title: "Guided goal",
+							message: result.question,
+							multiline: true,
+							confirmLabel: "Continue",
+						})
+					)?.trim();
+					if (!answer) return;
+					messages.push({ role: "user", content: answer });
+					continue;
+				}
+				const finalObjective = (
+					await promptText({
+						title: "Review guided goal",
+						message: "Edit the final objective before creating goal mode.",
+						initialValue: result.objective,
+						multiline: true,
+						confirmLabel: "Create goal",
+					})
+				)?.trim();
+				if (!finalObjective) return;
+				const created = await client.createGoal(finalObjective);
+				setGoalMode(created.state ?? undefined);
+				addToast("Guided goal started.", "info");
+				return;
+			}
+			if (latestDraftObjective) {
+				const finalObjective = (
+					await promptText({
+						title: "Review guided goal",
+						message: "The guide needs more detail, but has a draft objective.",
+						initialValue: latestDraftObjective,
+						multiline: true,
+						confirmLabel: "Create goal",
+					})
+				)?.trim();
+				if (!finalObjective) return;
+				const created = await client.createGoal(finalObjective);
+				setGoalMode(created.state ?? undefined);
+				addToast("Guided goal started.", "info");
+				return;
+			}
+			addToast("Guided goal needs more detail. Start again with a narrower outcome.", "warning");
+		} catch (error) {
+			reportError("guided goal failed", error);
+		}
+	}, [addToast, promptText, reportError]);
 
 	const onPauseGoal = useCallback(() => {
 		void clientRef.current
@@ -2042,8 +2389,16 @@ export function App() {
 			.catch(error => reportError("resume goal failed", error));
 	}, [addToast, reportError]);
 
-	const onDropGoal = useCallback(() => {
-		if (!window.confirm("Drop the current goal? Its progress remains in the session transcript.")) return;
+	const onDropGoal = useCallback(async () => {
+		if (
+			!(await confirmDialog({
+				title: "Drop goal",
+				message: "Drop the current goal? Its progress remains in the session transcript.",
+				confirmLabel: "Drop",
+				danger: true,
+			}))
+		)
+			return;
 		void clientRef.current
 			?.dropGoal()
 			.then(() => {
@@ -2051,11 +2406,26 @@ export function App() {
 				addToast("Goal dropped.", "info");
 			})
 			.catch(error => reportError("drop goal failed", error));
-	}, [addToast, reportError]);
+	}, [addToast, confirmDialog, reportError]);
+
+	const onToggleVibeMode = useCallback(
+		(enabled: boolean) => {
+			clientRef.current
+				?.setVibeMode(enabled)
+				.then(result => {
+					setVibeMode(result.state ?? undefined);
+					addToast(enabled ? "Vibe mode enabled." : "Vibe mode disabled.", "info");
+					void refreshState();
+				})
+				.catch(error => reportError("set vibe mode failed", error));
+		},
+		[addToast, refreshState, reportError],
+	);
 
 	const onNewSession = useCallback(() => {
 		const client = clientRef.current;
 		if (!client) return;
+		suppressStartupNoticesRef.current = true;
 		// Reset the view to the home screen immediately — the engine's
 		// `new_session` `await`s the in-flight turn's teardown (serial RPC
 		// dispatch), so waiting for the round-trip would leave the UI frozen on
@@ -2134,13 +2504,17 @@ export function App() {
 					return;
 				}
 				const visible = messages.slice(-20);
-				const choices = visible
-					.map((message, index) => `${index + 1}. ${message.text.replace(/\s+/g, " ").slice(0, 100)}`)
-					.join("\n");
-				const selected = window.prompt(`Branch from which message? Enter 1-${visible.length}:\n\n${choices}`);
-				if (selected === null) return;
-				const index = Number.parseInt(selected.trim(), 10) - 1;
-				const target = visible[index];
+				const selected = await requestLocalDialog({
+					kind: "branch",
+					title: "Branch session",
+					message: "Choose the user message to branch from.",
+					items: visible.map(message => ({
+						entryId: message.entryId,
+						text: message.text.replace(/\s+/g, " ").slice(0, 160),
+					})),
+				});
+				if (!selected.confirmed || !selected.value) return;
+				const target = visible.find(message => message.entryId === selected.value);
 				if (!target) {
 					addToast("Invalid branch message selection.", "error");
 					return;
@@ -2161,7 +2535,7 @@ export function App() {
 				setSwitching(false);
 			}
 		})();
-	}, [addToast, refreshSessions, refreshState, reportError]);
+	}, [addToast, refreshSessions, refreshState, reportError, requestLocalDialog]);
 
 	const onExportSession = useCallback(() => {
 		const client = clientRef.current;
@@ -2175,10 +2549,16 @@ export function App() {
 			.catch(error => reportError("export session failed", error));
 	}, [addToast, reportError]);
 
-	const onHandoffSession = useCallback(() => {
+	const onHandoffSession = useCallback(async () => {
 		const client = clientRef.current;
 		if (!client) return;
-		const instructions = window.prompt("Optional handoff instructions for the next session:", "");
+		const instructions = await promptText({
+			title: "Handoff session",
+			message: "Optional instructions for the next session.",
+			initialValue: "",
+			multiline: true,
+			confirmLabel: "Create handoff",
+		});
 		if (instructions === null) return;
 		setSwitching(true);
 		void client
@@ -2196,7 +2576,7 @@ export function App() {
 			})
 			.catch(error => reportError("handoff failed", error))
 			.finally(() => setSwitching(false));
-	}, [addToast, refreshSessions, refreshState, reportError]);
+	}, [addToast, promptText, refreshSessions, refreshState, reportError]);
 
 	const refreshAuth = useCallback(async () => {
 		await Promise.all([refreshLoginProviders(), refreshState()]);
@@ -2318,6 +2698,9 @@ export function App() {
 				onPauseGoal={onPauseGoal}
 				onResumeGoal={onResumeGoal}
 				onDropGoal={onDropGoal}
+				vibeMode={vibeMode}
+				onCreateGuidedGoal={onCreateGuidedGoal}
+				onToggleVibeMode={onToggleVibeMode}
 				changes={changes}
 				gitStatus={gitStatus}
 				workspaceEntries={workspaceEntries}
@@ -2370,6 +2753,10 @@ export function App() {
 				sideChatModels={sideChatModels}
 				sideChatProviders={sideChatProviders}
 				sideChatModel={sideChatModel}
+				sideChatContextUsage={sideChatContextUsage}
+				sideChatContextBreakdown={sideChatContextBreakdown}
+				sideChatContextSkills={sideChatContextSkills}
+				sideChatContextMemoryBackend={sideChatContextMemoryBackend}
 				onEnsureSideChat={() => void onEnsureSideChat()}
 				onStopSideChat={() => void onStopSideChat()}
 				onSelectSideChatModel={(provider, modelId) => void onSelectSideChatModel(provider, modelId)}
@@ -2388,6 +2775,7 @@ export function App() {
 				historyLoading={historyLoading}
 				switching={switching}
 				dialog={dialogQueue.find(d => DIALOG_METHODS.has(d.method)) ?? null}
+				promptText={promptText}
 				toasts={toasts}
 				injection={injection}
 				onSend={onSend}
@@ -2446,6 +2834,7 @@ export function App() {
 					setDiagnosticsOpen(true);
 					void refreshDiagnostics();
 				}}
+				confirmDialog={confirmDialog}
 				onSaveSetting={saveSetting}
 				onSelectModel={onSelectModel}
 				onLogin={onLogin}
@@ -2577,6 +2966,7 @@ export function App() {
 				open={diagnosticsOpen}
 				snapshot={diagnostics}
 				sessionStats={sessionStats}
+				timeline={vm.timeline}
 				loading={diagnosticsLoading}
 				onRefresh={() => void refreshDiagnostics()}
 				onExport={() => void exportDiagnostics()}
@@ -2594,6 +2984,7 @@ export function App() {
 				onOpen={onOpenWorktree}
 				onRemove={onRemoveWorktree}
 			/>
+			<LocalDialogHost request={localDialog} onRespond={respondLocalDialog} />
 		</>
 	);
 }

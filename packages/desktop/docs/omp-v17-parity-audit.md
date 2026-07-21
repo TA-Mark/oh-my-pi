@@ -7,8 +7,8 @@ Ngày rà soát: 2026-07-18
 Electron Desktop đã nối được phần lớn luồng làm việc chính của OMP v17.0.1, nhưng **chưa đạt
 feature parity đầy đủ**. Cần phân biệt ba lớp:
 
-1. **Protocol parity:** đạt 95/95 RPC command — `rpc-protocol.ts` đã mirror toàn bộ command của core.
-2. **Client parity:** đạt 95/95 command — toàn bộ command core hiện có method trong `DesktopRpcClient`.
+1. **Protocol parity:** đạt; `rpc-protocol.ts` mirror toàn bộ command core.
+2. **Client parity:** đạt; `DesktopRpcClient` mirror toàn bộ command core.
 3. **Product parity:** thấp hơn client parity — một số method đã tồn tại nhưng chưa có UI hoặc chỉ có
    UI tối giản.
 
@@ -17,8 +17,8 @@ Runtime hiện tại khỏe ở phạm vi đã được kiểm thử:
 - Electron sidecar báo `omp/17.0.1`.
 - Không còn `packages/desktop/src-tauri` và không còn dependency/config Tauri trong desktop.
 - Desktop typecheck: pass.
-- Desktop unit tests: 66 pass, 0 fail.
-- Sidecar RPC smoke: pass toàn bộ probe hiện có.
+- Desktop unit tests: 108 pass, 0 fail.
+- Sidecar RPC smoke: pass toàn bộ probe hiện có, gồm guided-goal guard, vibe toggle, and branch picker UI.
 
 ## Ma trận parity
 
@@ -28,9 +28,9 @@ Runtime hiện tại khỏe ở phạm vi đã được kiểm thử:
 | Prompt và streaming | Gần đủ | Prompt, image, streaming text, tool lifecycle, Stop, steer/follow-up queue, command palette, queue policy controls | Interrupt behavior còn cần test E2E trên nhiều cửa sổ |
 | Session events | Đủ ở protocol | Core agent/session events, retry, compaction, TTSR, todo, IRC, goal, notice, plan | Một số event chỉ thành system text; chưa có timeline/diagnostics chuyên biệt |
 | Models/auth | Gần đủ | Provider login, API key, logout, model picker, thinking, approval, OAuth `launchUrl` | Cycle model/thinking chưa nối UI |
-| Sessions | Gần đủ | New/list/switch/rename/reseed transcript; Branch theo user message, Export HTML và Handoff đều có menu UI và gọi RPC thật | Branch picker hiện dùng dialog gọn; chưa có cây branch trực quan |
+| Sessions | Gần đủ | New/list/switch/rename/reseed transcript; Branch theo user message, Export HTML và Handoff đều có menu UI và gọi RPC thật | Branch picker hiện là modal list/filter theo message; cây branch trực quan |
 | Queue/retry/compaction | Gần đủ | Steer/follow-up composer, queue count/modes, manual compact, auto retry/compaction và abort-retry | Còn cần renderer E2E cho interrupt/retry/compaction race |
-| Plan/goal/modes | Gần đủ | Plan mode + approval; Goal snapshot/create/pause/resume/drop, header status và đồng bộ hidden goal tool | Vibe, guided-goal và loop của TUI chưa có RPC/UI tương đương |
+| Plan/goal/modes | Gần đủ | Plan mode + approval; Goal snapshot/create/pause/resume/drop; Guided goal có dialog flow; Vibe toggle có RPC/UI và đồng bộ hidden goal/vibe tools | TUI-style loop còn chưa có parity riêng trong Electron |
 | Workspace files | Đủ trong phạm vi GUI | Search/list/read, bounded preview, binary guard, containment, reveal, add context; Electron watcher theo từng window, debounce batch, bỏ qua `.git`/`node_modules`, tự refresh list/diff/status và file preview đang mở | Recursive watch fallback trên nền tảng không hỗ trợ chỉ theo dõi root-level; packaged E2E đa nền tảng nằm ở release gate |
 | Context inspector | Gần đủ | File/selection/image/memory staging, remove trước khi gửi, staged estimate, authoritative `contextUsage` và breakdown system prompt/tools/system context/skills/messages, anchored/estimated state, compaction pressure | Quản trị record nằm trong Settings/Memory thay vì nhúng lại vào inspector |
 | Git review | Gần đủ | Diff, stage/unstage, revert có confirm, commit, push, PR, worktrees | Chưa tách staged/unstaged diff rõ; auth/network diagnostics còn đơn giản; branch session chưa nối |
@@ -44,13 +44,11 @@ Runtime hiện tại khỏe ở phạm vi đã được kiểm thử:
 | Browser | Gần đủ | Tabs, open/navigate/back/forward/reload/close, snapshot, add context; core trả download policy `deny`; activity theo cả core tool events và Desktop RPC actions với running/done/error | Không embed page view trực tiếp vì browser core chạy headless; chưa có download approval vì policy hiện cố định deny |
 | Host extensibility | Gần đủ | Wire bridge, persistent registry UI, four validated safe Electron handlers, approval dialog, cancellation, read-only `workspace://`, structured fallback errors | Chưa có arbitrary third-party handler SDK; registry intentionally limits actions to safe GUI operations |
 | Extension UI | Gần đủ | select/confirm/input/editor, timeout response, notify, status, widgets, title, editor text, open URL, `launchUrl`, runtime error routing | RPC core chưa hỗ trợ header/footer/custom component/autocomplete; timeout UI còn giới hạn dialog |
-| Side Chat | Gần đủ | Engine/session riêng, fork tạo session mới với `parentSession` lineage thật + bounded transcript seed, optional isolated worktree; extension veto được tôn trọng | Mỗi Electron window hiện có một side engine; chưa có Context Inspector riêng cho Side Chat |
+| Side Chat | Gần đủ | Engine/session riêng, fork tạo session mới với `parentSession` lineage thật + bounded transcript seed, optional isolated worktree, Context Inspector riêng đã có | Multi-window/session polish vẫn còn |
 | Scheduled Tasks | Một phần | CRUD, persistence, duplicate-run guard, retries, timeout, history, top-level `agent_end` outcome parsing | App phải đang chạy; chưa có cron/timezone |
-| Diagnostics/release | Gần đủ | Redacted Electron log, in-app Diagnostics panel và JSON bundle export | Packaged E2E chưa thành release gate đa nền tảng |
+| Diagnostics/release | Gần đủ | Redacted Electron log, in-app Diagnostics panel và JSON bundle export, packaged renderer/preload/diagnostics smoke, MSI extraction validation | macOS/Linux packaged release gates còn chờ CI runner |
 
-## RPC client coverage
-
-Toàn bộ 95/95 RPC command của core đã có method trong `DesktopRpcClient`.
+Toàn bộ command core hiện có method trong `DesktopRpcClient`.
 
 Composer hiện cho phép chọn `steer` hoặc `follow_up` khi session đang streaming; các queue policy
 controls nâng cao vẫn nằm trong backlog.
@@ -111,7 +109,7 @@ các phase parity bên dưới hoàn tất.
 2. ✅ Hoàn thiện queue composer: steer/follow-up selector, queue counts và ba queue mode.
 3. ✅ Nối manual compact, auto retry/compaction controls, abort retry và session stats trong Diagnostics.
 4. ✅ Xây Branch/Fork, Export HTML và Handoff UI.
-5. ✅ Thêm RPC/UI cho Goal lifecycle; bước sau là đánh giá Vibe/Guided Goal/Loop theo hành vi tương đương.
+5. ✅ Thêm RPC/UI cho Goal lifecycle, guided goal flow và vibe toggle; loop parity còn nằm ở backlog.
 
 ### P2 — Extensibility và configuration
 

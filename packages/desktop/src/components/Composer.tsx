@@ -6,7 +6,6 @@ import {
 	ChevronRight,
 	FolderOpen,
 	Hand,
-	Mic,
 	Plus,
 	Shield,
 	ShieldCheck,
@@ -30,6 +29,8 @@ export interface ComposerInjection {
 
 interface ComposerProps {
 	disabled: boolean;
+	/** The engine may still be warming; keep the draft editable until it is ready. */
+	inputDisabled?: boolean;
 	streaming: boolean;
 	injection?: ComposerInjection;
 	workspace: string;
@@ -189,6 +190,7 @@ function MenuCheck({ selected }: { selected: boolean }) {
 
 export function Composer({
 	disabled,
+	inputDisabled = false,
 	streaming,
 	aborting = false,
 	injection,
@@ -296,6 +298,7 @@ export function Composer({
 	};
 
 	const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+		if (disabled) return;
 		if (event.key === "Enter" && !event.shiftKey) {
 			event.preventDefault();
 			submit();
@@ -316,7 +319,7 @@ export function Composer({
 	const onDrop = (event: DragEvent<HTMLDivElement>) => {
 		event.preventDefault();
 		setDragOver(false);
-		if (disabled) return;
+		if (disabled || inputDisabled) return;
 		const files = Array.from(event.dataTransfer?.files ?? []).filter(file => file.type.startsWith("image/"));
 		if (files.length > 0) void addFiles(files);
 	};
@@ -386,9 +389,11 @@ export function Composer({
 			<div className="composer-input-shell">
 				<textarea
 					className="composer-input"
-					placeholder={disabled ? "Waiting for engine..." : "Do anything"}
+					placeholder={
+						inputDisabled ? "Engine unavailable..." : disabled ? "Engine is starting..." : "Do anything"
+					}
 					value={text}
-					disabled={disabled}
+					disabled={inputDisabled}
 					onChange={event => setText(event.target.value)}
 					onKeyDown={onKeyDown}
 					onPaste={onPaste}
@@ -703,15 +708,6 @@ export function Composer({
 							</>
 						) : null}
 					</div>
-					<button
-						type="button"
-						className="composer-icon-action"
-						disabled
-						title="Voice input"
-						aria-label="Voice input"
-					>
-						<Mic size={18} strokeWidth={1.8} />
-					</button>
 					{streaming ? (
 						<button
 							type="button"

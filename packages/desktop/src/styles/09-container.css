@@ -588,6 +588,86 @@
 	font-size: 12px;
 }
 
+.diagnostics-section {
+	display: grid;
+	gap: 10px;
+}
+
+.diagnostics-section-head {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 12px;
+	color: var(--muted);
+	font-size: 12px;
+}
+
+.diagnostics-section-head h3 {
+	margin: 0;
+	color: var(--text);
+	font-size: 13px;
+	font-weight: 650;
+}
+
+.diagnostics-timeline {
+	display: grid;
+	gap: 8px;
+	max-height: 220px;
+	margin: 0;
+	padding: 0;
+	overflow: auto;
+	list-style: none;
+}
+
+.diagnostics-timeline-item {
+	display: grid;
+	grid-template-columns: 76px minmax(0, 1fr);
+	gap: 10px;
+	padding: 9px 10px;
+	border: 1px solid var(--border-soft);
+	border-left: 3px solid var(--accent);
+	border-radius: 8px;
+	background: var(--bg-inset);
+}
+
+.diagnostics-timeline-item--running {
+	border-left-color: var(--warning);
+}
+
+.diagnostics-timeline-item--success {
+	border-left-color: var(--success);
+}
+
+.diagnostics-timeline-item--warning {
+	border-left-color: var(--warning);
+}
+
+.diagnostics-timeline-item--error {
+	border-left-color: var(--danger);
+}
+
+.diagnostics-timeline-item time {
+	color: var(--muted);
+	font: 11px/1.4 ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+
+.diagnostics-timeline-body {
+	display: grid;
+	gap: 2px;
+	min-width: 0;
+	font-size: 12px;
+}
+
+.diagnostics-timeline-body strong {
+	color: var(--text);
+	font-weight: 650;
+}
+
+.diagnostics-timeline-body span {
+	overflow-wrap: anywhere;
+	color: var(--muted);
+}
+
 .diagnostics-content pre {
 	max-height: 58vh;
 	margin: 0;
@@ -3775,58 +3855,6 @@
 	color: white;
 }
 
-.settings-confirm-layer {
-	position: absolute;
-	inset: 0;
-	z-index: 20;
-	display: grid;
-	place-items: center;
-	background: rgb(0 0 0 / 46%);
-	backdrop-filter: blur(2px);
-}
-
-.settings-confirm-dialog {
-	display: grid;
-	width: min(420px, calc(100% - 32px));
-	gap: 10px;
-	border: 1px solid var(--border);
-	border-radius: 12px;
-	background: var(--bg-canvas);
-	box-shadow: 0 20px 60px rgb(0 0 0 / 45%);
-	padding: 20px;
-}
-
-.settings-confirm-dialog h2,
-.settings-confirm-dialog p {
-	margin: 0;
-}
-
-.settings-confirm-dialog h2 {
-	font-size: 16px;
-}
-
-.settings-confirm-dialog p {
-	color: var(--text-dim);
-	font-size: 12px;
-	line-height: 1.55;
-}
-
-.settings-confirm-icon {
-	display: grid;
-	width: 36px;
-	height: 36px;
-	place-items: center;
-	border-radius: 9px;
-	background: color-mix(in srgb, var(--color-text-danger, #ef7777) 12%, transparent);
-	color: var(--color-text-danger, #ef7777);
-}
-
-.settings-confirm-actions {
-	display: flex;
-	justify-content: flex-end;
-	gap: 8px;
-	margin-top: 6px;
-}
 
 .worktree-manager {
 	width: min(780px, 94vw);

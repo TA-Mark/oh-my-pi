@@ -142,9 +142,7 @@ describe("issue #825: steer preview stuck after compaction", () => {
 		expect(fake.steering).toContainEqual({ text: "address review feedback" });
 
 		// And it must not also remain duplicated in compactionQueuedMessages.
-		const remaining = (ctx as unknown as { compactionQueuedMessages: CompactionQueuedMessage[] })
-			.compactionQueuedMessages;
-		expect(remaining.find(m => m.text === "address review feedback")).toBeUndefined();
+		expect(ctx.compactionQueuedMessages.find(m => m.text === "address review feedback")).toBeUndefined();
 	});
 
 	test("marks flushed compaction messages as local submissions before delivery", async () => {
@@ -196,14 +194,13 @@ describe("issue #825: steer preview stuck after compaction", () => {
 
 		expect(ctx.locallySubmittedUserSignatures.has("willRetry boom\u00000")).toBe(false);
 		// And the message is restored to compactionQueuedMessages for retry.
-		const remaining = (ctx as unknown as { compactionQueuedMessages: CompactionQueuedMessage[] })
-			.compactionQueuedMessages;
-		expect(remaining.find(m => m.text === "willRetry boom")).toBeDefined();
+		expect(ctx.compactionQueuedMessages.find(m => m.text === "willRetry boom")).toBeDefined();
 	});
 
-	test("removes the local-submission signature when the fire-and-forget firstPrompt rejects", async () => {
+	test("requeues fire-and-forget firstPrompt failures without clearing existing queued work", async () => {
 		const queued: CompactionQueuedMessage[] = [{ text: "fire and forget", mode: "steer" }];
 		const { ctx, fake } = makeCtx(queued);
+		fake.steering.push({ text: "already queued" });
 		// Force the firstPrompt path (not willRetry, no slash commands) to reject.
 		fake.session.prompt = mock(async () => {
 			throw new Error("queue closed");
@@ -216,6 +213,8 @@ describe("issue #825: steer preview stuck after compaction", () => {
 		await Promise.resolve();
 		await Promise.resolve();
 
-		expect(ctx.locallySubmittedUserSignatures.has("fire and forget\u00000")).toBe(false);
+		expect(ctx.locallySubmittedUserSignatures.has("fire and forget\u00000")).toBe(true);
+		expect(fake.steering).toEqual([{ text: "already queued" }, { text: "fire and forget" }]);
+		expect(ctx.compactionQueuedMessages.find(m => m.text === "fire and forget")).toBeUndefined();
 	});
 });

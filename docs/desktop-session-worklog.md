@@ -75,6 +75,16 @@ Tất cả tập trung vào việc loại bỏ độ trễ/treo cảm nhận đ�
     - `packages/desktop/src/styles/03-composer.css` (`.composer-send--stopping` pulse,
       fallback `prefers-reduced-motion`)
 
+## 5. Branch session picker modal (đã xong)
+
+- **Triệu chứng:** Chọn nhánh của một session vẫn chưa có bề mặt chọn rõ ràng theo nội dung message.
+- **Fix:** Thêm local dialog `kind: "branch"` trong `packages/desktop/src/components/DialogHost.tsx`.
+  - Hiển thị 20 message branchable gần nhất.
+  - Có ô filter, danh sách cuộn, và chọn theo `entryId` thay vì chỉ số.
+  - `packages/desktop/src/app.tsx` mở dialog từ `onBranchSession`.
+  - `packages/desktop/test/ui-polish.test.tsx` có test cho branch picker.
+- **Validation:** `bun run check`, `bun run test`, và browser preview của dialog scaffold đều pass.
+
 ## Validation
 
 - Desktop typecheck (`bun run check`): sạch.

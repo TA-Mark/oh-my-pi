@@ -44,7 +44,7 @@ export function WorktreeManager({
 						<h2 className="dialog-title" id="worktree-manager-title">
 							Worktree Manager
 						</h2>
-						<p className="dialog-message">Open or safely remove registered Git worktrees.</p>
+						<p className="dialog-message">Open registered Git worktrees or remove them with confirmation.</p>
 					</div>
 					<button type="button" className="changes-icon-button" aria-label="Close" onClick={onClose}>
 						<X size={17} />
@@ -54,7 +54,7 @@ export function WorktreeManager({
 					<span>{worktrees.length} registered</span>
 					<div>
 						<button type="button" className="changes-pill-action" disabled={loading} onClick={onCreate}>
-							Create
+							Create worktree
 						</button>
 						<button type="button" className="changes-pill-action" disabled={loading} onClick={onRefresh}>
 							<RefreshCw size={14} className={loading ? "spin" : undefined} /> Refresh
@@ -76,10 +76,10 @@ export function WorktreeManager({
 								</div>
 								<div className="worktree-manager-actions">
 									<button type="button" disabled={active || busy} onClick={() => onOpen(entry.path)}>
-										<ExternalLink size={14} /> Open
+										<ExternalLink size={14} /> Open worktree
 									</button>
 									<button type="button" disabled={active || busy} onClick={() => onRemove(entry.path, false)}>
-										<Trash2 size={14} /> Remove
+										<Trash2 size={14} /> Remove worktree
 									</button>
 									<button
 										type="button"
@@ -87,7 +87,7 @@ export function WorktreeManager({
 										disabled={active || busy}
 										onClick={() => onRemove(entry.path, true)}
 									>
-										Force remove
+										Force remove worktree
 									</button>
 								</div>
 							</article>

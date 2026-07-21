@@ -24,6 +24,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 let windowRef: BrowserWindow | null = null;
 interface EngineRuntime {
 	child: ChildProcessWithoutNullStreams;
+	cwd: string;
 	readyFrame: string | null;
 }
 
@@ -76,6 +77,27 @@ interface WorkspaceWatcherRuntime {
 const workspaceWatchers = new Map<number, WorkspaceWatcherRuntime>();
 let lastDiagnosticId: string | null = null;
 let scheduledTasks: ScheduledTaskStore | null = null;
+let preferredWorkspace: string | null = null;
+
+function workspaceStatePath(): string {
+	return path.join(app.getPath("userData"), "workspace.json");
+}
+
+async function loadPreferredWorkspace(): Promise<void> {
+	try {
+		const value = JSON.parse(await fs.readFile(workspaceStatePath(), "utf8")) as { path?: unknown };
+		if (typeof value.path === "string" && value.path.trim()) preferredWorkspace = value.path;
+	} catch {
+		// First launch or a corrupted preference: resolveWorkspace() supplies home.
+	}
+}
+
+async function rememberWorkspace(workspace: string): Promise<void> {
+	const resolved = await resolveWorkspace(workspace);
+	preferredWorkspace = resolved;
+	await fs.mkdir(app.getPath("userData"), { recursive: true });
+	await fs.writeFile(workspaceStatePath(), JSON.stringify({ path: resolved }), "utf8");
+}
 
 function redact(value: unknown): unknown {
 	if (typeof value === "string") return value.replace(/(Bearer\s+|sk-[A-Za-z0-9_-]{8,}|api[_-]?key\s*[=:]\s*)[^\s,;]+/gi, "$1[REDACTED]");
@@ -98,6 +120,10 @@ function engineCommand(): { command: string; args: string[] } {
 	if (app.isPackaged) return { command: bundled, args: ["--mode", "rpc-ui"] };
 	const repoRoot = path.resolve(__dirname, "../../..");
 	return { command: process.env.BUN_BINARY ?? "bun", args: [path.join(repoRoot, "packages/coding-agent/src/cli.ts"), "--mode", "rpc-ui"] };
+}
+
+function appIconPath(): string {
+	return app.isPackaged ? path.join(process.resourcesPath, "icon.png") : path.join(__dirname, "../resources/icon.png");
 }
 
 function sendTo(windowId: number, channel: string, payload: string): void {
@@ -164,13 +190,18 @@ function wireEngine(
 function startEngine(windowId: number, cwd?: string): void {
 	const existing = engines.get(windowId);
 	if (existing) {
-		if (existing.readyFrame) sendTo(windowId, "rpc:frame", existing.readyFrame);
-		return;
+		if (cwd && path.resolve(cwd) !== existing.cwd) {
+			stopEngine(windowId);
+		} else {
+			if (existing.readyFrame) sendTo(windowId, "rpc:frame", existing.readyFrame);
+			return;
+		}
 	}
 	const spec = engineCommand();
-	logMain("engine_start", { cwd: cwd ?? process.cwd(), command: spec.command, args: spec.args });
-	const child = spawn(spec.command, spec.args, { cwd: cwd ?? process.cwd(), stdio: ["pipe", "pipe", "pipe"] });
-	const runtime: EngineRuntime = { child, readyFrame: null };
+	const engineCwd = path.resolve(cwd ?? process.cwd());
+	logMain("engine_start", { cwd: engineCwd, command: spec.command, args: spec.args });
+	const child = spawn(spec.command, spec.args, { cwd: engineCwd, stdio: ["pipe", "pipe", "pipe"] });
+	const runtime: EngineRuntime = { child, cwd: engineCwd, readyFrame: null };
 	engines.set(windowId, runtime);
 	wireEngine(windowId, child, "rpc:frame", "rpc:stderr", "rpc:exit", true, frame => {
 		if (engines.get(windowId)?.child === child) runtime.readyFrame = frame;
@@ -580,6 +611,18 @@ async function collectDiagnostics(windowId: number): Promise<Record<string, unkn
 	};
 }
 
+async function resolveWorkspace(requested?: string): Promise<string> {
+	if (requested) {
+		try {
+			const stat = await fs.stat(requested);
+			if (stat.isDirectory()) return await fs.realpath(requested);
+		} catch {
+			// The last workspace may have been moved or deleted; use a stable fallback.
+		}
+	}
+	return app.getPath("home");
+}
+
 function registerIpc(): void {
 	ipcMain.handle("scheduled:list", () => scheduledTasks?.list() ?? []);
 	ipcMain.handle("scheduled:upsert", (_event, input: Parameters<ScheduledTaskStore["upsert"]>[0]) => {
@@ -681,6 +724,8 @@ function registerIpc(): void {
 		const result = await dialog.showOpenDialog({ properties: ["openDirectory"], title: "Open workspace folder" });
 		return result.canceled ? null : result.filePaths[0] ?? null;
 	});
+	ipcMain.handle("workspace:resolve", (_event, requested?: string) => resolveWorkspace(requested));
+	ipcMain.handle("workspace:remember", (_event, workspace: string) => rememberWorkspace(workspace));
 	ipcMain.handle("workspace:watch:start", (event, root: string) => startWorkspaceWatcher(event.sender.id, root));
 	ipcMain.handle("workspace:watch:stop", event => stopWorkspaceWatcher(event.sender.id));
 	ipcMain.handle("shell:open", (_event, url: string) => shell.openExternal(validateExternalUrl(url)));
@@ -704,10 +749,26 @@ function registerIpc(): void {
 }
 
 async function createWindow(): Promise<void> {
-	const nextWindow = new BrowserWindow({ width: 1440, height: 960, minWidth: 960, minHeight: 640, webPreferences: { preload: path.join(__dirname, "preload.cjs"), contextIsolation: true, nodeIntegration: false } });
+	const nextWindow = new BrowserWindow({
+		width: 1440,
+		height: 960,
+		minWidth: 960,
+		minHeight: 640,
+		icon: appIconPath(),
+		webPreferences: {
+			preload: path.join(__dirname, "preload.cjs"),
+			contextIsolation: true,
+			nodeIntegration: false,
+		},
+	});
 	const windowId = nextWindow.webContents.id;
 	windows.set(windowId, nextWindow);
 	if (!windowRef) windowRef = nextWindow;
+	// Warm the engine while Chromium loads the renderer. The renderer still owns
+	// the RPC client, but it receives the cached ready frame as soon as listeners
+	// are attached. This removes the engine cold-start from the visible shell path
+	// on subsequent launches without guessing a workspace in the renderer.
+	if (preferredWorkspace) startEngine(windowId, preferredWorkspace);
 	if (process.env.ELECTRON_RENDERER_URL) await nextWindow.loadURL(process.env.ELECTRON_RENDERER_URL);
 	else await nextWindow.loadFile(path.join(__dirname, "../dist/index.html"));
 	nextWindow.on("closed", () => {
@@ -721,9 +782,10 @@ async function createWindow(): Promise<void> {
 	});
 }
 
-const primaryInstance = app.requestSingleInstanceLock();
+const validationInstance = process.argv.includes("--omp-validation-instance");
+const primaryInstance = validationInstance || app.requestSingleInstanceLock();
 if (!primaryInstance) app.quit();
-else app.on("second-instance", () => { if (windowRef) { if (windowRef.isMinimized()) windowRef.restore(); windowRef.focus(); } });
+else if (!validationInstance) app.on("second-instance", () => { if (windowRef) { if (windowRef.isMinimized()) windowRef.restore(); windowRef.focus(); } });
 
 app.whenReady().then(async () => {
 	if (!primaryInstance) return;
@@ -732,6 +794,7 @@ app.whenReady().then(async () => {
 	scheduledTasks.start();
 	powerMonitor.on("resume", () => void scheduledTasks?.runDueTasks());
 	registerIpc();
+	await loadPreferredWorkspace();
 	void createWindow();
 });
 app.on("render-process-gone", (_event, _webContents, details) => logMain("renderer_exit", { reason: details.reason, exitCode: details.exitCode }));

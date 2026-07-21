@@ -122,12 +122,16 @@ function splitPath(path: string): { dir: string; name: string } {
 	return { dir, name };
 }
 
-function fileDomId(path: string): string {
-	return `review-file-${path.replace(/[^A-Za-z0-9_-]/g, "-")}`;
+function fileDomId(scope: string, path: string): string {
+	return `review-file-${scope}-${path.replace(/[^A-Za-z0-9_-]/g, "-")}`;
 }
 
-function jumpToFile(path: string): void {
-	document.getElementById(fileDomId(path))?.scrollIntoView({ block: "start", behavior: "smooth" });
+function jumpToFile(scope: string, path: string): void {
+	document.getElementById(fileDomId(scope, path))?.scrollIntoView({ block: "start", behavior: "smooth" });
+}
+
+function sectionStateKey(scope: string, path: string): string {
+	return `${scope}:${path}`;
 }
 
 function fileExtension(path: string): string {
@@ -154,10 +158,6 @@ function statusLabel(status: WorkspaceFileChange["status"]): string | null {
 		default:
 			return null;
 	}
-}
-
-function compareChanges(left: WorkspaceFileChange, right: WorkspaceFileChange): number {
-	return left.path.localeCompare(right.path);
 }
 
 function relativeCommitTime(committedAt: number): string {
@@ -526,11 +526,15 @@ function DiffView({ change, mode }: { change: WorkspaceFileChange; mode: DiffMod
 function FileActions({
 	change,
 	disabled,
-	onStageFile,
+	scopeKey,
+	action,
+	onAction,
 }: {
 	change: WorkspaceFileChange;
 	disabled: boolean;
-	onStageFile: (path: string) => void;
+	scopeKey: string;
+	action: "stage" | "unstage" | null;
+	onAction: (path: string) => void;
 }): ReactNode {
 	return (
 		<span className="changes-file-actions">
@@ -544,23 +548,25 @@ function FileActions({
 			>
 				<Undo2 size={15} />
 			</button>
-			<button
-				type="button"
-				className="changes-icon-button changes-icon-button--compact"
-				title="Stage file"
-				disabled={disabled}
-				onClick={event => {
-					event.stopPropagation();
-					onStageFile(change.path);
-				}}
-			>
-				<Plus size={15} />
-			</button>
+			{action ? (
+				<button
+					type="button"
+					className="changes-icon-button changes-icon-button--compact"
+					title={action === "stage" ? "Stage file" : "Unstage file"}
+					disabled={disabled}
+					onClick={event => {
+						event.stopPropagation();
+						onAction(change.path);
+					}}
+				>
+					{action === "stage" ? <Plus size={15} /> : <Undo2 size={15} />}
+				</button>
+			) : null}
 			<button
 				type="button"
 				className="changes-icon-button changes-icon-button--compact"
 				title="Jump to file"
-				onClick={() => jumpToFile(change.path)}
+				onClick={() => jumpToFile(scopeKey, change.path)}
 			>
 				<ExternalLink size={15} />
 			</button>
@@ -569,21 +575,25 @@ function FileActions({
 }
 
 function FileChangeSection({
+	scopeKey,
 	change,
 	mode,
 	collapsed,
 	disabled,
 	onToggleCollapsed,
 	onSelect,
-	onStageFile,
+	action,
+	onAction,
 }: {
+	scopeKey: string;
 	change: WorkspaceFileChange;
 	mode: DiffMode;
 	collapsed: boolean;
 	disabled: boolean;
-	onToggleCollapsed: (path: string, autoCollapsed: boolean) => void;
+	onToggleCollapsed: (scopeKey: string, path: string, autoCollapsed: boolean) => void;
 	onSelect: (path: string) => void;
-	onStageFile: (path: string) => void;
+	action: "stage" | "unstage" | null;
+	onAction: (path: string) => void;
 }): ReactNode {
 	const label = statusLabel(change.status);
 	const sectionRef = useRef<HTMLElement>(null);
@@ -608,7 +618,7 @@ function FileChangeSection({
 	return (
 		<section
 			ref={sectionRef}
-			id={fileDomId(change.path)}
+			id={fileDomId(scopeKey, change.path)}
 			className={`changes-file${collapsed ? " changes-file--collapsed" : ""}`}
 		>
 			<div className="changes-file-head">
@@ -617,7 +627,7 @@ function FileChangeSection({
 					className="changes-file-title"
 					onClick={() => {
 						onSelect(change.path);
-						onToggleCollapsed(change.path, autoCollapsed);
+						onToggleCollapsed(scopeKey, change.path, autoCollapsed);
 					}}
 				>
 					<FileKind path={change.path} />
@@ -628,15 +638,93 @@ function FileChangeSection({
 				</button>
 				<span className="changes-file-meta">
 					{label ? <ChangeBadge tone={change.status === "deleted" ? "del" : "add"}>{label}</ChangeBadge> : null}
-					<FileActions change={change} disabled={disabled} onStageFile={onStageFile} />
+					<FileActions
+						change={change}
+						disabled={disabled}
+						scopeKey={scopeKey}
+						action={action}
+						onAction={onAction}
+					/>
 				</span>
 			</div>
 			{!collapsed && isDiffNearViewport ? <DiffView change={change} mode={mode} /> : null}
 		</section>
 	);
 }
-
 const MemoizedFileChangeSection = memo(FileChangeSection);
+
+function ChangeSection({
+	title,
+	scopeKey,
+	changes,
+	mode,
+	disabled,
+	allActionLabel,
+	allActionDisabled,
+	onAllAction,
+	rowAction,
+	onRowAction,
+	isCollapsed,
+	onToggleCollapsed,
+	onSelect,
+	emptyMessage,
+}: {
+	title: string;
+	scopeKey: string;
+	changes: WorkspaceFileChange[];
+	mode: DiffMode;
+	disabled: boolean;
+	allActionLabel?: string;
+	allActionDisabled?: boolean;
+	onAllAction?: () => void;
+	rowAction: "stage" | "unstage" | null;
+	onRowAction: (path: string) => void;
+	isCollapsed: (scopeKey: string, change: WorkspaceFileChange) => boolean;
+	onToggleCollapsed: (scopeKey: string, path: string, autoCollapsed: boolean) => void;
+	onSelect: (path: string) => void;
+	emptyMessage: string;
+}): ReactNode {
+	return (
+		<section className="changes-section">
+			<div className="changes-section-head">
+				<div className="changes-section-title">
+					<h3>{title}</h3>
+					<span>
+						{changes.length} file{changes.length === 1 ? "" : "s"}
+					</span>
+				</div>
+				{onAllAction && allActionLabel ? (
+					<button
+						type="button"
+						className="changes-section-action"
+						onClick={onAllAction}
+						disabled={allActionDisabled}
+					>
+						{allActionLabel}
+					</button>
+				) : null}
+			</div>
+			{changes.length === 0 ? (
+				<p className="changes-empty">{emptyMessage}</p>
+			) : (
+				changes.map(change => (
+					<MemoizedFileChangeSection
+						key={`${scopeKey}:${change.path}`}
+						scopeKey={scopeKey}
+						change={change}
+						mode={mode}
+						collapsed={isCollapsed(scopeKey, change)}
+						disabled={disabled}
+						onToggleCollapsed={onToggleCollapsed}
+						onSelect={onSelect}
+						action={rowAction}
+						onAction={onRowAction}
+					/>
+				))
+			)}
+		</section>
+	);
+}
 
 function FileTreeNodeView({
 	node,
@@ -722,23 +810,25 @@ function FileTree({
 
 function ReviewOptions({
 	hiddenCount,
-	stageDisabled,
 	revertDisabled,
 	refreshDisabled,
 	onShowAll,
 	onRefresh,
-	onUnstageAll,
 	onRevertAll,
+	showUnstageAll,
+	onUnstageAll,
+	showStageAll,
 	onStageAll,
 }: {
 	hiddenCount: number;
-	stageDisabled: boolean;
 	revertDisabled: boolean;
 	refreshDisabled: boolean;
 	onShowAll: () => void;
 	onRefresh: () => void;
-	onUnstageAll: () => void;
 	onRevertAll: () => void;
+	showUnstageAll: boolean;
+	onUnstageAll: () => void;
+	showStageAll: boolean;
 	onStageAll: () => void;
 }): ReactNode {
 	return (
@@ -747,18 +837,22 @@ function ReviewOptions({
 				<RefreshCw className={refreshDisabled ? "spin" : ""} size={14} />
 				Refresh
 			</button>
-			<button type="button" onClick={onUnstageAll} disabled={stageDisabled}>
-				<Undo2 size={14} />
-				Unstage all
-			</button>
+			{showUnstageAll ? (
+				<button type="button" onClick={onUnstageAll}>
+					<Undo2 size={14} />
+					Unstage all
+				</button>
+			) : null}
 			<button type="button" onClick={onRevertAll} disabled={revertDisabled}>
 				<RotateCcw size={14} />
 				Revert all
 			</button>
-			<button type="button" onClick={onStageAll} disabled={stageDisabled}>
-				<Plus size={14} />
-				Stage all
-			</button>
+			{showStageAll ? (
+				<button type="button" onClick={onStageAll}>
+					<Plus size={14} />
+					Stage all
+				</button>
+			) : null}
 			<button type="button" onClick={onShowAll} disabled={hiddenCount === 0}>
 				<PanelRightOpen size={14} />
 				Show hidden files{hiddenCount > 0 ? ` (${hiddenCount})` : ""}
@@ -996,6 +1090,7 @@ function ReviewScopeMenu({
 		onLoadCommits();
 	};
 	const options: Array<{ label: string; selection?: ReviewSelection }> = [
+		{ label: "Split", selection: { scope: "all", label: "Split" } },
 		{ label: "Unstaged", selection: { scope: "unstaged", label: "Unstaged" } },
 		{ label: "Staged", selection: { scope: "staged", label: "Staged" } },
 		{ label: "Commit" },
@@ -1003,7 +1098,7 @@ function ReviewScopeMenu({
 		{ label: "Last Turn" },
 	];
 	const isActiveScope = (scope: ReviewScope | undefined): boolean =>
-		scope === selection.scope || (selection.scope === "all" && scope === "unstaged");
+		scope === selection.scope || (selection.scope === "all" && scope === "all");
 	useEffect(() => {
 		if (!open) return;
 		const close = (event: PointerEvent): void => {
@@ -1193,22 +1288,37 @@ export function ChangesPanel({
 	const [expandedPaths, setExpandedPaths] = useState<Set<string>>(() => new Set());
 	const [mutating, setMutating] = useState(false);
 	const [refreshing, setRefreshing] = useState(false);
-	const [reviewSelection, setReviewSelection] = useState<ReviewSelection>({ scope: "all", label: "Unstaged" });
+	const [reviewSelection, setReviewSelection] = useState<ReviewSelection>({ scope: "all", label: "Split" });
 	const [reviewChanges, setReviewChanges] = useState<WorkspaceFileChange[] | null>(null);
+	const [splitUnstagedChanges, setSplitUnstagedChanges] = useState<WorkspaceFileChange[] | null>(null);
+	const [splitStagedChanges, setSplitStagedChanges] = useState<WorkspaceFileChange[] | null>(null);
+	const [splitLoading, setSplitLoading] = useState(true);
+	const [splitError, setSplitError] = useState<string | null>(null);
 	const [reviewLoading, setReviewLoading] = useState(false);
 	const [reviewError, setReviewError] = useState<string | null>(null);
 	const [recentCommits, setRecentCommits] = useState<ReviewCommit[]>([]);
 	const [commitsLoading, setCommitsLoading] = useState(false);
 	const jumpMenuRef = useRef<HTMLDivElement>(null);
-	const displayedChanges = reviewChanges ?? changes;
-	const additions = displayedChanges.reduce((sum, change) => sum + change.additions, 0);
-	const deletions = displayedChanges.reduce((sum, change) => sum + change.deletions, 0);
+	const splitView = reviewSelection.scope === "all";
+	const summaryChanges = splitView ? changes : (reviewChanges ?? changes);
+	const additions = summaryChanges.reduce((sum, change) => sum + change.additions, 0);
+	const deletions = summaryChanges.reduce((sum, change) => sum + change.deletions, 0);
 	const normalizedNavigatorFilter = navigatorFilter.trim().toLowerCase();
-	const orderedChanges = useMemo(() => [...displayedChanges].sort(compareChanges), [displayedChanges]);
-	const visibleChanges = useMemo(
-		() => orderedChanges.filter(change => !hiddenPaths.has(change.path)),
-		[orderedChanges, hiddenPaths],
+	const renderedItems = useMemo(() => {
+		if (splitView) {
+			return [
+				...(splitUnstagedChanges ?? []).map(change => ({ scope: "unstaged" as const, change })),
+				...(splitStagedChanges ?? []).map(change => ({ scope: "staged" as const, change })),
+			];
+		}
+		const scope = reviewSelection.scope;
+		return (reviewChanges ?? changes).map(change => ({ scope, change }));
+	}, [changes, reviewChanges, reviewSelection.scope, splitStagedChanges, splitUnstagedChanges, splitView]);
+	const visibleItems = useMemo(
+		() => renderedItems.filter(item => !hiddenPaths.has(sectionStateKey(item.scope, item.change.path))),
+		[hiddenPaths, renderedItems],
 	);
+	const visibleChanges = useMemo(() => visibleItems.map(item => item.change), [visibleItems]);
 	const revertibleChanges = useMemo(
 		() => visibleChanges.filter(change => change.status !== "untracked"),
 		[visibleChanges],
@@ -1237,7 +1347,20 @@ export function ChangesPanel({
 			: (visibleChanges[0]?.path ?? null);
 	const reviewReadOnly =
 		reviewSelection.scope === "commit" || reviewSelection.scope === "branch" || reviewSelection.scope === "last_turn";
-
+	const loadDefaultSplit = useCallback(async (): Promise<void> => {
+		setSplitLoading(true);
+		setSplitError(null);
+		try {
+			const [unstaged, staged] = await Promise.all([onLoadReview("unstaged"), onLoadReview("staged")]);
+			setSplitUnstagedChanges(unstaged);
+			setSplitStagedChanges(staged);
+			setSelectedPath(null);
+		} catch (error) {
+			setSplitError(error instanceof Error ? error.message : String(error));
+		} finally {
+			setSplitLoading(false);
+		}
+	}, [onLoadReview]);
 	const loadSelection = useCallback(
 		async (next: ReviewSelection): Promise<void> => {
 			const effective =
@@ -1249,11 +1372,17 @@ export function ChangesPanel({
 				return;
 			}
 			setReviewSelection(effective);
+			if (effective.scope === "all") {
+				await loadDefaultSplit();
+				return;
+			}
 			setReviewLoading(true);
 			setReviewError(null);
 			try {
 				setReviewChanges(await onLoadReview(effective.scope, effective.ref));
 				setHiddenPaths(new Set());
+				setCollapsedPaths(new Set());
+				setExpandedPaths(new Set());
 				setSelectedPath(null);
 			} catch (error) {
 				setReviewError(error instanceof Error ? error.message : String(error));
@@ -1261,25 +1390,34 @@ export function ChangesPanel({
 				setReviewLoading(false);
 			}
 		},
-		[gitStatus.baseBranch, gitStatus.branch, gitStatus.upstream, onLoadReview],
+		[gitStatus.baseBranch, gitStatus.branch, gitStatus.upstream, loadDefaultSplit, onLoadReview],
 	);
-
-	const loadCommits = useCallback((): void => {
-		if (commitsLoading || recentCommits.length > 0) return;
+	const loadCommits = useCallback(async (): Promise<void> => {
+		if (commitsLoading) return;
 		setCommitsLoading(true);
-		onLoadReviewCommits()
-			.then(setRecentCommits)
-			.catch(error => setReviewError(error instanceof Error ? error.message : String(error)))
-			.finally(() => setCommitsLoading(false));
-	}, [commitsLoading, onLoadReviewCommits, recentCommits.length]);
+		setReviewError(null);
+		try {
+			setRecentCommits(await onLoadReviewCommits());
+		} catch (error) {
+			setReviewError(error instanceof Error ? error.message : String(error));
+		} finally {
+			setCommitsLoading(false);
+		}
+	}, [commitsLoading, onLoadReviewCommits]);
+
+	const splitUnstagedVisibleItems = visibleItems.filter(item => item.scope === "unstaged");
+	const splitStagedVisibleItems = visibleItems.filter(item => item.scope === "staged");
 
 	useEffect(() => {
-		const paths = new Set(displayedChanges.map(change => change.path));
+		if (!splitView) return;
+		void loadDefaultSplit();
+	}, [changes, loadDefaultSplit, splitView]);
+	useEffect(() => {
+		const paths = new Set(renderedItems.map(item => sectionStateKey(item.scope, item.change.path)));
 		setHiddenPaths(previous => new Set([...previous].filter(path => paths.has(path))));
 		setCollapsedPaths(previous => new Set([...previous].filter(path => paths.has(path))));
 		setExpandedPaths(previous => new Set([...previous].filter(path => paths.has(path))));
-	}, [displayedChanges]);
-
+	}, [renderedItems]);
 	useEffect(() => {
 		if (!jumpOpen) return;
 		const handlePointerDown = (event: PointerEvent): void => {
@@ -1296,61 +1434,62 @@ export function ChangesPanel({
 			document.removeEventListener("keydown", handleKeyDown);
 		};
 	}, [jumpOpen]);
-
-	const isCollapsed = (change: WorkspaceFileChange): boolean => {
-		return shouldAutoCollapse(change) ? !expandedPaths.has(change.path) : collapsedPaths.has(change.path);
+	const isCollapsed = (scopeKey: string, change: WorkspaceFileChange): boolean => {
+		const key = sectionStateKey(scopeKey, change.path);
+		return shouldAutoCollapse(change) ? !expandedPaths.has(key) : collapsedPaths.has(key);
 	};
-	const allDiffsCollapsed = visibleChanges.length > 0 && visibleChanges.every(isCollapsed);
-
-	const selectPath = useCallback((path: string): void => {
-		setSelectedPath(path);
-	}, []);
-
-	const toggleCollapsed = useCallback((path: string, autoCollapsed: boolean): void => {
+	const allDiffsCollapsed =
+		visibleItems.length > 0 && visibleItems.every(item => isCollapsed(item.scope, item.change));
+	const toggleCollapsed = useCallback((scopeKey: string, path: string, autoCollapsed: boolean): void => {
+		const key = sectionStateKey(scopeKey, path);
 		if (autoCollapsed) {
 			setExpandedPaths(previous => {
 				const next = new Set(previous);
-				if (next.has(path)) next.delete(path);
-				else next.add(path);
+				if (next.has(key)) next.delete(key);
+				else next.add(key);
 				return next;
 			});
 			return;
 		}
 		setCollapsedPaths(previous => {
 			const next = new Set(previous);
-			if (next.has(path)) next.delete(path);
-			else next.add(path);
+			if (next.has(key)) next.delete(key);
+			else next.add(key);
 			return next;
 		});
 	}, []);
-
 	const collapseAll = (): void => {
-		setCollapsedPaths(new Set(visibleChanges.map(change => change.path)));
+		setCollapsedPaths(new Set(renderedItems.map(item => sectionStateKey(item.scope, item.change.path))));
 		setExpandedPaths(new Set());
 		setMenuOpen(false);
 	};
-
 	const expandAll = (): void => {
 		setCollapsedPaths(new Set());
-		setExpandedPaths(new Set(visibleChanges.filter(shouldAutoCollapse).map(change => change.path)));
+		setExpandedPaths(
+			new Set(
+				renderedItems
+					.filter(item => shouldAutoCollapse(item.change))
+					.map(item => sectionStateKey(item.scope, item.change.path)),
+			),
+		);
 		setMenuOpen(false);
 	};
-
 	const toggleAllDiffs = (): void => {
 		if (allDiffsCollapsed) expandAll();
 		else collapseAll();
 	};
-
 	const showAll = (): void => {
 		setHiddenPaths(new Set());
 		setMenuOpen(false);
 	};
-
-	const selectFile = useCallback((path: string): void => {
-		setSelectedPath(path);
-		requestAnimationFrame(() => jumpToFile(path));
-	}, []);
-
+	const preferredJumpScope = splitView ? "unstaged" : reviewSelection.scope;
+	const selectFile = useCallback(
+		(path: string): void => {
+			setSelectedPath(path);
+			requestAnimationFrame(() => jumpToFile(preferredJumpScope, path));
+		},
+		[preferredJumpScope],
+	);
 	const selectJumpFile = useCallback(
 		(path: string): void => {
 			selectFile(path);
@@ -1359,7 +1498,6 @@ export function ChangesPanel({
 		},
 		[selectFile],
 	);
-
 	const runMutation = useCallback(
 		(action: () => void): void => {
 			if (disabled || mutating) return;
@@ -1370,34 +1508,66 @@ export function ChangesPanel({
 		},
 		[disabled, mutating],
 	);
-
 	const stageFile = useCallback(
 		(path: string): void => {
 			runMutation(() => onStageHunks([{ path, hunks: { type: "all" } }]));
 		},
 		[onStageHunks, runMutation],
 	);
-
-	const stageAll = useCallback((): void => {
-		if (visibleChanges.length === 0) return;
-		runMutation(() => onStageHunks(stageSelectionsForChanges(visibleChanges)));
-	}, [onStageHunks, runMutation, visibleChanges]);
-
+	const unstageFile = useCallback(
+		(path: string): void => {
+			runMutation(() => onUnstage([path]));
+		},
+		[onUnstage, runMutation],
+	);
+	const stageAll = useCallback(
+		(changes: WorkspaceFileChange[]): void => {
+			if (changes.length === 0) return;
+			runMutation(() => onStageHunks(stageSelectionsForChanges(changes)));
+		},
+		[onStageHunks, runMutation],
+	);
+	const unstageAll = useCallback(
+		(changes: WorkspaceFileChange[]): void => {
+			if (changes.length === 0) return;
+			runMutation(() => onUnstage(changes.map(change => change.path)));
+		},
+		[onUnstage, runMutation],
+	);
 	const refresh = useCallback((): void => {
 		if (refreshing) return;
 		setRefreshing(true);
 		Promise.resolve()
 			.then(() => {
-				if (reviewSelection.scope === "all") return onRefresh();
+				if (reviewSelection.scope === "all") {
+					setSplitLoading(true);
+					onRefresh();
+					return;
+				}
 				return loadSelection(reviewSelection);
 			})
 			.finally(() => setRefreshing(false));
 	}, [loadSelection, onRefresh, refreshing, reviewSelection]);
 
+	const splitUnstagedVisibleChanges = splitUnstagedVisibleItems.map(item => item.change);
+	const splitStagedVisibleChanges = splitStagedVisibleItems.map(item => item.change);
+	const sectionVisibleItems = splitView
+		? [
+				{ scope: "unstaged" as const, title: "Unstaged", changes: splitUnstagedVisibleChanges },
+				{ scope: "staged" as const, title: "Staged", changes: splitStagedVisibleChanges },
+			]
+		: [
+				{
+					scope: reviewSelection.scope,
+					title: reviewSelection.label,
+					changes: visibleChanges,
+				},
+			];
+
 	return (
 		<section
 			className={`changes-panel${navigatorOpen ? " changes-panel--with-navigator" : ""}`}
-			aria-busy={mutating || refreshing || reviewLoading}
+			aria-busy={mutating || refreshing || reviewLoading || splitLoading}
 		>
 			<div className="changes-head">
 				<div className="changes-overview">
@@ -1406,7 +1576,7 @@ export function ChangesPanel({
 							selection={reviewSelection}
 							commits={recentCommits}
 							commitsLoading={commitsLoading}
-							reviewLoading={reviewLoading}
+							reviewLoading={reviewLoading || splitLoading}
 							onLoadCommits={loadCommits}
 							onSelect={selection => void loadSelection(selection)}
 						/>
@@ -1423,7 +1593,7 @@ export function ChangesPanel({
 									: gitStatus.baseBranch
 							}
 							branches={gitStatus.localBranches.filter(branch => branch !== gitStatus.branch)}
-							loading={reviewLoading}
+							loading={reviewLoading || splitLoading}
 							onSelect={branch => void loadSelection({ scope: "branch", ref: branch, label: "Branch" })}
 						/>
 					</div>
@@ -1450,26 +1620,21 @@ export function ChangesPanel({
 						{menuOpen ? (
 							<ReviewOptions
 								hiddenCount={hiddenPaths.size}
-								stageDisabled={disabled || mutating || reviewReadOnly || visibleChanges.length === 0}
 								revertDisabled={disabled || mutating || reviewReadOnly || revertibleChanges.length === 0}
-								refreshDisabled={refreshing}
+								refreshDisabled={refreshing || reviewLoading || splitLoading}
 								onShowAll={showAll}
 								onRefresh={() => {
 									refresh();
-									setMenuOpen(false);
-								}}
-								onUnstageAll={() => {
-									runMutation(() => onUnstage());
 									setMenuOpen(false);
 								}}
 								onRevertAll={() => {
 									runMutation(() => onRevertFiles(revertibleChanges.map(change => change.path)));
 									setMenuOpen(false);
 								}}
-								onStageAll={() => {
-									stageAll();
-									setMenuOpen(false);
-								}}
+								showUnstageAll={false}
+								onUnstageAll={() => {}}
+								showStageAll={false}
+								onStageAll={() => {}}
 							/>
 						) : null}
 					</div>
@@ -1541,29 +1706,93 @@ export function ChangesPanel({
 			</div>
 			<div className="review-workspace">
 				<div className="changes-list">
-					{reviewLoading ? (
-						<div className="changes-review-state">Loading {reviewSelection.label} diff…</div>
-					) : null}
-					{reviewError ? (
-						<div className="changes-review-state changes-review-state--error">{reviewError}</div>
-					) : null}
-					{visibleChanges.length === 0 ? (
-						<p className="changes-empty">
-							{displayedChanges.length === 0 ? `No changes in ${reviewSelection.label}.` : "No files to show."}
-						</p>
+					{splitView ? (
+						<>
+							{splitLoading && splitUnstagedChanges === null && splitStagedChanges === null ? (
+								<div className="changes-review-state">Loading staged and unstaged diffs…</div>
+							) : null}
+							{splitError ? (
+								<div className="changes-review-state changes-review-state--error">{splitError}</div>
+							) : null}
+							{sectionVisibleItems.map(section => (
+								<ChangeSection
+									key={section.scope}
+									title={section.title}
+									scopeKey={section.scope}
+									changes={section.changes}
+									mode={mode}
+									disabled={disabled || mutating}
+									allActionLabel={section.scope === "unstaged" ? "Stage all" : "Unstage all"}
+									allActionDisabled={disabled || mutating || reviewReadOnly || section.changes.length === 0}
+									onAllAction={() => {
+										if (section.scope === "unstaged") stageAll(section.changes);
+										else unstageAll(section.changes);
+									}}
+									rowAction={section.scope === "unstaged" ? "stage" : "unstage"}
+									onRowAction={section.scope === "unstaged" ? stageFile : unstageFile}
+									isCollapsed={isCollapsed}
+									onToggleCollapsed={toggleCollapsed}
+									onSelect={selectFile}
+									emptyMessage={section.scope === "unstaged" ? "No unstaged changes." : "No staged changes."}
+								/>
+							))}
+						</>
 					) : (
-						visibleChanges.map(change => (
-							<MemoizedFileChangeSection
-								key={change.path}
-								change={change}
-								mode={mode}
-								collapsed={isCollapsed(change)}
-								disabled={disabled || mutating || reviewReadOnly}
-								onToggleCollapsed={toggleCollapsed}
-								onSelect={selectPath}
-								onStageFile={stageFile}
-							/>
-						))
+						<>
+							{reviewLoading && reviewChanges === null ? (
+								<div className="changes-review-state">Loading {reviewSelection.label} diff…</div>
+							) : null}
+							{reviewError ? (
+								<div className="changes-review-state changes-review-state--error">{reviewError}</div>
+							) : null}
+							{sectionVisibleItems.length === 0 ? (
+								<p className="changes-empty">
+									{visibleChanges.length === 0
+										? `No changes in ${reviewSelection.label}.`
+										: "No files to show."}
+								</p>
+							) : (
+								sectionVisibleItems.map(section => (
+									<ChangeSection
+										key={section.scope}
+										title={section.title}
+										scopeKey={section.scope}
+										changes={section.changes}
+										mode={mode}
+										disabled={disabled || mutating || reviewReadOnly}
+										allActionLabel={
+											section.scope === "unstaged"
+												? "Stage all"
+												: section.scope === "staged"
+													? "Unstage all"
+													: undefined
+										}
+										allActionDisabled={disabled || mutating || reviewReadOnly || section.changes.length === 0}
+										onAllAction={
+											section.scope === "unstaged"
+												? () => stageAll(section.changes)
+												: section.scope === "staged"
+													? () => unstageAll(section.changes)
+													: undefined
+										}
+										rowAction={
+											section.scope === "unstaged" ? "stage" : section.scope === "staged" ? "unstage" : null
+										}
+										onRowAction={
+											section.scope === "unstaged"
+												? stageFile
+												: section.scope === "staged"
+													? unstageFile
+													: stageFile
+										}
+										isCollapsed={isCollapsed}
+										onToggleCollapsed={toggleCollapsed}
+										onSelect={selectFile}
+										emptyMessage={`No files in ${section.title}.`}
+									/>
+								))
+							)}
+						</>
 					)}
 				</div>
 				{navigatorOpen ? (

@@ -6,7 +6,6 @@ import {
 	CalendarClock,
 	Check,
 	ChevronDown,
-	ChevronLeft,
 	ChevronRight,
 	CirclePlus,
 	ClipboardList,
@@ -19,7 +18,6 @@ import {
 	Maximize2,
 	MessageSquarePlus,
 	MoreHorizontal,
-	PanelBottom,
 	PanelLeftClose,
 	PanelLeftOpen,
 	PanelRight,
@@ -36,11 +34,11 @@ import {
 } from "lucide-react";
 import type { PointerEvent as ReactPointerEvent } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { openPath, revealItem } from "../lib/desktop-bridge";
+import ompIcon from "../assets/omp-icon.svg";
 import { DEFAULT_AGENT_DISPLAY_NAME, normalizeAgentDisplayName } from "../lib/agent-display-name";
+import { openPath, revealItem } from "../lib/desktop-bridge";
 import type { ViewModel } from "../lib/reducer";
 import type { EngineStatus } from "../lib/rpc-client";
-import { autoTaskTitle } from "../lib/session-title";
 import type {
 	ApprovalMode,
 	ArtifactContent,
@@ -65,14 +63,16 @@ import type {
 	SubagentMessagesSnapshot,
 	SubagentSnapshot,
 	ThinkingLevel,
+	VibeModeState,
 	WorkspaceEntry,
 	WorkspaceFileChange,
 	WorkspaceFileContent,
 } from "../lib/rpc-protocol";
+import { autoTaskTitle } from "../lib/session-title";
 import { AuthDialog, type AuthPrompt } from "./AuthDialog";
 import { Composer, type ComposerInjection } from "./Composer";
 import type { StagedContextItem } from "./ContextInspector";
-import { DialogHost } from "./DialogHost";
+import { DialogHost, type LocalPromptOptions } from "./DialogHost";
 import { StatusBar, WidgetArea, type WidgetEntry } from "./ExtensionWidgets";
 import { LoginMenu } from "./LoginMenu";
 import { ModelPicker } from "./ModelPicker";
@@ -130,6 +130,9 @@ interface AppShellProps {
 	onPauseGoal: () => void;
 	onResumeGoal: () => void;
 	onDropGoal: () => void;
+	vibeMode?: VibeModeState;
+	onCreateGuidedGoal: () => void;
+	onToggleVibeMode: (enabled: boolean) => void;
 	changes: WorkspaceFileChange[];
 	onRefreshChanges: () => void;
 	onLoadReview: (scope: ReviewScope, ref?: string) => Promise<WorkspaceFileChange[]>;
@@ -149,6 +152,10 @@ interface AppShellProps {
 	sideChatModels: ModelInfo[];
 	sideChatProviders: LoginProvider[];
 	sideChatModel?: string;
+	sideChatContextUsage?: ContextUsage;
+	sideChatContextBreakdown?: ContextBreakdown;
+	sideChatContextSkills: string[];
+	sideChatContextMemoryBackend: string | null;
 	onEnsureSideChat: () => void;
 	onStopSideChat: () => void;
 	onSelectSideChatModel: (provider: string, modelId: string) => void;
@@ -189,6 +196,7 @@ interface AppShellProps {
 	/** A session switch is in flight — the transcript shows an "opening…" state. */
 	switching: boolean;
 	dialog: ExtensionUIRequest | null;
+	promptText: (options: LocalPromptOptions) => Promise<string | null>;
 	toasts: Toast[];
 	injection?: ComposerInjection;
 	authPrompt: AuthPrompt | null;
@@ -622,6 +630,9 @@ export function AppShell(props: AppShellProps) {
 		onPauseGoal,
 		onResumeGoal,
 		onDropGoal,
+		vibeMode,
+		onCreateGuidedGoal,
+		onToggleVibeMode,
 		changes,
 		gitStatus,
 		onRevertFiles,
@@ -636,6 +647,10 @@ export function AppShell(props: AppShellProps) {
 		sideChatModels,
 		sideChatProviders,
 		sideChatModel,
+		sideChatContextUsage,
+		sideChatContextBreakdown,
+		sideChatContextSkills,
+		sideChatContextMemoryBackend,
 		onEnsureSideChat,
 		onStopSideChat,
 		onSelectSideChatModel,
@@ -680,6 +695,7 @@ export function AppShell(props: AppShellProps) {
 		historyLoading,
 		switching,
 		dialog,
+		promptText,
 		toasts,
 		injection,
 		authPrompt,
@@ -952,9 +968,15 @@ export function AppShell(props: AppShellProps) {
 	};
 
 	const renameProject = (): void => {
-		const nextName = window.prompt("Rename project", currentProjectName)?.trim();
-		if (nextName) setProjectLabel(nextName);
 		setProjectMenuPlacement(null);
+		void promptText({
+			title: "Rename project",
+			initialValue: currentProjectName,
+			confirmLabel: "Rename",
+		}).then(nextName => {
+			const trimmed = nextName?.trim();
+			if (trimmed) setProjectLabel(trimmed);
+		});
 	};
 
 	const removeProject = (): void => {
@@ -997,12 +1019,18 @@ export function AppShell(props: AppShellProps) {
 		},
 		onRename: chat => {
 			const currentName = chat.title || "untitled";
-			const nextName = window.prompt("Rename chat", currentName)?.trim();
-			if (!nextName) return;
-			if (chat.active) {
-				onRenameSession(nextName);
-			}
-			setSessionTitleOverrides(overrides => ({ ...overrides, [chat.path]: nextName }));
+			void promptText({
+				title: "Rename chat",
+				initialValue: currentName,
+				confirmLabel: "Rename",
+			}).then(nextName => {
+				const trimmed = nextName?.trim();
+				if (!trimmed) return;
+				if (chat.active) {
+					onRenameSession(trimmed);
+				}
+				setSessionTitleOverrides(overrides => ({ ...overrides, [chat.path]: trimmed }));
+			});
 		},
 		onArchive: chat => {
 			setArchivedSessionPaths(paths => new Set([...paths, chat.path]));
@@ -1217,6 +1245,7 @@ export function AppShell(props: AppShellProps) {
 	const composerNode = (
 		<Composer
 			disabled={disabled}
+			inputDisabled={status === "error"}
 			streaming={vm.streaming}
 			injection={injection}
 			workspace={composerWorkspaceTitle}
@@ -1328,24 +1357,6 @@ export function AppShell(props: AppShellProps) {
 								<PanelLeftClose size={17} strokeWidth={1.8} />
 							)}
 						</button>
-						<button
-							type="button"
-							className="sidebar-history-button sidebar-expanded-only"
-							disabled
-							title="Back"
-							aria-label="Back"
-						>
-							<ChevronLeft size={16} strokeWidth={1.8} />
-						</button>
-						<button
-							type="button"
-							className="sidebar-history-button sidebar-expanded-only"
-							disabled
-							title="Forward"
-							aria-label="Forward"
-						>
-							<ChevronRight size={16} strokeWidth={1.8} />
-						</button>
 						<div className="sidebar-app-menu sidebar-expanded-only" aria-label="Application menu">
 							<span>File</span>
 							<span>Edit</span>
@@ -1354,6 +1365,7 @@ export function AppShell(props: AppShellProps) {
 						</div>
 					</div>
 					<div className="sidebar-brand sidebar-expanded-only">
+						<img className="sidebar-brand-icon" src={ompIcon} alt="OMP" />
 						<div className="sidebar-brand-name">
 							<strong>OMP</strong>
 							<span>Codex</span>
@@ -1463,14 +1475,6 @@ export function AppShell(props: AppShellProps) {
 						{summaryButton}
 						<button
 							type="button"
-							className="top-icon-button"
-							title="Toggle bottom panel"
-							aria-label="Toggle bottom panel"
-						>
-							<PanelBottom size={16} strokeWidth={1.8} />
-						</button>
-						<button
-							type="button"
 							className={`top-icon-button${toolsOpen ? " top-icon-button--active" : ""}`}
 							title={toolsOpen ? "Hide workspace" : "Show workspace"}
 							aria-label={toolsOpen ? "Hide workspace" : "Show workspace"}
@@ -1490,6 +1494,7 @@ export function AppShell(props: AppShellProps) {
 									Goal: {goalMode.goal.status}
 								</span>
 							) : null}
+							{vibeMode?.enabled ? <span className="goal-chip vibe-chip">Vibe</span> : null}
 						</div>
 						<div className="app-controls">
 							<SessionWorkflowActions
@@ -1502,6 +1507,9 @@ export function AppShell(props: AppShellProps) {
 								onPauseGoal={onPauseGoal}
 								onResumeGoal={onResumeGoal}
 								onDropGoal={onDropGoal}
+								vibeMode={vibeMode}
+								onCreateGuidedGoal={onCreateGuidedGoal}
+								onToggleVibeMode={onToggleVibeMode}
 							/>
 							<div className="window-tool-controls">
 								{summaryButton}
@@ -1525,14 +1533,6 @@ export function AppShell(props: AppShellProps) {
 									onClick={toggleWorkspacePanelWidth}
 								>
 									<Maximize2 size={15} strokeWidth={1.8} />
-								</button>
-								<button
-									type="button"
-									className="top-icon-button"
-									title="Toggle bottom panel"
-									aria-label="Toggle bottom panel"
-								>
-									<PanelBottom size={16} strokeWidth={1.8} />
 								</button>
 								<button
 									type="button"
@@ -1675,6 +1675,10 @@ export function AppShell(props: AppShellProps) {
 							sideChatModels={sideChatModels}
 							sideChatProviders={sideChatProviders}
 							sideChatModel={sideChatModel}
+							sideChatContextUsage={sideChatContextUsage}
+							sideChatContextBreakdown={sideChatContextBreakdown}
+							sideChatContextSkills={sideChatContextSkills}
+							sideChatContextMemoryBackend={sideChatContextMemoryBackend}
 							onEnsureSideChat={onEnsureSideChat}
 							onStopSideChat={onStopSideChat}
 							onSelectSideChatModel={onSelectSideChatModel}

@@ -4,6 +4,14 @@ export function pickWorkspaceFolder(): Promise<string | null> {
 	return window.desktop.pickWorkspaceFolder();
 }
 
+export function resolveWorkspace(requested?: string): Promise<string> {
+	return window.desktop.resolveWorkspace(requested);
+}
+
+export function rememberWorkspace(workspace: string): Promise<void> {
+	return window.desktop.rememberWorkspace(workspace);
+}
+
 export function startWorkspaceWatcher(root: string): Promise<string> {
 	return window.desktop.startWorkspaceWatcher(root);
 }

@@ -1,5 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { appendUserMessage, engineInterrupted, initialViewModel, reduce, type ViewModel } from "../src/lib/reducer";
+import {
+	appendStderr,
+	appendUserMessage,
+	engineInterrupted,
+	initialViewModel,
+	reduce,
+	type ViewModel,
+} from "../src/lib/reducer";
 import type { EngineEvent, EngineMessage } from "../src/lib/rpc-protocol";
 
 function assistant(text: string, extra: Partial<EngineMessage> = {}): EngineMessage {
@@ -162,6 +169,30 @@ describe("user message append", () => {
 	test("appendUserMessage adds a user row", () => {
 		const s = appendUserMessage(initialViewModel, "hi");
 		expect(s.messages.at(-1)).toMatchObject({ role: "user", text: "hi" });
+	});
+});
+
+describe("session timeline", () => {
+	test("records user, tool, retry, and stderr events", () => {
+		let s = appendUserMessage(initialViewModel, "run diagnostics");
+		s = apply(
+			s,
+			{ type: "agent_start" },
+			{ type: "tool_execution_start", toolCallId: "c1", toolName: "bash", intent: "Checking status" },
+			{ type: "auto_retry_start", attempt: 1, maxAttempts: 2, delayMs: 10, errorMessage: "temporary" },
+			{ type: "tool_execution_end", toolCallId: "c1", toolName: "bash", isError: true, result: "failed" },
+		);
+		s = appendStderr(s, "engine crashed");
+
+		expect(s.timeline.map(entry => entry.label)).toEqual([
+			"User submitted",
+			"Agent started",
+			"Tool started: bash",
+			"Retry 1/2",
+			"Tool failed: bash",
+			"Engine stderr",
+		]);
+		expect(s.timeline.at(-1)).toMatchObject({ tone: "error", detail: "engine crashed" });
 	});
 });
 

@@ -9,6 +9,7 @@ import type { CompactionResult } from "@oh-my-pi/pi-agent-core/compaction";
 import type { Effort, ImageContent, Model, ToolExample } from "@oh-my-pi/pi-ai";
 import type { BashResult } from "../../exec/bash-executor";
 import type { ContextUsage } from "../../extensibility/extensions/types";
+import type { GuidedGoalMessage, GuidedGoalTurnResult } from "../../goals/guided-setup";
 import type { Goal, GoalModeState } from "../../goals/state";
 import type { MCPPrompt, MCPResource, MCPResourceTemplate, MCPServerConfig } from "../../mcp/types";
 import type { AgentSessionEvent, ContextUsageBreakdown, SessionStats } from "../../session/agent-session";
@@ -24,6 +25,7 @@ import type {
 import type { ConfiguredThinkingLevel } from "../../thinking";
 import type { ApprovalMode } from "../../tools/approval";
 import type { TodoPhase } from "../../tools/todo";
+import type { VibeModeState } from "../../vibe/state";
 
 // ============================================================================
 // RPC Commands (stdin)
@@ -77,6 +79,8 @@ export type RpcCommand =
 	| { id?: string; type: "pause_goal" }
 	| { id?: string; type: "resume_goal" }
 	| { id?: string; type: "drop_goal" }
+	| { id?: string; type: "guided_goal_turn"; messages: GuidedGoalMessage[]; sideSessionId: string }
+	| { id?: string; type: "set_vibe_mode"; enabled: boolean }
 
 	// Model
 	| { id?: string; type: "set_model"; provider: string; modelId: string }
@@ -206,11 +210,17 @@ export interface RpcSessionState {
 	planMode?: RpcPlanModeState;
 	/** Goal-mode snapshot when a goal exists. */
 	goalMode?: GoalModeState;
+	/** Vibe-mode snapshot when active. */
+	vibeMode?: VibeModeState;
 }
 
 export interface RpcGoalResult {
 	goal: Goal | null;
 	state: GoalModeState | null;
+}
+
+export interface RpcVibeModeResult {
+	state: VibeModeState | null;
 }
 
 export type RpcSettingCategory =
@@ -533,6 +543,8 @@ export type RpcResponse =
 	| { id?: string; type: "response"; command: "pause_goal"; success: true; data: RpcGoalResult }
 	| { id?: string; type: "response"; command: "resume_goal"; success: true; data: RpcGoalResult }
 	| { id?: string; type: "response"; command: "drop_goal"; success: true; data: RpcGoalResult }
+	| { id?: string; type: "response"; command: "guided_goal_turn"; success: true; data: GuidedGoalTurnResult }
+	| { id?: string; type: "response"; command: "set_vibe_mode"; success: true; data: RpcVibeModeResult }
 
 	// Model
 	| {

@@ -580,9 +580,18 @@ body {
 	display: flex;
 	align-items: center;
 	justify-content: space-between;
+	gap: 8px;
 	min-height: 45px;
 	padding: 0 8px;
 	margin-bottom: 7px;
+}
+
+.sidebar-brand-icon {
+	width: 29px;
+	height: 29px;
+	flex: 0 0 auto;
+	border-radius: 8px;
+	box-shadow: 0 2px 8px rgba(80, 48, 120, 0.22);
 }
 
 .sidebar-brand-name {
@@ -1241,6 +1250,12 @@ body {
 .sidebar-brand-name {
 	gap: 4px;
 	font-size: 19px;
+}
+
+.sidebar-brand-icon {
+	width: 27px;
+	height: 27px;
+	border-radius: 7px;
 }
 
 .sidebar-brand-name strong {

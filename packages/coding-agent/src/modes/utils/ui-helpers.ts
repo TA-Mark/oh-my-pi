@@ -769,7 +769,10 @@ export class UiHelpers {
 			return;
 		}
 		if (this.ctx.isKnownSlashCommand(message.text)) {
-			await this.ctx.session.prompt(message.text);
+			await this.ctx.session.prompt(message.text, {
+				streamingBehavior: message.mode === "followUp" ? "followUp" : "steer",
+				images: message.images,
+			});
 			return;
 		}
 		await this.ctx.withLocalSubmission(
@@ -810,21 +813,43 @@ export class UiHelpers {
 		this.ctx.compactionQueuedMessages = [] as CompactionQueuedMessage[];
 		this.ctx.updatePendingMessagesDisplay();
 
-		const restoreQueue = (error: unknown) => {
-			this.ctx.session.clearQueue();
-			this.ctx.compactionQueuedMessages = queuedMessages;
+		let restoredQueue = false;
+		const restoreQueue = (error: unknown, startIndex: number): void => {
+			if (restoredQueue) return;
+			restoredQueue = true;
+			const remaining = queuedMessages.slice(startIndex);
+			if (remaining.length > 0) {
+				this.ctx.compactionQueuedMessages = [...remaining, ...this.ctx.compactionQueuedMessages];
+			}
 			this.ctx.updatePendingMessagesDisplay();
 			this.ctx.showError(
-				`Failed to send queued message${queuedMessages.length > 1 ? "s" : ""}: ${
+				`Failed to send queued message${remaining.length > 1 ? "s" : ""}: ${
 					error instanceof Error ? error.message : String(error)
 				}`,
 			);
 		};
 
+		const requeueFirstPrompt = async (
+			message: CompactionQueuedMessage,
+			startIndex: number,
+			disposeFirstPrompt?: () => void,
+		): Promise<void> => {
+			disposeFirstPrompt?.();
+			try {
+				await this.#deliverQueuedMessage(message);
+				this.ctx.updatePendingMessagesDisplay();
+			} catch (fallbackError) {
+				restoreQueue(fallbackError, startIndex);
+			}
+		};
+
+		let restoreFromIndex = 0;
+
 		try {
 			if (options?.willRetry) {
-				for (const message of queuedMessages) {
-					await this.#deliverQueuedMessage(message);
+				for (let i = 0; i < queuedMessages.length; i++) {
+					await this.#deliverQueuedMessage(queuedMessages[i]);
+					restoreFromIndex = i + 1;
 				}
 				this.ctx.updatePendingMessagesDisplay();
 				return;
@@ -838,8 +863,12 @@ export class UiHelpers {
 				}
 			}
 			if (firstPromptIndex === -1) {
-				for (const message of queuedMessages) {
-					await this.ctx.session.prompt(message.text);
+				for (let i = 0; i < queuedMessages.length; i++) {
+					await this.ctx.session.prompt(queuedMessages[i].text, {
+						streamingBehavior: queuedMessages[i].mode === "followUp" ? "followUp" : "steer",
+						images: queuedMessages[i].images,
+					});
+					restoreFromIndex = i + 1;
 				}
 				return;
 			}
@@ -848,18 +877,14 @@ export class UiHelpers {
 			const firstPrompt = queuedMessages[firstPromptIndex];
 			const rest = queuedMessages.slice(firstPromptIndex + 1);
 
-			for (const message of preCommands) {
-				// preCommands are all slash commands; #deliverQueuedMessage handles
-				// that branch (no local-submission marking needed since slash
-				// commands don't generate a matching user message_start).
-				await this.#deliverQueuedMessage(message);
+			for (let i = 0; i < preCommands.length; i++) {
+				await this.#deliverQueuedMessage(preCommands[i]);
+				restoreFromIndex = i + 1;
 			}
 
-			// First prompt is fire-and-forget — its rejection is funneled through
-			// `restoreQueue` rather than rethrown. Plain prompts use primitive
-			// recordLocalSubmission and dispose manually in the catch. Skill prompts
-			// are rebuilt as user-attributed custom messages so queued `/skill:` text
-			// is not sent as a literal prompt after compaction.
+			// First prompt is fire-and-forget — if it fails, requeue the same
+			// message through the normal queue path instead of restoring the whole
+			// snapshot and clobbering later queue mutations.
 			let promptPromise: Promise<unknown>;
 			if (isKnownSkillCommand(this.ctx, firstPrompt.text)) {
 				const built = await buildSkillCommandPrompt(
@@ -869,7 +894,9 @@ export class UiHelpers {
 					firstPrompt.images,
 				);
 				promptPromise = built
-					? this.ctx.session.promptCustomMessage(built.message, built.options).catch(restoreQueue)
+					? this.ctx.session
+							.promptCustomMessage(built.message, built.options)
+							.catch(() => requeueFirstPrompt(firstPrompt, firstPromptIndex))
 					: Promise.resolve();
 			} else {
 				const disposeFirstPrompt = this.ctx.recordLocalSubmission(
@@ -881,19 +908,18 @@ export class UiHelpers {
 						streamingBehavior: firstPrompt.mode === "followUp" ? "followUp" : "steer",
 						images: firstPrompt.images,
 					})
-					.catch((error: unknown) => {
-						disposeFirstPrompt();
-						restoreQueue(error);
-					});
+					.catch(() => requeueFirstPrompt(firstPrompt, firstPromptIndex, disposeFirstPrompt));
 			}
+			restoreFromIndex = firstPromptIndex + 1;
 
-			for (const message of rest) {
-				await this.#deliverQueuedMessage(message);
+			for (let i = 0; i < rest.length; i++) {
+				await this.#deliverQueuedMessage(rest[i]);
+				restoreFromIndex = firstPromptIndex + i + 2;
 			}
 			this.ctx.updatePendingMessagesDisplay();
 			void promptPromise;
 		} catch (error) {
-			restoreQueue(error);
+			restoreQueue(error, restoreFromIndex);
 		}
 	}
 

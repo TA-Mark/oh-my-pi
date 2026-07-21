@@ -85,6 +85,11 @@
 	white-space: nowrap;
 }
 
+.vibe-chip {
+	border-color: color-mix(in srgb, var(--success) 45%, transparent);
+	color: var(--success);
+}
+
 .window-tool-controls {
 	display: inline-flex;
 	align-items: center;
@@ -155,6 +160,15 @@
 
 .session-workflow-button--goal {
 	color: var(--accent);
+}
+
+.session-workflow-button--vibe {
+	color: var(--success);
+}
+
+.session-workflow-button--vibe.session-workflow-button--active {
+	border-color: color-mix(in srgb, var(--success) 24%, transparent);
+	background: color-mix(in srgb, var(--success) 8%, transparent);
 }
 
 .session-workflow-button--active {

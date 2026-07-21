@@ -1,5 +1,5 @@
-import { Download, GitBranchPlus, Handshake, Pause, Play, Target, Trash2 } from "lucide-react";
-import type { GoalModeState } from "../lib/rpc-protocol";
+import { Bot, Download, GitBranchPlus, Handshake, Pause, Play, Target, Trash2, WandSparkles } from "lucide-react";
+import type { GoalModeState, VibeModeState } from "../lib/rpc-protocol";
 
 interface SessionWorkflowActionsProps {
 	disabled: boolean;
@@ -11,6 +11,9 @@ interface SessionWorkflowActionsProps {
 	onPauseGoal: () => void;
 	onResumeGoal: () => void;
 	onDropGoal: () => void;
+	vibeMode?: VibeModeState;
+	onCreateGuidedGoal: () => void;
+	onToggleVibeMode: (enabled: boolean) => void;
 }
 
 export function SessionWorkflowActions({
@@ -23,6 +26,9 @@ export function SessionWorkflowActions({
 	onPauseGoal,
 	onResumeGoal,
 	onDropGoal,
+	vibeMode,
+	onCreateGuidedGoal,
+	onToggleVibeMode,
 }: SessionWorkflowActionsProps) {
 	const goalTerminal = goalMode?.goal.status === "complete" || goalMode?.goal.status === "dropped";
 	const activeGoal = goalMode && !goalTerminal ? goalMode : null;
@@ -31,6 +37,7 @@ export function SessionWorkflowActions({
 	const goalActionTitle = activeGoal
 		? `${goalActionLabel}: ${activeGoal.goal.objective}`
 		: "Start a durable goal that can continue across multiple turns";
+	const vibeEnabled = vibeMode?.enabled === true;
 
 	return (
 		<nav className="session-workflow-actions" aria-label="Task actions">
@@ -68,9 +75,19 @@ export function SessionWorkflowActions({
 			<span className="session-workflow-divider" aria-hidden="true" />
 			<button
 				type="button"
+				className={`session-workflow-button session-workflow-button--vibe${vibeEnabled ? " session-workflow-button--active" : ""}`}
+				title={vibeEnabled ? "Exit vibe mode" : "Enter vibe mode with read + worker-session tools"}
+				disabled={disabled || Boolean(activeGoal)}
+				onClick={() => onToggleVibeMode(!vibeEnabled)}
+			>
+				<Bot size={14} strokeWidth={1.9} />
+				<span>{vibeEnabled ? "Exit vibe" : "Vibe"}</span>
+			</button>
+			<button
+				type="button"
 				className={`session-workflow-button session-workflow-button--goal${activeGoal ? " session-workflow-button--active" : ""}`}
 				title={goalActionTitle}
-				disabled={disabled}
+				disabled={disabled || vibeEnabled}
 				onClick={activeGoal ? goalAction : onCreateGoal}
 			>
 				{activeGoal?.enabled ? (
@@ -87,6 +104,18 @@ export function SessionWorkflowActions({
 					</span>
 				) : null}
 			</button>
+			{!activeGoal ? (
+				<button
+					type="button"
+					className="session-workflow-button session-workflow-button--goal"
+					title="Let OMP ask follow-up questions and draft the goal"
+					disabled={disabled || vibeEnabled}
+					onClick={onCreateGuidedGoal}
+				>
+					<WandSparkles size={14} strokeWidth={1.9} />
+					<span>Guided goal</span>
+				</button>
+			) : null}
 			{activeGoal ? (
 				<button
 					type="button"

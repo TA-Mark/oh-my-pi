@@ -8,15 +8,16 @@ compiled OMP v17.0.1 engine as an extra resource and starts it with
 
 | Piece | Command | Output |
 | --- | --- | --- |
-| Renderer | `vite build` | `dist/` |
-| Engine | `bun run sidecar` | `resources/omp[.exe]` |
+| Renderer | `bun run build` | `dist/` |
 | Electron main/preload | `bun run electron:compile` | `dist-electron/` |
-| Installer | `bun run electron:build` | `release/` |
+| Engine | `bun run sidecar` (also run by `electron:build`) | `resources/omp[.exe]` |
+| Installer | `bun run electron:build` | stages sidecar, writes `release/` |
 | Packaged validation | `bun run release:validate` | launch/DOM/preload/sidecar RPC result |
 
-The sidecar is built from the checked-out `packages/coding-agent` source, so the
-installer cannot silently use a stale global OMP binary. `OMP_ENGINE_PATH` may be
-used during development to point at a specific engine.
+The sidecar is built from the checked-out `packages/coding-agent` source.
+`electron:build` runs `sidecar` immediately before Electron Builder, so a direct
+package build cannot silently reuse a stale staged OMP binary. `OMP_ENGINE_PATH`
+may be used during development to point at a specific engine.
 
 ## Local build
 
@@ -45,11 +46,12 @@ The validator launches the packaged executable with an isolated user-data
 directory and checks the actual runtime rather than source files. It fails when
 the renderer is blank, the `file://...app.asar/dist/index.html` URL is wrong,
 the preload bridge or diagnostics IPC is missing, the bundled sidecar is not
-`omp/17.0.1`, or Electron cannot spawn that sidecar and complete `get_state`.
-The Windows release workflow runs this gate after packaging and no longer treats
-contract-smoke failures as optional. It also performs an MSI administrative
-extraction into the runner's temporary directory and runs the same packaged
-validator against that payload, without installing the app or writing shortcuts.
+`omp/17.0.1`, the Side Chat / settings smoke fails, or the multiwindow engine
+probe does not observe a healthy running engine. The Windows release workflow
+runs this gate after packaging and no longer treats contract-smoke failures as
+optional. It also performs an MSI administrative extraction into the runner's
+temporary directory and runs the same packaged validator against that payload,
+without installing the app or writing shortcuts.
 
 ## Security and lifecycle
 
@@ -57,6 +59,9 @@ validator against that payload, without installing the app or writing shortcuts.
 - The preload exposes only typed operations needed by the UI; arbitrary child-process
   spawning is not available to renderer code.
 - Main and Side Chat use independent OMP processes.
+- Electron Builder skips native rebuilds and packages `node-pty`'s shipped
+  prebuilds; this avoids requiring local Visual Studio Spectre libraries just to
+  package the app.
 - Scheduled tasks are persisted in Electron's application data directory, reject
   duplicate runs, skip missing workspaces, cap retries, and retain bounded history.
 - Main-process logs redact credential-shaped values and are available through the

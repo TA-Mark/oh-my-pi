@@ -15,10 +15,12 @@
 //   13. get_state -> planMode.enabled === true
 //   14. set_plan_mode disabled -> success
 //   15. get_state -> planMode === undefined (cleared)
-//   16. get_workspace_diff -> { files: [...] } (bounded scan; must not hang)
-//   17. unstage -> success (safe no-op; desktop-added staging command; core-touchpoints.md)
-//   18. stage_hunks [] -> success:false (empty-selection guard; core-touchpoints.md)
-//   19. set_workspace <cwd> -> { cwd: string } (in-place project switch; no respawn)
+//   16. guided_goal_turn empty sideSessionId -> success:false (command guard; no model call)
+//   17. set_vibe_mode enabled -> success, get_state -> vibeMode.enabled === true, disable -> success
+//   18. get_workspace_diff -> { files: [...] } (bounded scan; must not hang)
+//   19. unstage -> success (safe no-op; desktop-added staging command; core-touchpoints.md)
+//   20. stage_hunks [] -> success:false (empty-selection guard; core-touchpoints.md)
+//   21. set_workspace <cwd> -> { cwd: string } (in-place project switch; no respawn)
 // Exits non-zero on any drift. Keep in sync with src/lib/rpc-protocol.ts.
 import * as path from "node:path";
 
@@ -242,6 +244,36 @@ try {
 					fail(`drop_goal failed: ${line}`);
 				if (frame.data.goal.status !== "dropped") fail(`drop_goal state invalid: ${line}`);
 				console.log("OK: drop_goal clears goal mode with dropped snapshot");
+				send({
+					type: "guided_goal_turn",
+					messages: [{ role: "user", content: "Smoke goal" }],
+					sideSessionId: "",
+					id: "s15guided",
+				});
+			} else if (frame.id === "s15guided") {
+				if (frame.success !== false || typeof frame.error !== "string" || !frame.error.includes("sideSessionId")) {
+					fail(`guided_goal_turn guard failed: ${line}`);
+				}
+				console.log("OK: guided_goal_turn command guard holds (no model call)");
+				send({ type: "set_vibe_mode", enabled: true, id: "s15vibe-on" });
+			} else if (frame.id === "s15vibe-on") {
+				if (frame.success !== true || !isRecord(frame.data) || !isRecord(frame.data.state)) {
+					fail(`set_vibe_mode enable failed: ${line}`);
+				}
+				if (frame.data.state.enabled !== true) fail(`set_vibe_mode state invalid: ${line}`);
+				console.log("OK: set_vibe_mode enable accepted");
+				send({ type: "get_state", id: "s15vibe-state" });
+			} else if (frame.id === "s15vibe-state") {
+				const data = isRecord(frame.data) ? (frame.data as Record<string, unknown>) : {};
+				const vibeMode = isRecord(data.vibeMode) ? (data.vibeMode as Record<string, unknown>) : undefined;
+				if (vibeMode?.enabled !== true) fail(`vibe mode not enabled: ${JSON.stringify(data.vibeMode)}`);
+				console.log("OK: get_state exposes vibeMode while active");
+				send({ type: "set_vibe_mode", enabled: false, id: "s15vibe-off" });
+			} else if (frame.id === "s15vibe-off") {
+				if (frame.success !== true || !isRecord(frame.data) || frame.data.state !== null) {
+					fail(`set_vibe_mode disable failed: ${line}`);
+				}
+				console.log("OK: set_vibe_mode disable accepted");
 				send({
 					type: "set_host_tools",
 					tools: [{ name: "desktop_smoke", description: "Smoke host tool", parameters: { type: "object" } }],

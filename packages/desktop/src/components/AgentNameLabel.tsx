@@ -39,7 +39,12 @@ export function AgentNameLabel({ name, onRename }: AgentNameLabelProps) {
 	}
 
 	return onRename ? (
-		<button type="button" className="bubble-role bubble-role-button" title="Rename agent" onClick={() => setEditing(true)}>
+		<button
+			type="button"
+			className="bubble-role bubble-role-button"
+			title="Rename agent"
+			onClick={() => setEditing(true)}
+		>
 			{name}
 			<Pencil className="bubble-role-edit-icon" size={10} strokeWidth={1.8} />
 		</button>

@@ -19,6 +19,8 @@ interface Window {
 		stopEngine(): Promise<void>;
 		sendRpcLine(line: string): Promise<void>;
 		pickWorkspaceFolder(): Promise<string | null>;
+		resolveWorkspace(requested?: string): Promise<string>;
+		rememberWorkspace(workspace: string): Promise<void>;
 		startWorkspaceWatcher(root: string): Promise<string>;
 		stopWorkspaceWatcher(): Promise<void>;
 		onWorkspaceFilesChanged(cb: (value: { root: string; paths: string[] }) => void): () => void;

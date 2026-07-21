@@ -116,6 +116,8 @@ export type RpcCommand =
 	| { id?: string; type: "pause_goal" }
 	| { id?: string; type: "resume_goal" }
 	| { id?: string; type: "drop_goal" }
+	| { id?: string; type: "guided_goal_turn"; messages: GuidedGoalMessage[]; sideSessionId: string }
+	| { id?: string; type: "set_vibe_mode"; enabled: boolean }
 	| { id?: string; type: "get_session_stats" }
 	| { id?: string; type: "list_sessions" }
 	| { id?: string; type: "switch_session"; sessionPath: string }
@@ -226,6 +228,8 @@ export interface SessionState {
 	planMode?: PlanModeState;
 	/** Goal-mode snapshot when a goal exists. */
 	goalMode?: GoalModeState;
+	/** Vibe-mode snapshot when active. */
+	vibeMode?: VibeModeState;
 	/** Authoritative model context usage reported by the core. */
 	contextUsage?: ContextUsage;
 	contextBreakdown?: ContextBreakdown;
@@ -292,6 +296,23 @@ export interface GoalModeState {
 export interface GoalResult {
 	goal: GoalState | null;
 	state: GoalModeState | null;
+}
+
+export interface GuidedGoalMessage {
+	role: "user" | "assistant";
+	content: string;
+}
+
+export type GuidedGoalTurnResult =
+	| { kind: "question"; question: string; objective?: string }
+	| { kind: "ready"; objective: string };
+
+export interface VibeModeState {
+	enabled: boolean;
+}
+
+export interface VibeModeResult {
+	state: VibeModeState | null;
 }
 
 /** One changed file from `get_workspace_diff` (mirrors engine `RpcWorkspaceFileChange`). */

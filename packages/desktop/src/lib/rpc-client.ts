@@ -21,6 +21,8 @@ import {
 	type ExtensionUIResponse,
 	type GitStatus,
 	type GoalResult,
+	type GuidedGoalMessage,
+	type GuidedGoalTurnResult,
 	type HostToolCallRequest,
 	type HostToolCancelRequest,
 	type HostToolDefinition,
@@ -59,6 +61,7 @@ import {
 	type SubagentMessagesSnapshot,
 	type SubagentSnapshot,
 	type ThinkingLevel,
+	type VibeModeResult,
 	type WorkspaceEntry,
 	type WorkspaceFileChange,
 	type WorkspaceFileContent,
@@ -190,6 +193,20 @@ export class DesktopRpcClient {
 		this.#readyReject = undefined;
 		this.#rejectPending("client stopped");
 		await this.#transport.stop().catch(() => {});
+	}
+
+	/**
+	 * Detach this renderer client without reaping the app-owned engine. Electron
+	 * can recreate the renderer (and React StrictMode can replay effects) while
+	 * the desktop app is still alive; keeping the sidecar warm avoids a second
+	 * cold start and mirrors an app-server lifecycle.
+	 */
+	disconnect(): void {
+		this.#removeListeners();
+		this.#started = false;
+		this.#readyResolve = undefined;
+		this.#readyReject = undefined;
+		this.#rejectPending("client disconnected");
 	}
 
 	#removeListeners(): void {
@@ -446,6 +463,16 @@ export class DesktopRpcClient {
 	async dropGoal(): Promise<GoalResult> {
 		const response = await this.#send({ type: "drop_goal" });
 		return this.#data<GoalResult>(response);
+	}
+
+	async guidedGoalTurn(messages: GuidedGoalMessage[], sideSessionId: string): Promise<GuidedGoalTurnResult> {
+		const response = await this.#send({ type: "guided_goal_turn", messages, sideSessionId }, 120_000);
+		return this.#data<GuidedGoalTurnResult>(response);
+	}
+
+	async setVibeMode(enabled: boolean): Promise<VibeModeResult> {
+		const response = await this.#send({ type: "set_vibe_mode", enabled }, 60_000);
+		return this.#data<VibeModeResult>(response);
 	}
 
 	async getLoginProviders(): Promise<LoginProvider[]> {

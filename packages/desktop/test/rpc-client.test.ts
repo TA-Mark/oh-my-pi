@@ -204,6 +204,37 @@ describe("request/response correlation", () => {
 		await client.stop();
 	});
 
+	test("guided goal and vibe wrappers use dedicated RPC commands", async () => {
+		const client = await startedClient();
+		const guidedPending = client.guidedGoalTurn([{ role: "user", content: "Ship parity" }], "guide-1");
+		let sent = JSON.parse(bridge.sent.at(-1) ?? "{}") as Record<string, unknown>;
+		expect(sent.type).toBe("guided_goal_turn");
+		expect(sent.sideSessionId).toBe("guide-1");
+		expect(sent.messages).toEqual([{ role: "user", content: "Ship parity" }]);
+		bridge.emitFrame({
+			type: "response",
+			command: "guided_goal_turn",
+			id: sent.id,
+			success: true,
+			data: { kind: "question", question: "What is done?" },
+		});
+		expect(await guidedPending).toEqual({ kind: "question", question: "What is done?" });
+
+		const vibePending = client.setVibeMode(true);
+		sent = JSON.parse(bridge.sent.at(-1) ?? "{}") as Record<string, unknown>;
+		expect(sent.type).toBe("set_vibe_mode");
+		expect(sent.enabled).toBe(true);
+		bridge.emitFrame({
+			type: "response",
+			command: "set_vibe_mode",
+			id: sent.id,
+			success: true,
+			data: { state: { enabled: true } },
+		});
+		expect(await vibePending).toEqual({ state: { enabled: true } });
+		await client.stop();
+	});
+
 	test("branch, export, and handoff wrappers preserve their RPC results", async () => {
 		const client = await startedClient();
 

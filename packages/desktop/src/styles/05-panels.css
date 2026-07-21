@@ -86,6 +86,16 @@
 	margin-bottom: 14px;
 }
 
+.dialog-branch-list {
+	max-height: 45vh;
+	overflow-y: auto;
+}
+
+.dialog-branch-option {
+	align-items: flex-start;
+	white-space: normal;
+}
+
 .dialog-option,
 .dialog-input,
 .dialog-textarea {

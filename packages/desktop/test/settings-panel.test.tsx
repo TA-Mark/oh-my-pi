@@ -76,6 +76,7 @@ const baseProps: SettingsPanelProps = {
 	workspaceUriEnabled: false,
 	onRefresh: noop,
 	onOpenDiagnostics: noop,
+	confirmDialog: noopAsync,
 	onSaveSetting: noop,
 	onSelectModel: noop,
 	onLogin: noop,
@@ -441,6 +442,64 @@ test("memory backend cards preview details before an explicit activation", async
 	}
 });
 
+test("memory backend cards remain selectable before the backend setting descriptor loads", async () => {
+	const domWindow = new HappyWindow({ url: "http://localhost" });
+	const globals: Record<string, unknown> = {
+		window: domWindow,
+		document: domWindow.document,
+		navigator: domWindow.navigator,
+		HTMLElement: domWindow.HTMLElement,
+		KeyboardEvent: domWindow.KeyboardEvent,
+		Event: domWindow.Event,
+		MouseEvent: domWindow.MouseEvent,
+		IS_REACT_ACT_ENVIRONMENT: true,
+	};
+	const previous = new Map<string, PropertyDescriptor | undefined>();
+	for (const [key, value] of Object.entries(globals)) {
+		previous.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
+		Object.defineProperty(globalThis, key, { configurable: true, writable: true, value });
+	}
+	const container = domWindow.document.createElement("div");
+	domWindow.document.body.append(container);
+	const root = createRoot(container as unknown as Element);
+	const saves: Array<{ path: string; value: unknown }> = [];
+	try {
+		await act(async () => {
+			root.render(
+				<SettingsPanel
+					{...baseProps}
+					initialCategory="memory"
+					snapshot={{ plugins: [], settings: [] }}
+					memoryStatus={{ backend: "off", active: false, writable: false, searchable: false }}
+					onSaveSetting={(path, value) => saves.push({ path, value })}
+				/>,
+			);
+			await Bun.sleep(10);
+		});
+
+		const local = Array.from(domWindow.document.querySelectorAll("button")).find(button =>
+			button.textContent?.includes("Local summaries"),
+		) as HTMLButtonElement | undefined;
+		expect(local?.disabled).toBe(false);
+		await act(async () => local?.click());
+		expect(domWindow.document.body.textContent).toContain("Summary files on this device");
+
+		await act(async () =>
+			Array.from(domWindow.document.querySelectorAll("button"))
+				.find(button => button.textContent?.includes("Activate Local summaries"))
+				?.click(),
+		);
+		expect(saves).toEqual([{ path: "memory.backend", value: "local" }]);
+	} finally {
+		await act(async () => root.unmount());
+		await domWindow.close();
+		for (const [key, descriptor] of previous) {
+			if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+			else Reflect.deleteProperty(globalThis, key);
+		}
+	}
+});
+
 test("MCP exposes runtime connection, authentication, source, and mounted tools", async () => {
 	const domWindow = new HappyWindow({ url: "http://localhost" });
 	const globals: Record<string, unknown> = {
@@ -573,7 +632,74 @@ test("skills presents the active runtime source and invocation behavior", () => 
 	expect(markup).toContain("/skill commands on");
 });
 
-test("settings manages focus, Escape, and destructive confirmation as one modal workflow", async () => {
+test("skills switches remain usable when setting descriptors have not loaded yet", async () => {
+	const domWindow = new HappyWindow({ url: "http://localhost" });
+	const globals: Record<string, unknown> = {
+		window: domWindow,
+		document: domWindow.document,
+		navigator: domWindow.navigator,
+		HTMLElement: domWindow.HTMLElement,
+		KeyboardEvent: domWindow.KeyboardEvent,
+		Event: domWindow.Event,
+		MouseEvent: domWindow.MouseEvent,
+		IS_REACT_ACT_ENVIRONMENT: true,
+	};
+	const previous: Array<[string, PropertyDescriptor | undefined]> = [];
+	for (const [key, value] of Object.entries(globals)) {
+		previous.push([key, Object.getOwnPropertyDescriptor(globalThis, key)]);
+		Object.defineProperty(globalThis, key, { configurable: true, writable: true, value });
+	}
+	const container = domWindow.document.createElement("div");
+	domWindow.document.body.append(container);
+	const root = createRoot(container as unknown as Element);
+	const saves: Array<{ path: string; value: unknown }> = [];
+	try {
+		await act(async () => {
+			root.render(
+				<SettingsPanel
+					{...baseProps}
+					initialCategory="skills"
+					snapshot={{ plugins: [], settings: [] }}
+					skillDetails={[
+						{
+							name: "banner-design",
+							description: "Design banners",
+							filePath: "C:/Users/mark/.claude/skills/banner-design/SKILL.md",
+							source: "claude:marketplace",
+							provider: "claude-plugins",
+							providerName: "Claude Code Marketplace",
+							level: "user",
+						},
+					]}
+					onSaveSetting={(path, value) => saves.push({ path, value })}
+				/>,
+			);
+			await Bun.sleep(10);
+		});
+		const commandSwitch = Array.from(domWindow.document.querySelectorAll("button")).find(button =>
+			button.textContent?.includes("/skill commands off"),
+		) as HTMLButtonElement | undefined;
+		expect(commandSwitch?.disabled).toBe(false);
+		await act(async () => commandSwitch?.click());
+		expect(saves).toContainEqual({ path: "skills.enableSkillCommands", value: true });
+
+		const sourceSwitch = Array.from(domWindow.document.querySelectorAll(".skill-source-switches button")).find(
+			button => button.textContent?.includes("User"),
+		) as HTMLButtonElement | undefined;
+		expect(sourceSwitch?.disabled).toBe(false);
+		await act(async () => sourceSwitch?.click());
+		expect(saves).toContainEqual({ path: "skills.enablePiUser", value: true });
+	} finally {
+		await act(async () => root.unmount());
+		await domWindow.close();
+		for (const [key, descriptor] of previous) {
+			if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+			else Reflect.deleteProperty(globalThis, key);
+		}
+	}
+});
+
+test("settings manages focus, Escape, and destructive confirmation through the shared dialog", async () => {
 	const domWindow = new HappyWindow({ url: "http://localhost" });
 	const globals: Record<string, unknown> = {
 		window: domWindow,
@@ -598,6 +724,9 @@ test("settings manages focus, Escape, and destructive confirmation as one modal 
 	let closeCount = 0;
 	let uninstallCount = 0;
 	let pluginSettingUpdates = 0;
+	let confirmResult = false;
+	let confirmationTitle = "";
+	let confirmationConfirmLabel = "";
 	try {
 		await act(async () => {
 			root.render(
@@ -630,6 +759,11 @@ test("settings manages focus, Escape, and destructive confirmation as one modal 
 					onClose={() => {
 						closeCount += 1;
 					}}
+					confirmDialog={async confirmation => {
+						confirmationTitle = confirmation.title;
+						confirmationConfirmLabel = confirmation.confirmLabel ?? "";
+						return confirmResult;
+					}}
 					onUninstallPlugin={() => {
 						uninstallCount += 1;
 					}}
@@ -656,14 +790,11 @@ test("settings manages focus, Escape, and destructive confirmation as one modal 
 		expect(uninstall).toBeDefined();
 		await act(async () => uninstall?.click());
 		expect(uninstallCount).toBe(0);
-		expect(domWindow.document.querySelector('[role="alertdialog"]')?.textContent).toContain(
-			"Uninstall example-plugin?",
-		);
+		expect(confirmationTitle).toBe("Uninstall example-plugin?");
+		expect(confirmationConfirmLabel).toBe("Uninstall plugin");
 
-		const confirm = Array.from(domWindow.document.querySelectorAll("button")).find(
-			button => button.textContent?.trim() === "Uninstall plugin",
-		);
-		await act(async () => confirm?.click());
+		confirmResult = true;
+		await act(async () => uninstall?.click());
 		expect(uninstallCount).toBe(1);
 
 		await act(async () => {

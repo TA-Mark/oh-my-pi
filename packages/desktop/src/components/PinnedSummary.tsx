@@ -19,9 +19,9 @@ import {
 	TerminalSquare,
 	X,
 } from "lucide-react";
-import { useEffect, useState, type ReactNode } from "react";
-import type { EngineStatus } from "../lib/rpc-client";
+import { type ReactNode, useEffect, useState } from "react";
 import type { ChatMessage, ViewModel } from "../lib/reducer";
+import type { EngineStatus } from "../lib/rpc-client";
 import type {
 	GitStatus,
 	ImageContent,
@@ -100,7 +100,12 @@ function Section({
 					<strong>{title}</strong>
 				</button>
 				{action ? (
-					<button type="button" className="pinned-summary-add" onClick={action} aria-label={`Add ${title.toLowerCase()}`}>
+					<button
+						type="button"
+						className="pinned-summary-add"
+						onClick={action}
+						aria-label={`Add ${title.toLowerCase()}`}
+					>
 						<Plus size={15} strokeWidth={1.8} />
 					</button>
 				) : null}
@@ -129,7 +134,11 @@ function SummaryRow({
 		<>
 			<Icon size={15} strokeWidth={1.7} />
 			<span className="pinned-summary-row-label">{label}</span>
-			{value ? <span className={`pinned-summary-row-value${tone ? ` pinned-summary-row-value--${tone}` : ""}`}>{value}</span> : null}
+			{value ? (
+				<span className={`pinned-summary-row-value${tone ? ` pinned-summary-row-value--${tone}` : ""}`}>
+					{value}
+				</span>
+			) : null}
 			{children}
 		</>
 	);
@@ -185,7 +194,8 @@ export function PinnedSummary({
 
 	const runningTools = vm.messages.filter(message => message.role === "tool" && message.toolRunning);
 	const enabledSchedules = scheduledTasks.filter(task => task.enabled);
-	const sourceCount = contextItems.length + contextImages.length + contextSkills.length + (contextMemoryBackend ? 1 : 0);
+	const sourceCount =
+		contextItems.length + contextImages.length + contextSkills.length + (contextMemoryBackend ? 1 : 0);
 	const changeCount = gitStatus.staged + gitStatus.unstaged + gitStatus.untracked;
 	const toggle = (section: SummarySectionKey): void => {
 		setOpenSections(current => ({ ...current, [section]: !current[section] }));
@@ -193,14 +203,24 @@ export function PinnedSummary({
 
 	return (
 		<>
-			<button type="button" className="pinned-summary-backdrop" aria-label="Close pinned summary" onClick={onClose} />
+			<button
+				type="button"
+				className="pinned-summary-backdrop"
+				aria-label="Close pinned summary"
+				onClick={onClose}
+			/>
 			<aside className="pinned-summary" aria-label="Pinned summary">
 				<header className="pinned-summary-header">
 					<div>
 						<strong>Workspace summary</strong>
 						<span>{projectName}</span>
 					</div>
-					<button type="button" className="pinned-summary-close" onClick={onClose} aria-label="Close pinned summary">
+					<button
+						type="button"
+						className="pinned-summary-close"
+						onClick={onClose}
+						aria-label="Close pinned summary"
+					>
 						<X size={16} strokeWidth={1.8} />
 					</button>
 				</header>
@@ -211,13 +231,27 @@ export function PinnedSummary({
 					onToggle={() => toggle("environment")}
 					action={() => onCopy(workspace, "Workspace path")}
 				>
-					<SummaryRow icon={FolderOpen} label="Workspace" value={workspace} onClick={() => onCopy(workspace, "Workspace path")} />
+					<SummaryRow
+						icon={FolderOpen}
+						label="Workspace"
+						value={workspace}
+						onClick={() => onCopy(workspace, "Workspace path")}
+					/>
 					<SummaryRow icon={GitBranch} label="Branch" value={gitStatus.branch ?? "No Git branch"}>
 						{changeCount > 0 ? <span className="pinned-summary-change-count">+{changeCount}</span> : null}
 					</SummaryRow>
-					<SummaryRow icon={Cpu} label="Engine" value={statusLabel(status)} tone={status === "error" ? "danger" : status === "ready" ? "success" : "muted"} />
+					<SummaryRow
+						icon={Cpu}
+						label="Engine"
+						value={statusLabel(status)}
+						tone={status === "error" ? "danger" : status === "ready" ? "success" : "muted"}
+					/>
 					<SummaryRow icon={Code2} label="Model" value={sessionModel ?? "Default model"} />
-					<SummaryRow icon={Layers3} label="Session" value={`${sessionName || "untitled"} · ${sessionMessageCount} msgs`} />
+					<SummaryRow
+						icon={Layers3}
+						label="Session"
+						value={`${sessionName || "untitled"} · ${sessionMessageCount} msgs`}
+					/>
 					{statusDetail ? <p className="pinned-summary-note pinned-summary-note--danger">{statusDetail}</p> : null}
 					{changeCount > 0 ? (
 						<div className="pinned-summary-actions">
@@ -233,38 +267,95 @@ export function PinnedSummary({
 
 				<Section title="Background processes" open={openSections.processes} onToggle={() => toggle("processes")}>
 					{vm.streaming ? (
-						<SummaryRow icon={Activity} label="Agent turn" value={runningTools.length ? `${runningTools.length} tool(s) running` : "Thinking"} tone="warning" />
+						<SummaryRow
+							icon={Activity}
+							label="Agent turn"
+							value={runningTools.length ? `${runningTools.length} tool(s) running` : "Thinking"}
+							tone="warning"
+						/>
 					) : null}
 					{runningTools.map(message => (
-						<SummaryRow key={message.id} icon={TerminalSquare} label={toolLabel(message)} value="Running" tone="warning" onClick={onOpenTerminal} />
+						<SummaryRow
+							key={message.id}
+							icon={TerminalSquare}
+							label={toolLabel(message)}
+							value="Running"
+							tone="warning"
+							onClick={onOpenTerminal}
+						/>
 					))}
 					{subagents.map(agent => (
-						<SummaryRow key={agent.id} icon={Server} label={agent.agent} value={agent.status} tone={agent.status === "completed" ? "success" : "warning"} />
+						<SummaryRow
+							key={agent.id}
+							icon={Server}
+							label={agent.agent}
+							value={agent.status}
+							tone={agent.status === "completed" ? "success" : "warning"}
+						/>
 					))}
-					{sideChatBusy || sideChatReady ? <SummaryRow icon={CircleDot} label="Side chat" value={sideChatBusy ? "Running" : "Ready"} tone={sideChatBusy ? "warning" : "success"} /> : null}
+					{sideChatBusy || sideChatReady ? (
+						<SummaryRow
+							icon={CircleDot}
+							label="Side chat"
+							value={sideChatBusy ? "Running" : "Ready"}
+							tone={sideChatBusy ? "warning" : "success"}
+						/>
+					) : null}
 					{enabledSchedules.map(task => (
 						<SummaryRow key={task.id} icon={RefreshCw} label={task.name} value="Scheduled" tone="muted" />
 					))}
-					{!vm.streaming && runningTools.length === 0 && subagents.length === 0 && !sideChatReady && enabledSchedules.length === 0 ? (
+					{!vm.streaming &&
+					runningTools.length === 0 &&
+					subagents.length === 0 &&
+					!sideChatReady &&
+					enabledSchedules.length === 0 ? (
 						<p className="pinned-summary-empty">No background processes.</p>
 					) : null}
 				</Section>
 
-				<Section title={`Sources${sourceCount ? ` · ${sourceCount}` : ""}`} open={openSections.sources} onToggle={() => toggle("sources")} action={onOpenContext}>
+				<Section
+					title={`Sources${sourceCount ? ` · ${sourceCount}` : ""}`}
+					open={openSections.sources}
+					onToggle={() => toggle("sources")}
+					action={onOpenContext}
+				>
 					{contextItems.map(item => (
-						<SummaryRow key={item.id} icon={FileCode2} label={item.path} value={item.kind === "selection" ? "Selection" : "File"} onClick={onOpenContext} />
+						<SummaryRow
+							key={item.id}
+							icon={FileCode2}
+							label={item.path}
+							value={item.kind === "selection" ? "Selection" : "File"}
+							onClick={onOpenContext}
+						/>
 					))}
 					{contextImages.map((image, index) => (
-						<SummaryRow key={`${image.mimeType}-${index}`} icon={Image} label={`Image ${index + 1}`} value={image.mimeType} onClick={onOpenContext} />
+						<SummaryRow
+							key={`${image.mimeType}-${index}`}
+							icon={Image}
+							label={`Image ${index + 1}`}
+							value={image.mimeType}
+							onClick={onOpenContext}
+						/>
 					))}
-					{contextSkills.map(skill => <SummaryRow key={skill} icon={CircleCheck} label={skill} value="Skill" onClick={onOpenContext} />)}
-					{contextMemoryBackend ? <SummaryRow icon={Server} label="Memory" value={contextMemoryBackend} onClick={onOpenContext} /> : null}
+					{contextSkills.map(skill => (
+						<SummaryRow key={skill} icon={CircleCheck} label={skill} value="Skill" onClick={onOpenContext} />
+					))}
+					{contextMemoryBackend ? (
+						<SummaryRow icon={Server} label="Memory" value={contextMemoryBackend} onClick={onOpenContext} />
+					) : null}
 					{sourceCount === 0 ? <p className="pinned-summary-empty">No sources attached.</p> : null}
-					{sourceCount > 0 ? <button type="button" className="pinned-summary-view-all" onClick={onOpenContext}><ArrowUpRight size={14} strokeWidth={1.8} /> View all</button> : null}
+					{sourceCount > 0 ? (
+						<button type="button" className="pinned-summary-view-all" onClick={onOpenContext}>
+							<ArrowUpRight size={14} strokeWidth={1.8} /> View all
+						</button>
+					) : null}
 				</Section>
 
 				<footer className="pinned-summary-footer">
-					<button type="button" onClick={() => onCopy(`${workspace}\n${gitStatus.branch ?? "No branch"}`, "Environment")}>
+					<button
+						type="button"
+						onClick={() => onCopy(`${workspace}\n${gitStatus.branch ?? "No branch"}`, "Environment")}
+					>
 						<Copy size={14} strokeWidth={1.8} /> Copy environment
 					</button>
 				</footer>

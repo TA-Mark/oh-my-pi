@@ -61,6 +61,10 @@ interface WorkspaceToolsPanelProps {
 	sideChatModels: ModelInfo[];
 	sideChatProviders: LoginProvider[];
 	sideChatModel?: string;
+	sideChatContextUsage?: ContextUsage;
+	sideChatContextBreakdown?: ContextBreakdown;
+	sideChatContextSkills: string[];
+	sideChatContextMemoryBackend: string | null;
 	onEnsureSideChat: () => void;
 	onStopSideChat: () => void;
 	onSelectSideChatModel: (provider: string, modelId: string) => void;
@@ -203,6 +207,10 @@ export function WorkspaceToolsPanel({
 	sideChatModels,
 	sideChatProviders,
 	sideChatModel,
+	sideChatContextUsage,
+	sideChatContextBreakdown,
+	sideChatContextSkills,
+	sideChatContextMemoryBackend,
 	onEnsureSideChat,
 	onStopSideChat,
 	onSelectSideChatModel,
@@ -426,6 +434,10 @@ export function WorkspaceToolsPanel({
 						models={sideChatModels}
 						providers={sideChatProviders}
 						model={sideChatModel}
+						contextUsage={sideChatContextUsage}
+						contextBreakdown={sideChatContextBreakdown}
+						contextSkills={sideChatContextSkills}
+						contextMemoryBackend={sideChatContextMemoryBackend}
 						onSelectModel={onSelectSideChatModel}
 						onFork={onForkSideChat}
 						onAddResult={onAddSideChatResult}

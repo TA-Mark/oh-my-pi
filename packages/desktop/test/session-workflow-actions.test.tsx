@@ -2,15 +2,16 @@ import { expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { autoTaskTitle, taskTitleFromPrompt } from "../src/lib/session-title";
 import { SessionWorkflowActions } from "../src/components/SessionWorkflowActions";
-import type { GoalModeState } from "../src/lib/rpc-protocol";
+import type { GoalModeState, VibeModeState } from "../src/lib/rpc-protocol";
 
 const noop = () => {};
 
-function renderActions(goalMode?: GoalModeState): string {
+function renderActions(goalMode?: GoalModeState, vibeMode?: VibeModeState): string {
 	return renderToStaticMarkup(
 		<SessionWorkflowActions
 			disabled={false}
 			goalMode={goalMode}
+			vibeMode={vibeMode}
 			onBranch={noop}
 			onExport={noop}
 			onHandoff={noop}
@@ -18,11 +19,13 @@ function renderActions(goalMode?: GoalModeState): string {
 			onPauseGoal={noop}
 			onResumeGoal={noop}
 			onDropGoal={noop}
+			onCreateGuidedGoal={noop}
+			onToggleVibeMode={noop}
 		/>,
 	);
 }
 
-test("keeps the four primary OMP task workflows visible without an overflow menu", () => {
+test("keeps OMP task workflows visible without an overflow menu", () => {
 	const markup = renderActions();
 
 	expect(markup).toContain("Task actions");
@@ -30,6 +33,8 @@ test("keeps the four primary OMP task workflows visible without an overflow menu
 	expect(markup).toContain(">Export<");
 	expect(markup).toContain(">Handoff<");
 	expect(markup).toContain(">Start goal<");
+	expect(markup).toContain(">Vibe<");
+	expect(markup).toContain(">Guided goal<");
 	expect(markup).not.toContain('role="menu"');
 });
 
@@ -51,6 +56,15 @@ test("shows goal lifecycle actions and status while a goal is active", () => {
 	expect(markup).toContain(">Pause goal<");
 	expect(markup).toContain(">active<");
 	expect(markup).toContain(">Drop<");
+});
+
+test("shows vibe mode as a first-class workflow toggle", () => {
+	const markup = renderActions(undefined, { enabled: true });
+
+	expect(markup).toContain(">Exit vibe<");
+	expect(markup).toContain("session-workflow-button--vibe");
+	expect(markup).toContain("session-workflow-button--active");
+	expect(markup).not.toContain('role="menu"');
 });
 
 test("derives a task name from the first prompt even when the transcript is already populated", () => {

@@ -41,6 +41,7 @@ import {
 import { PluginManager } from "../../extensibility/plugins/manager";
 import { buildSkillPromptMessage, parseSkillInvocation } from "../../extensibility/skills";
 import { loadSlashCommands } from "../../extensibility/slash-commands";
+import { runGuidedGoalTurn } from "../../goals/guided-setup";
 import { resolveLocalUrlToPath } from "../../internal-urls";
 import { connectToServer, disconnectServer } from "../../mcp/client";
 import { addMCPServer, removeMCPServer, setMcpServerEnabled, updateMCPServer } from "../../mcp/config-writer";
@@ -55,6 +56,7 @@ import type { MCPAuthConfig, MCPServerConfig } from "../../mcp/types";
 import { createSessionMemoryRuntimeContext, runMemoryBackendAction } from "../../memory-backend/runtime";
 import { type Theme, theme } from "../../modes/theme/theme";
 import { type PlanApprovalDetails, resolveApprovedPlan } from "../../plan-mode/approved-plan";
+import { MAIN_AGENT_ID } from "../../registry/agent-registry";
 import type { AgentSession } from "../../session/agent-session";
 import { SKILL_PROMPT_MESSAGE_TYPE, USER_INTERRUPT_LABEL } from "../../session/messages";
 import { SessionManager } from "../../session/session-manager";
@@ -64,8 +66,10 @@ import { type BrowserParams, BrowserTool } from "../../tools/browser";
 import { listTabs } from "../../tools/browser/tab-supervisor";
 import { normalizeLocalScheme } from "../../tools/path-utils";
 import { ToolError } from "../../tools/tool-errors";
+import { VIBE_TOOL_NAMES } from "../../tools/vibe";
 import type { EventBus } from "../../utils/event-bus";
 import * as git from "../../utils/git";
+import { VibeSessionRegistry } from "../../vibe/runtime";
 import { initializeExtensions } from "../runtime-init";
 import { isRpcHostToolResult, isRpcHostToolUpdate, RpcHostToolBridge } from "./host-tools";
 import { isRpcHostUriResult, RpcHostUriBridge } from "./host-uris";
@@ -1285,6 +1289,8 @@ export async function runRpcMode(
 		output({ type: "plan_mode_changed", planMode: toRpcPlanMode() });
 	};
 
+	let vibeModePreviousTools: string[] | undefined;
+
 	const resolvePlanFilePath = (planFilePath: string): string => {
 		if (planFilePath.startsWith("local:")) {
 			const normalized = normalizeLocalScheme(planFilePath);
@@ -1573,6 +1579,7 @@ export async function runRpcMode(
 					contextBreakdown: session.getContextBreakdown(),
 					planMode: toRpcPlanMode(),
 					goalMode: session.getGoalModeState(),
+					vibeMode: session.getVibeModeState(),
 				};
 				return success(id, "get_state", state);
 			}
@@ -1648,6 +1655,75 @@ export async function runRpcMode(
 					return success(id, "drop_goal", { goal, state: null });
 				} catch (err: unknown) {
 					return error(id, "drop_goal", err instanceof Error ? err.message : String(err));
+				}
+			}
+
+			case "guided_goal_turn": {
+				if (!session.settings.get("goal.enabled")) {
+					return error(id, "guided_goal_turn", "Goal mode is disabled (goal.enabled = false).");
+				}
+				if (session.getPlanModeState()?.enabled) {
+					return error(id, "guided_goal_turn", "Exit plan mode before creating a goal");
+				}
+				const goalState = session.getGoalModeState();
+				if (goalState?.goal && goalState.goal.status !== "complete" && goalState.goal.status !== "dropped") {
+					return error(id, "guided_goal_turn", "Drop the current goal before starting a guided goal");
+				}
+				try {
+					const sideSessionId = command.sideSessionId.trim();
+					if (!sideSessionId) return error(id, "guided_goal_turn", "sideSessionId is required");
+					return success(
+						id,
+						"guided_goal_turn",
+						await runGuidedGoalTurn(session, {
+							messages: command.messages,
+							sideSessionId: `${session.sessionId}:guided-goal:${sideSessionId}`,
+						}),
+					);
+				} catch (err: unknown) {
+					return error(id, "guided_goal_turn", err instanceof Error ? err.message : String(err));
+				}
+			}
+
+			case "set_vibe_mode": {
+				try {
+					if (command.enabled) {
+						if (session.getVibeModeState()?.enabled) {
+							return success(id, "set_vibe_mode", { state: session.getVibeModeState() ?? null });
+						}
+						if (session.getPlanModeState()?.enabled) {
+							return error(id, "set_vibe_mode", "Exit plan mode before entering vibe mode");
+						}
+						const goalState = session.getGoalModeState();
+						if (goalState?.goal && goalState.goal.status !== "complete" && goalState.goal.status !== "dropped") {
+							return error(id, "set_vibe_mode", "Pause or drop the active goal before entering vibe mode");
+						}
+						const previousTools = session.getEnabledToolNames();
+						await session.activateVibeTools(["read"]);
+						vibeModePreviousTools = previousTools;
+						session.setVibeModeState({ enabled: true });
+						if (session.isStreaming) {
+							await session.sendVibeModeContext({ deliverAs: "steer" });
+						}
+						session.sessionManager.appendModeChange("vibe");
+						return success(id, "set_vibe_mode", { state: session.getVibeModeState() ?? null });
+					}
+					if (session.getVibeModeState()?.enabled) {
+						const restoredTools =
+							vibeModePreviousTools ??
+							session.getEnabledToolNames().filter(name => !VIBE_TOOL_NAMES.some(toolName => toolName === name));
+						await session.deactivateVibeTools(restoredTools);
+						vibeModePreviousTools = undefined;
+						session.setVibeModeState(undefined);
+						await VibeSessionRegistry.global().killAll(
+							session.getAgentId() ?? MAIN_AGENT_ID,
+							session.asyncJobManager,
+						);
+						session.sessionManager.appendModeChange("none");
+					}
+					return success(id, "set_vibe_mode", { state: session.getVibeModeState() ?? null });
+				} catch (err: unknown) {
+					return error(id, "set_vibe_mode", err instanceof Error ? err.message : String(err));
 				}
 			}
 
