@@ -1,7 +1,9 @@
 import { type ToolResultLike, ToolView } from "@oh-my-pi/collab-web/src/tool-render";
-import { useEffect, useRef } from "react";
+import { ArrowDown } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { agentWorkingLabel, DEFAULT_AGENT_DISPLAY_NAME } from "../lib/agent-display-name";
 import type { ChatMessage } from "../lib/reducer";
+import { sessionWorkTurns, transcriptMessageDomId } from "../lib/session-work-preview";
 import { AgentNameLabel } from "./AgentNameLabel";
 import { Markdown } from "./Markdown";
 
@@ -13,9 +15,9 @@ interface TranscriptProps {
 	onRenameAssistant?: (name: string) => void;
 }
 
-function ToolBubble({ message }: { message: ChatMessage }) {
+function ToolBubble({ message, elementId }: { message: ChatMessage; elementId: string }) {
 	return (
-		<div className="tool-row">
+		<div id={elementId} className="tool-row">
 			<ToolView
 				name={message.toolName ?? "tool"}
 				args={message.toolArgs}
@@ -53,13 +55,31 @@ export function Transcript({
 	// content when they already are — scrolling up to read mid-stream must not be
 	// yanked back down. Recomputed on every scroll event.
 	const atBottomRef = useRef(true);
+	const [showScrollToWork, setShowScrollToWork] = useState(false);
+	const workTurns = useMemo(() => sessionWorkTurns(messages), [messages]);
+	const preview = workTurns.at(-1);
+	const recentTurns = workTurns.slice(-5).reverse();
+
+	const scrollToWork = (): void => {
+		atBottomRef.current = true;
+		setShowScrollToWork(false);
+		bottomRef.current?.scrollIntoView({ block: "end", behavior: "smooth" });
+	};
+
+	const scrollToMessage = (messageId: string): void => {
+		document
+			.getElementById(transcriptMessageDomId(messageId))
+			?.scrollIntoView({ block: "start", behavior: "smooth" });
+	};
 
 	useEffect(() => {
 		const scroller = findScrollParent(bottomRef.current);
 		if (!scroller) return;
 		const onScroll = (): void => {
 			const distance = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
-			atBottomRef.current = distance <= NEAR_BOTTOM_PX;
+			const atBottom = distance <= NEAR_BOTTOM_PX;
+			atBottomRef.current = atBottom;
+			setShowScrollToWork(current => (current === !atBottom ? current : !atBottom));
 		};
 		onScroll(); // seed initial state
 		scroller.addEventListener("scroll", onScroll, { passive: true });
@@ -67,7 +87,12 @@ export function Transcript({
 	}, []);
 
 	useEffect(() => {
-		if (atBottomRef.current) bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+		if (atBottomRef.current) {
+			bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+			setShowScrollToWork(false);
+		} else {
+			setShowScrollToWork(true);
+		}
 	}, [messages, streaming]);
 
 	// Show a working indicator only in the gap between sending and the first
@@ -92,10 +117,17 @@ export function Transcript({
 	return (
 		<div className="transcript">
 			{messages.map(message => {
-				if (message.role === "tool") return <ToolBubble key={message.id} message={message} />;
+				const elementId = transcriptMessageDomId(message.id);
+				if (message.role === "tool") {
+					return <ToolBubble key={message.id} message={message} elementId={elementId} />;
+				}
 				const plain = message.role === "user" || message.error;
 				return (
-					<div key={message.id} className={`bubble bubble-${message.role}${message.error ? " bubble-error" : ""}`}>
+					<div
+						id={elementId}
+						key={message.id}
+						className={`bubble bubble-${message.role}${message.error ? " bubble-error" : ""}`}
+					>
 						{message.role === "assistant" && !message.error ? (
 							<AgentNameLabel name={assistantName} onRename={onRenameAssistant} />
 						) : (
@@ -127,6 +159,51 @@ export function Transcript({
 					</span>
 					<span className="thinking-label">{agentWorkingLabel(assistantName)}</span>
 				</div>
+			) : null}
+			{showScrollToWork && preview ? (
+				<div className="session-work-preview-shell" aria-label="Recent session work">
+					<button
+						type="button"
+						className="session-work-preview"
+						onClick={() => scrollToMessage(preview.targetMessageId)}
+						title="Jump to this turn"
+					>
+						<strong>{preview.title}</strong>
+						{preview.detail ? <span>{preview.detail}</span> : null}
+					</button>
+					{recentTurns.length > 1 ? (
+						<div className="session-work-history" role="list" aria-label="Recent work in this session">
+							<div className="session-work-history-title">Recent work</div>
+							{recentTurns.map(turn => (
+								<button
+									key={turn.id}
+									type="button"
+									className="session-work-history-item"
+									onClick={() => scrollToMessage(turn.targetMessageId)}
+								>
+									<strong>{turn.title}</strong>
+									{turn.detail ? <span>{turn.detail}</span> : null}
+									{turn.toolCount > 0 ? (
+										<small>
+											{turn.toolCount} tool{turn.toolCount === 1 ? "" : "s"}
+										</small>
+									) : null}
+								</button>
+							))}
+						</div>
+					) : null}
+				</div>
+			) : null}
+			{showScrollToWork ? (
+				<button
+					type="button"
+					className="scroll-to-work-button"
+					onClick={scrollToWork}
+					aria-label="Scroll to current work"
+					title="Scroll to current work"
+				>
+					<ArrowDown size={24} strokeWidth={2} />
+				</button>
 			) : null}
 			<div ref={bottomRef} />
 		</div>

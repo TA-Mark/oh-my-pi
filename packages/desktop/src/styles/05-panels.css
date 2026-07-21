@@ -68,6 +68,106 @@
 	line-height: 1.5;
 }
 
+.dialog--tool-approval {
+	width: min(620px, 92vw);
+	padding: 18px;
+}
+
+.tool-approval-head {
+	display: flex;
+	gap: 14px;
+	align-items: flex-start;
+	margin-bottom: 16px;
+}
+
+.tool-approval-mark {
+	display: inline-flex;
+	width: 34px;
+	height: 34px;
+	align-items: center;
+	justify-content: center;
+	flex: 0 0 auto;
+	border: 1px solid color-mix(in srgb, var(--accent) 34%, var(--border));
+	border-radius: 11px;
+	background: color-mix(in srgb, var(--accent) 12%, var(--color-bg-inset));
+	color: var(--accent);
+	font-size: 12px;
+	font-weight: 760;
+	letter-spacing: -0.02em;
+}
+
+.tool-approval-eyebrow {
+	margin: 0 0 3px;
+	color: var(--text-faint);
+	font-size: 11px;
+	font-weight: 700;
+	letter-spacing: 0.08em;
+	text-transform: uppercase;
+}
+
+.tool-approval-title {
+	margin-bottom: 5px;
+	font-size: 18px;
+}
+
+.tool-approval-message {
+	margin-bottom: 0;
+}
+
+.tool-approval-details {
+	display: grid;
+	gap: 8px;
+	margin-bottom: 18px;
+}
+
+.tool-approval-detail {
+	display: grid;
+	grid-template-columns: 86px minmax(0, 1fr);
+	gap: 10px;
+	align-items: start;
+	padding: 10px 12px;
+	border: 1px solid var(--color-border-subtle);
+	border-radius: 12px;
+	background: color-mix(in srgb, var(--color-bg-inset) 78%, transparent);
+}
+
+.tool-approval-detail-label {
+	color: var(--text-faint);
+	font-size: 12px;
+	font-weight: 700;
+}
+
+.tool-approval-detail-value {
+	min-width: 0;
+	margin: 0;
+	overflow: hidden;
+	color: var(--text);
+	font: inherit;
+	text-overflow: ellipsis;
+	white-space: pre-wrap;
+	word-break: break-word;
+}
+
+.tool-approval-detail-value--code {
+	max-height: min(260px, 38vh);
+	overflow: auto;
+	padding: 9px 10px;
+	border: 1px solid var(--color-border-subtle);
+	border-radius: 10px;
+	background: var(--surface-muted);
+	font: 12px/1.45 ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+
+.tool-approval-actions {
+	padding-top: 2px;
+}
+
+@media (max-width: 560px) {
+	.tool-approval-detail {
+		grid-template-columns: 1fr;
+	}
+}
+
 .dialog-code {
 	max-height: 220px;
 	overflow: auto;

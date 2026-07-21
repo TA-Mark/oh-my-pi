@@ -55,12 +55,102 @@ export interface LocalDialogResult {
 	value?: string;
 	selectedIndex?: number;
 }
+
+export interface ToolApprovalDetail {
+	label: string;
+	value: string;
+}
+
+export interface ToolApprovalRequest {
+	toolName: string;
+	details: ToolApprovalDetail[];
+}
+
+const TOOL_APPROVAL_LABEL = /^([A-Z][A-Za-z0-9 /_-]{0,40}):(?:\s?(.*))$/;
+
+export function parseToolApprovalRequest(request: ExtensionUIRequest): ToolApprovalRequest | null {
+	if (request.method !== "select" || request.options[0] !== "Approve" || request.options[1] !== "Deny") return null;
+	const lines = request.title.split(/\r?\n/);
+	const first = lines[0]?.match(/^Allow tool:\s*(.+)$/);
+	if (!first) return null;
+	const details: ToolApprovalDetail[] = [];
+	for (const line of lines.slice(1)) {
+		const match = line.match(TOOL_APPROVAL_LABEL);
+		if (match) {
+			details.push({ label: match[1] ?? "Detail", value: match[2] ?? "" });
+			continue;
+		}
+		const current = details.at(-1);
+		if (current) current.value = current.value ? `${current.value}\n${line}` : line;
+	}
+	return { toolName: first[1] ?? "tool", details };
+}
+
+function ToolApprovalBody({
+	id,
+	approval,
+	onRespond,
+}: {
+	id: string;
+	approval: ToolApprovalRequest;
+	onRespond: (response: ExtensionUIResponse) => void;
+}) {
+	return (
+		<>
+			<div className="tool-approval-head">
+				<span className="tool-approval-mark" aria-hidden="true">
+					{approval.toolName.slice(0, 2).toUpperCase()}
+				</span>
+				<div>
+					<p className="tool-approval-eyebrow">Approval required</p>
+					<h2 className="dialog-title tool-approval-title">Run {approval.toolName}</h2>
+					<p className="dialog-message tool-approval-message">The OMP agent wants to run this tool call.</p>
+				</div>
+			</div>
+			<div className="tool-approval-details">
+				{approval.details.map(detail => {
+					const label = detail.label.toLowerCase();
+					const codeDetail =
+						label === "content" || label === "command" || label === "pattern" || label === "replacement";
+					return (
+						<div className="tool-approval-detail" key={`${detail.label}:${detail.value.slice(0, 32)}`}>
+							<span className="tool-approval-detail-label">{detail.label}</span>
+							<pre
+								className={`tool-approval-detail-value${codeDetail ? " tool-approval-detail-value--code" : ""}`}
+							>
+								{detail.value || "—"}
+							</pre>
+						</div>
+					);
+				})}
+			</div>
+			<div className="dialog-actions tool-approval-actions">
+				<button
+					type="button"
+					className="btn btn-ghost"
+					onClick={() => onRespond({ type: "extension_ui_response", id, value: "Deny" })}
+				>
+					Deny
+				</button>
+				<button
+					type="button"
+					className="btn btn-primary"
+					onClick={() => onRespond({ type: "extension_ui_response", id, value: "Approve" })}
+				>
+					Approve
+				</button>
+			</div>
+		</>
+	);
+}
+
 export function DialogHost({ request, onRespond }: DialogHostProps) {
 	if (!request) return null;
+	const toolApproval = parseToolApprovalRequest(request);
 	return (
 		<div className="dialog-backdrop">
-			<div className="dialog" role="dialog" aria-modal="true">
-				<DialogBody key={request.id} request={request} onRespond={onRespond} />
+			<div className={toolApproval ? "dialog dialog--tool-approval" : "dialog"} role="dialog" aria-modal="true">
+				<DialogBody key={request.id} request={request} toolApproval={toolApproval} onRespond={onRespond} />
 			</div>
 		</div>
 	);
@@ -228,9 +318,11 @@ function LocalDialogBody({
 
 function DialogBody({
 	request,
+	toolApproval,
 	onRespond,
 }: {
 	request: ExtensionUIRequest;
+	toolApproval: ToolApprovalRequest | null;
 	onRespond: (response: ExtensionUIResponse) => void;
 }) {
 	const id = request.id;
@@ -282,6 +374,8 @@ function DialogBody({
 			</>
 		);
 	}
+
+	if (toolApproval) return <ToolApprovalBody id={id} approval={toolApproval} onRespond={onRespond} />;
 
 	if (request.method === "select") {
 		return (

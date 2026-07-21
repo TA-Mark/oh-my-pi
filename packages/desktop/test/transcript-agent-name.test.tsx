@@ -4,6 +4,7 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { AgentNameLabel } from "../src/components/AgentNameLabel";
+import { sessionWorkPreview, sessionWorkTurns } from "../src/lib/session-work-preview";
 import {
 	agentWorkingLabel,
 	DEFAULT_AGENT_DISPLAY_NAME,
@@ -71,4 +72,41 @@ test("agent display names are bounded and blank names restore the default", () =
 	expect(normalizeAgentDisplayName("  My   Agent  ")).toBe("My Agent");
 	expect(normalizeAgentDisplayName(" ")).toBe(DEFAULT_AGENT_DISPLAY_NAME);
 	expect(normalizeAgentDisplayName("x".repeat(80))).toHaveLength(40);
+});
+
+
+test("session work preview summarizes the latest prompt and answer", () => {
+	expect(
+		sessionWorkPreview([
+			{ id: "u1", role: "user", text: "old question" },
+			{ id: "a1", role: "assistant", text: "old answer" },
+			{ id: "u2", role: "user", text: "tôi mới sửa một vài thứ giờ tôi cần bạn lưu data session" },
+			{
+				id: "a2",
+				role: "assistant",
+				text: "Đã hoàn tất, production đang chạy ổn định. Image mới khớp, 7 account, 9 API key.",
+			},
+		]),
+	).toEqual({
+		id: "u2",
+		targetMessageId: "u2",
+		title: "tôi mới sửa một vài thứ giờ tôi cần bạn lưu data session",
+		detail: "Đã hoàn tất, production đang chạy ổn định. Image mới khớp, 7 account, 9 API key.",
+		toolCount: 0,
+	});
+});
+
+test("session work turns keep each prompt jump target and tool count", () => {
+	expect(
+		sessionWorkTurns([
+			{ id: "u1", role: "user", text: "first task" },
+			{ id: "t1", role: "tool", text: "", toolName: "bash" },
+			{ id: "a1", role: "assistant", text: "first answer" },
+			{ id: "u2", role: "user", text: "second task" },
+			{ id: "t2", role: "tool", text: "", toolName: "read" },
+		]),
+	).toEqual([
+		{ id: "u1", targetMessageId: "u1", title: "first task", detail: "first answer", toolCount: 1 },
+		{ id: "u2", targetMessageId: "u2", title: "second task", detail: "Used read", toolCount: 1 },
+	]);
 });

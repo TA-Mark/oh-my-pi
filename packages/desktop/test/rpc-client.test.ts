@@ -132,6 +132,37 @@ describe("request/response correlation", () => {
 		await client.stop();
 	});
 
+	test("gateway provider wrapper sends config and returns models path", async () => {
+		const client = await startedClient();
+		const pending = client.configureGatewayProvider({
+			providerId: "local-gateway",
+			baseUrl: "http://127.0.0.1:11434/v1",
+			api: "openai-completions",
+			discovery: "openai-models-list",
+			apiKey: "secret",
+			authHeader: true,
+			disableStrictTools: true,
+		});
+		const sent = JSON.parse(bridge.sent.at(-1) ?? "{}") as Record<string, unknown>;
+		expect(sent.type).toBe("configure_gateway_provider");
+		expect(sent.providerId).toBe("local-gateway");
+		expect(sent.baseUrl).toBe("http://127.0.0.1:11434/v1");
+		expect(sent.api).toBe("openai-completions");
+		expect(sent.discovery).toBe("openai-models-list");
+		expect(sent.apiKey).toBe("secret");
+		expect(sent.authHeader).toBe(true);
+		expect(sent.disableStrictTools).toBe(true);
+		bridge.emitFrame({
+			type: "response",
+			command: "configure_gateway_provider",
+			id: sent.id,
+			success: true,
+			data: { providerId: "local-gateway", modelsConfigPath: "/tmp/.omp/models.yml" },
+		});
+		expect(await pending).toEqual({ providerId: "local-gateway", modelsConfigPath: "/tmp/.omp/models.yml" });
+		await client.stop();
+	});
+
 	test("subagent transcript preserves incremental offsets and reset state", async () => {
 		const client = await startedClient();
 		const pending = client.getSubagentMessages({ subagentId: "agent-1", fromByte: 24 });

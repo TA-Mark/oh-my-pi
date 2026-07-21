@@ -68,6 +68,7 @@ import type {
 	ExtensionError,
 	ExtensionUIRequest,
 	ExtensionUIResponse,
+	GatewayProviderConfigInput,
 	GitStatus,
 	GoalModeState,
 	GuidedGoalMessage,
@@ -2634,6 +2635,24 @@ export function App() {
 		[addToast, refreshAuth, reportError, isUserInitiatedStop],
 	);
 
+	const onConfigureGatewayProvider = useCallback(
+		(input: GatewayProviderConfigInput) => {
+			addToast(`Configuring ${input.providerId}…`, "info");
+			clientRef.current
+				?.configureGatewayProvider(input)
+				.then(async result => {
+					addToast(`Gateway provider saved in ${result.modelsConfigPath}`, "info");
+					await refreshAuth();
+				})
+				.catch(err => {
+					if (isUserInitiatedStop(err)) return;
+					reportError("configure gateway provider failed", err);
+					addToast(`Gateway provider failed: ${err instanceof Error ? err.message : String(err)}`, "error");
+				});
+		},
+		[addToast, refreshAuth, reportError, isUserInitiatedStop],
+	);
+
 	const onLogout = useCallback(
 		(providerId: string) => {
 			clientRef.current
@@ -2840,6 +2859,7 @@ export function App() {
 				onLogin={onLogin}
 				onSetApiKey={onSetApiKey}
 				onLogout={onLogout}
+				onConfigureGatewayProvider={onConfigureGatewayProvider}
 				onSetPluginEnabled={(name, enabled) =>
 					void runPluginAction(name, client => client.setPluginEnabled(name, enabled))
 				}

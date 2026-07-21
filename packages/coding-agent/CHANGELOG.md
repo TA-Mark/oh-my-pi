@@ -4,6 +4,7 @@
 
 ### Added
 
+- Added RPC support for desktop clients to save OpenAI-compatible gateway providers into `models.yml` and refresh them immediately.
 - Added additive RPC parity for desktop settings/plugins, safe workspace file previews, context inspection, MCP and memory lifecycle, browser tabs, and Git/worktree management.
 - Added a bounded `read_artifact` RPC command so GUI hosts can preview session and subagent artifacts without receiving filesystem paths.
 - Added RPC control for per-plugin feature selection with live plugin and skill discovery reload.

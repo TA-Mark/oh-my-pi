@@ -17,5 +17,19 @@ export default defineConfig({
 		outDir: "dist",
 		target: "esnext",
 		emptyOutDir: true,
+		rollupOptions: {
+			output: {
+				manualChunks(id) {
+					const normalized = id.replaceAll("\\\\", "/");
+					if (!normalized.includes("/node_modules/")) return undefined;
+					if (normalized.includes("/node_modules/react") || normalized.includes("/node_modules/scheduler/")) {
+						return "vendor-react";
+					}
+					if (normalized.includes("/node_modules/@xterm/")) return "vendor-terminal";
+					if (normalized.includes("/node_modules/@oh-my-pi/collab-web/")) return "vendor-tool-renderer";
+					return "vendor";
+				},
+			},
+		},
 	},
 });

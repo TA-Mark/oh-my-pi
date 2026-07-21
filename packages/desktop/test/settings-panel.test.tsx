@@ -81,6 +81,7 @@ const baseProps: SettingsPanelProps = {
 	onSelectModel: noop,
 	onLogin: noop,
 	onSetApiKey: noop,
+	onConfigureGatewayProvider: noop,
 	onLogout: noop,
 	onSetPluginEnabled: noop,
 	onSetPluginFeatures: noop,

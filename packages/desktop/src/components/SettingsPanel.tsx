@@ -28,6 +28,7 @@ import { useEffect, useId, useMemo, useRef, useState } from "react";
 import type {
 	ContextSnapshot,
 	DesktopHostToolConfig,
+	GatewayProviderConfigInput,
 	HostToolAction,
 	LoginProvider,
 	MarketplacePluginDescriptor,
@@ -215,6 +216,51 @@ const PROVIDER_ADVANCED_SECTIONS: Array<{
 		guidance: "Leave these at their defaults unless provider documentation or an error message tells you otherwise.",
 		icon: Wrench,
 		includes: () => true,
+	},
+];
+
+const GATEWAY_API_OPTIONS: Array<{ value: GatewayProviderConfigInput["api"]; label: string; description: string }> = [
+	{
+		value: "openai-completions",
+		label: "OpenAI chat completions",
+		description: "/v1/chat/completions",
+	},
+	{
+		value: "openai-responses",
+		label: "OpenAI Responses",
+		description: "/v1/responses",
+	},
+	{
+		value: "anthropic-messages",
+		label: "Anthropic Messages",
+		description: "/v1/messages",
+	},
+];
+
+const GATEWAY_DISCOVERY_OPTIONS: Array<{
+	value: NonNullable<GatewayProviderConfigInput["discovery"]> | "none";
+	label: string;
+	description: string;
+}> = [
+	{
+		value: "openai-models-list",
+		label: "OpenAI model list",
+		description: "Use GET /v1/models.",
+	},
+	{
+		value: "proxy",
+		label: "Mixed proxy",
+		description: "Detect OpenAI vs Anthropic models from proxy metadata.",
+	},
+	{
+		value: "litellm",
+		label: "LiteLLM",
+		description: "Use LiteLLM metadata endpoints.",
+	},
+	{
+		value: "none",
+		label: "No discovery",
+		description: "Only apply a base URL override for bundled models.",
 	},
 ];
 
@@ -569,6 +615,7 @@ export interface SettingsPanelProps {
 	onSelectModel: (provider: string, id: string) => void;
 	onLogin: (providerId: string) => void;
 	onSetApiKey: (providerId: string, apiKey: string) => void;
+	onConfigureGatewayProvider: (input: GatewayProviderConfigInput) => void;
 	onLogout: (providerId: string) => void;
 	onSetPluginEnabled: (name: string, enabled: boolean) => void;
 	onSetPluginFeatures: (name: string, features: string[]) => void;
@@ -1296,6 +1343,16 @@ export function SettingsPanel(props: SettingsPanelProps) {
 	const [mcpDraftError, setMcpDraftError] = useState<string | null>(null);
 	const [apiKeyProviderId, setApiKeyProviderId] = useState<string | null>(null);
 	const [apiKeyDraft, setApiKeyDraft] = useState("");
+	const [gatewayProviderId, setGatewayProviderId] = useState("my-gateway");
+	const [gatewayBaseUrl, setGatewayBaseUrl] = useState("");
+	const [gatewayApi, setGatewayApi] = useState<GatewayProviderConfigInput["api"]>("openai-completions");
+	const [gatewayDiscovery, setGatewayDiscovery] = useState<
+		NonNullable<GatewayProviderConfigInput["discovery"]> | "none"
+	>("openai-models-list");
+	const [gatewayApiKey, setGatewayApiKey] = useState("");
+	const [gatewayAuthHeader, setGatewayAuthHeader] = useState(false);
+	const [gatewayDisableStrictTools, setGatewayDisableStrictTools] = useState(false);
+	const [gatewayError, setGatewayError] = useState<string | null>(null);
 	const [pluginSpec, setPluginSpec] = useState("");
 	const [marketplaceSource, setMarketplaceSource] = useState("");
 	const [pluginPane, setPluginPane] = useState<"installed" | "discover" | "sources">("installed");
@@ -1530,6 +1587,37 @@ export function SettingsPanel(props: SettingsPanelProps) {
 		setApiKeyDraft("");
 		setApiKeyProviderId(null);
 	};
+	const submitGatewayProvider = () => {
+		const providerId = gatewayProviderId.trim();
+		if (!/^[a-z0-9][a-z0-9._-]*$/.test(providerId)) {
+			setGatewayError("Provider ID must use lowercase letters, digits, dots, underscores, or dashes.");
+			return;
+		}
+		const baseUrl = gatewayBaseUrl.trim();
+		try {
+			const parsed = new URL(baseUrl);
+			if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+				setGatewayError("Base URL must use http or https.");
+				return;
+			}
+		} catch {
+			setGatewayError("Base URL must be a valid URL.");
+			return;
+		}
+		const apiKey = gatewayApiKey.trim();
+		const input: GatewayProviderConfigInput = {
+			providerId,
+			baseUrl,
+			api: gatewayApi,
+			...(gatewayDiscovery !== "none" ? { discovery: gatewayDiscovery } : {}),
+			...(apiKey ? { apiKey } : {}),
+			authHeader: gatewayAuthHeader,
+			disableStrictTools: gatewayDisableStrictTools,
+		};
+		setGatewayError(null);
+		props.onConfigureGatewayProvider(input);
+		if (apiKey) setGatewayApiKey("");
+	};
 	const renderProviderDashboard = () => (
 		<div className="provider-settings">
 			<section className="provider-overview" aria-label="Provider overview">
@@ -1701,6 +1789,117 @@ export function SettingsPanel(props: SettingsPanelProps) {
 				) : visibleLoginProviders.length === 0 ? (
 					<div className="settings-empty">No providers match “{query.trim()}”.</div>
 				) : null}
+			</section>
+
+			<section className="provider-gateway" aria-labelledby={`${titleId}-provider-gateway`}>
+				<div className="provider-section-title">
+					<div>
+						<h3 id={`${titleId}-provider-gateway`}>Gateway API configuration</h3>
+						<p>Register OpenRouter-compatible proxies, LiteLLM, Cloudflare, Vercel, or a private gateway.</p>
+					</div>
+					<span>models.yml</span>
+				</div>
+				<form
+					className="provider-gateway-form"
+					onSubmit={event => {
+						event.preventDefault();
+						submitGatewayProvider();
+					}}
+				>
+					<label>
+						<span>Provider ID</span>
+						<input
+							className="settings-input"
+							value={gatewayProviderId}
+							placeholder="my-gateway"
+							onChange={event => setGatewayProviderId(event.currentTarget.value)}
+						/>
+						<small>Use an existing ID, e.g. cloudflare-ai-gateway, to override its base URL.</small>
+					</label>
+					<label>
+						<span>Base URL</span>
+						<input
+							className="settings-input"
+							value={gatewayBaseUrl}
+							placeholder="https://gateway.example.com/v1"
+							onChange={event => setGatewayBaseUrl(event.currentTarget.value)}
+						/>
+						<small>
+							For Cloudflare Anthropic: https://gateway.ai.cloudflare.com/v1/account/gateway/anthropic
+						</small>
+					</label>
+					<label>
+						<span>Wire API</span>
+						<select
+							className="settings-select"
+							value={gatewayApi}
+							onChange={event => setGatewayApi(event.currentTarget.value as GatewayProviderConfigInput["api"])}
+						>
+							{GATEWAY_API_OPTIONS.map(option => (
+								<option key={option.value} value={option.value}>
+									{option.label} — {option.description}
+								</option>
+							))}
+						</select>
+					</label>
+					<label>
+						<span>Model discovery</span>
+						<select
+							className="settings-select"
+							value={gatewayDiscovery}
+							onChange={event =>
+								setGatewayDiscovery(
+									event.currentTarget.value as NonNullable<GatewayProviderConfigInput["discovery"]> | "none",
+								)
+							}
+						>
+							{GATEWAY_DISCOVERY_OPTIONS.map(option => (
+								<option key={option.value} value={option.value}>
+									{option.label} — {option.description}
+								</option>
+							))}
+						</select>
+					</label>
+					<label>
+						<span>API key</span>
+						<input
+							className="settings-input"
+							type="password"
+							value={gatewayApiKey}
+							placeholder="Optional; stored in OMP credentials"
+							onChange={event => setGatewayApiKey(event.currentTarget.value)}
+						/>
+						<small>Leave blank to keep the current credential or use an environment variable.</small>
+					</label>
+					<div className="provider-gateway-toggles">
+						<label>
+							<input
+								type="checkbox"
+								checked={gatewayAuthHeader}
+								onChange={event => setGatewayAuthHeader(event.currentTarget.checked)}
+							/>
+							<span>Also inject Authorization header from the key</span>
+						</label>
+						<label>
+							<input
+								type="checkbox"
+								checked={gatewayDisableStrictTools}
+								onChange={event => setGatewayDisableStrictTools(event.currentTarget.checked)}
+							/>
+							<span>Disable strict tool schemas for fragile proxies</span>
+						</label>
+					</div>
+					{gatewayError ? <div className="provider-gateway-error">{gatewayError}</div> : null}
+					<div className="provider-gateway-actions">
+						<button
+							type="submit"
+							className="settings-primary-button"
+							disabled={!gatewayProviderId.trim() || !gatewayBaseUrl.trim()}
+						>
+							Save gateway provider
+						</button>
+					</div>
+				</form>
 			</section>
 
 			<section className="provider-advanced">

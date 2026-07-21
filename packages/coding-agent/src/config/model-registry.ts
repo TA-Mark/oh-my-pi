@@ -31,6 +31,7 @@ import {
 	getVariantAliasSources,
 	resolveVariantAlias,
 } from "@oh-my-pi/pi-catalog/variant-collapse";
+import { YAML } from "bun";
 
 const SPECIAL_MODEL_MANAGER_PROVIDER_IDS: readonly string[] = [
 	"google-antigravity",
@@ -85,6 +86,8 @@ import type { ModelOverride, ModelsConfig, ProviderAuthMode } from "./models-con
 import { settings } from "./settings";
 
 export const kNoAuth = "N/A";
+
+export type ModelProviderConfig = NonNullable<ModelsConfig["providers"]>[string];
 
 export function isAuthenticated(apiKey: string | undefined | null): apiKey is string {
 	return Boolean(apiKey) && apiKey !== kNoAuth;
@@ -819,6 +822,46 @@ export class ModelRegistry {
 		});
 		// Load models synchronously in constructor.
 		this.#loadModels();
+	}
+
+	async upsertProviderConfig(providerId: string, providerConfig: ModelProviderConfig): Promise<string> {
+		const loaded = await this.#modelsConfigFile.tryLoadAsync();
+		if (loaded.status === "error") throw loaded.error;
+		const current = loaded.status === "ok" ? loaded.value : this.#modelsConfigFile.createDefault();
+		const nextProvider: ModelProviderConfig = {
+			...(current.providers?.[providerId] ?? {}),
+			...providerConfig,
+		};
+		if (providerConfig.discovery === undefined) delete nextProvider.discovery;
+		validateProviderConfiguration(
+			providerId,
+			{
+				baseUrl: nextProvider.baseUrl,
+				headers: nextProvider.headers,
+				apiKey: nextProvider.apiKey,
+				api: nextProvider.api as Api | undefined,
+				auth: (nextProvider.auth ?? "apiKey") as ProviderAuthMode,
+				discovery: nextProvider.discovery,
+				compat: nextProvider.compat,
+				remoteCompaction: nextProvider.remoteCompaction,
+				disableStrictTools: nextProvider.disableStrictTools,
+				modelOverrides: nextProvider.modelOverrides,
+				models: (nextProvider.models ?? []) as ProviderValidationModel[],
+			},
+			"models-config",
+		);
+		const next: ModelsConfig = {
+			...current,
+			providers: {
+				...(current.providers ?? {}),
+				[providerId]: nextProvider,
+			},
+		};
+		const configPath = this.#modelsConfigFile.path();
+		await Bun.write(configPath, YAML.stringify(next, null, 2));
+		this.#modelsConfigFile.invalidate();
+		this.#lastStaticLoadMtime = null;
+		return configPath;
 	}
 
 	/**

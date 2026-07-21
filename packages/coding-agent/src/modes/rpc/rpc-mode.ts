@@ -29,6 +29,7 @@ import {
 	setProjectDir,
 } from "@oh-my-pi/pi-utils";
 import { reset as resetCapabilities } from "../../capability";
+import type { ModelProviderConfig } from "../../config/model-registry";
 import { applyProviderGlobalsFromSettings } from "../../config/provider-globals";
 import { clearPluginRootsAndCaches, resolveActiveProjectRegistryPath } from "../../discovery/helpers";
 import {
@@ -2943,6 +2944,62 @@ export async function runRpcMode(
 					return success(id, "set_api_key", { providerId: command.providerId });
 				} catch (err: unknown) {
 					return error(id, "set_api_key", err instanceof Error ? err.message : String(err));
+				}
+			}
+
+			case "configure_gateway_provider": {
+				const providerId = typeof command.providerId === "string" ? command.providerId.trim() : "";
+				if (!/^[a-z0-9][a-z0-9._-]*$/.test(providerId)) {
+					return error(
+						id,
+						"configure_gateway_provider",
+						"Provider ID must start with a lowercase letter or digit and contain only lowercase letters, digits, dots, underscores, or dashes.",
+					);
+				}
+				const baseUrl = typeof command.baseUrl === "string" ? command.baseUrl.trim() : "";
+				try {
+					const parsed = new URL(baseUrl);
+					if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+						return error(id, "configure_gateway_provider", "Base URL must use http or https.");
+					}
+				} catch {
+					return error(id, "configure_gateway_provider", "Base URL must be a valid URL.");
+				}
+				const api = command.api;
+				if (api !== "openai-completions" && api !== "openai-responses" && api !== "anthropic-messages") {
+					return error(id, "configure_gateway_provider", "Unsupported provider API.");
+				}
+				const discovery = command.discovery;
+				if (
+					discovery !== undefined &&
+					discovery !== "openai-models-list" &&
+					discovery !== "proxy" &&
+					discovery !== "litellm"
+				) {
+					return error(id, "configure_gateway_provider", "Unsupported discovery type.");
+				}
+				const apiKey = typeof command.apiKey === "string" ? command.apiKey.trim() : undefined;
+				if (command.apiKey !== undefined && !apiKey) {
+					return error(id, "configure_gateway_provider", "API key cannot be empty.");
+				}
+				const providerConfig: ModelProviderConfig = {
+					baseUrl,
+					api,
+					...(discovery ? { discovery: { type: discovery } } : {}),
+					...(command.authHeader !== undefined ? { authHeader: command.authHeader === true } : {}),
+					...(command.disableStrictTools !== undefined
+						? { disableStrictTools: command.disableStrictTools === true }
+						: {}),
+				};
+				try {
+					const modelsConfigPath = await session.modelRegistry.upsertProviderConfig(providerId, providerConfig);
+					if (apiKey) {
+						await session.modelRegistry.authStorage.set(providerId, { type: "api_key", key: apiKey });
+					}
+					await session.modelRegistry.refreshProvider(providerId, "online");
+					return success(id, "configure_gateway_provider", { providerId, modelsConfigPath });
+				} catch (err: unknown) {
+					return error(id, "configure_gateway_provider", err instanceof Error ? err.message : String(err));
 				}
 			}
 

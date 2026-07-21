@@ -163,6 +163,17 @@ export type RpcCommand =
 	| { id?: string; type: "get_login_providers" }
 	| { id?: string; type: "login"; providerId: string }
 	| { id?: string; type: "set_api_key"; providerId: string; apiKey: string }
+	| {
+			id?: string;
+			type: "configure_gateway_provider";
+			providerId: string;
+			baseUrl: string;
+			api: "openai-completions" | "openai-responses" | "anthropic-messages";
+			discovery?: "openai-models-list" | "proxy" | "litellm";
+			apiKey?: string;
+			authHeader?: boolean;
+			disableStrictTools?: boolean;
+	  }
 	| { id?: string; type: "logout"; providerId: string }
 
 	// Plan mode (desktop-added core command; core-touchpoints.md).
@@ -868,6 +879,13 @@ export type RpcResponse =
 	  }
 	| { id?: string; type: "response"; command: "login"; success: true; data: { providerId: string } }
 	| { id?: string; type: "response"; command: "set_api_key"; success: true; data: { providerId: string } }
+	| {
+			id?: string;
+			type: "response";
+			command: "configure_gateway_provider";
+			success: true;
+			data: { providerId: string; modelsConfigPath: string };
+	  }
 	| { id?: string; type: "response"; command: "logout"; success: true; data: { providerId: string } }
 
 	// Plan mode

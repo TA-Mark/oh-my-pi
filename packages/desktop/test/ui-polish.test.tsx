@@ -3,12 +3,12 @@ import { Window as HappyWindow } from "happy-dom";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
-import { LocalDialogHost, type LocalDialogResult } from "../src/components/DialogHost";
+import { DialogHost, LocalDialogHost, type LocalDialogResult } from "../src/components/DialogHost";
 import { SideChatPanel } from "../src/components/SideChatPanel";
 import { WorktreeManager } from "../src/components/WorktreeManager";
 import { ChangesPanel } from "../src/components/ChangesPanel";
 import { DiagnosticsPanel } from "../src/components/DiagnosticsPanel";
-import type { ReviewScope, WorkspaceFileChange } from "../src/lib/rpc-protocol";
+import type { ExtensionUIResponse, ReviewScope, WorkspaceFileChange } from "../src/lib/rpc-protocol";
 
 
 function installDom(): { container: Element; restore: () => void } {
@@ -240,6 +240,42 @@ test("local select dialog resolves the chosen option", async () => {
 		expect(button).toBeDefined();
 		await act(async () => button?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
 		expect(result).toEqual({ confirmed: true, selectedIndex: 1 });
+	} finally {
+		await act(async () => root.unmount());
+		restore();
+	}
+});
+
+test("tool approval dialog renders structured details instead of raw prompt text", async () => {
+	const { container, restore } = installDom();
+	const root = createRoot(container);
+	let response: ExtensionUIResponse | undefined;
+	try {
+		await act(async () =>
+			root.render(
+				<DialogHost
+					request={{
+						type: "extension_ui_request",
+						id: "approval-1",
+						method: "select",
+						title:
+							"Allow tool: write\nPath: packages/desktop/src/lib/session-work-preview.ts\nContent:\nimport type { ChatMessage } from \"./reducer\";\nconst PREVIEW_TITLE_LENGTH = 90;",
+						options: ["Approve", "Deny"],
+					}}
+					onRespond={next => (response = next)}
+				/>,
+			),
+		);
+		const text = container.textContent ?? "";
+		expect(text).toContain("Approval required");
+		expect(text).toContain("Run write");
+		expect(text).toContain("packages/desktop/src/lib/session-work-preview.ts");
+		expect(text).toContain("PREVIEW_TITLE_LENGTH");
+		expect(text).not.toContain("Allow tool:");
+		const approve = Array.from(container.querySelectorAll("button")).find(button => button.textContent === "Approve");
+		expect(approve).toBeDefined();
+		await act(async () => approve?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+		expect(response).toEqual({ type: "extension_ui_response", id: "approval-1", value: "Approve" });
 	} finally {
 		await act(async () => root.unmount());
 		restore();

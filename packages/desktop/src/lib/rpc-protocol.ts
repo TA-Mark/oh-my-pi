@@ -49,6 +49,16 @@ export type McpServerConfigInput =
 			timeout?: number;
 	  };
 
+export interface GatewayProviderConfigInput {
+	providerId: string;
+	baseUrl: string;
+	api: "openai-completions" | "openai-responses" | "anthropic-messages";
+	discovery?: "openai-models-list" | "proxy" | "litellm";
+	apiKey?: string;
+	authHeader?: boolean;
+	disableStrictTools?: boolean;
+}
+
 export type RpcCommand =
 	| {
 			id?: string;
@@ -166,6 +176,7 @@ export type RpcCommand =
 	| { id?: string; type: "get_login_providers" }
 	| { id?: string; type: "login"; providerId: string }
 	| { id?: string; type: "set_api_key"; providerId: string; apiKey: string }
+	| ({ id?: string; type: "configure_gateway_provider" } & GatewayProviderConfigInput)
 	| { id?: string; type: "logout"; providerId: string }
 	| { id?: string; type: "set_plan_mode"; enabled: boolean; workflow?: "parallel" | "iterative" }
 	| { id?: string; type: "stage_hunks"; selections: HunkSelection[] }

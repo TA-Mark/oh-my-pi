@@ -19,6 +19,7 @@ import {
 	type ExtensionError,
 	type ExtensionUIRequest,
 	type ExtensionUIResponse,
+	type GatewayProviderConfigInput,
 	type GitStatus,
 	type GoalResult,
 	type GuidedGoalMessage,
@@ -488,6 +489,13 @@ export class DesktopRpcClient {
 	/** Store a provider API key in the engine credential store. */
 	async setApiKey(providerId: string, apiKey: string): Promise<void> {
 		await this.#send({ type: "set_api_key", providerId, apiKey });
+	}
+
+	async configureGatewayProvider(
+		input: GatewayProviderConfigInput,
+	): Promise<{ providerId: string; modelsConfigPath: string }> {
+		const response = await this.#send({ type: "configure_gateway_provider", ...input }, 60_000);
+		return this.#data<{ providerId: string; modelsConfigPath: string }>(response);
 	}
 
 	/** Sign out of a provider (clears stored credentials). */
