@@ -669,7 +669,7 @@ function ChangeSection({
 	onSelect,
 	emptyMessage,
 }: {
-	title: string;
+	title?: string;
 	scopeKey: string;
 	changes: WorkspaceFileChange[];
 	mode: DiffMode;
@@ -685,10 +685,10 @@ function ChangeSection({
 	emptyMessage: string;
 }): ReactNode {
 	return (
-		<section className="changes-section">
+		<section className={`changes-section${title ? "" : " changes-section--single"}`}>
 			<div className="changes-section-head">
 				<div className="changes-section-title">
-					<h3>{title}</h3>
+					{title ? <h3>{title}</h3> : null}
 					<span>
 						{changes.length} file{changes.length === 1 ? "" : "s"}
 					</span>
@@ -1090,7 +1090,7 @@ function ReviewScopeMenu({
 		onLoadCommits();
 	};
 	const options: Array<{ label: string; selection?: ReviewSelection }> = [
-		{ label: "Split", selection: { scope: "all", label: "Split" } },
+		{ label: "Changes", selection: { scope: "all", label: "Changes" } },
 		{ label: "Unstaged", selection: { scope: "unstaged", label: "Unstaged" } },
 		{ label: "Staged", selection: { scope: "staged", label: "Staged" } },
 		{ label: "Commit" },
@@ -1288,7 +1288,7 @@ export function ChangesPanel({
 	const [expandedPaths, setExpandedPaths] = useState<Set<string>>(() => new Set());
 	const [mutating, setMutating] = useState(false);
 	const [refreshing, setRefreshing] = useState(false);
-	const [reviewSelection, setReviewSelection] = useState<ReviewSelection>({ scope: "all", label: "Split" });
+	const [reviewSelection, setReviewSelection] = useState<ReviewSelection>({ scope: "all", label: "Changes" });
 	const [reviewChanges, setReviewChanges] = useState<WorkspaceFileChange[] | null>(null);
 	const [splitUnstagedChanges, setSplitUnstagedChanges] = useState<WorkspaceFileChange[] | null>(null);
 	const [splitStagedChanges, setSplitStagedChanges] = useState<WorkspaceFileChange[] | null>(null);
@@ -1553,10 +1553,29 @@ export function ChangesPanel({
 
 	const splitUnstagedVisibleChanges = splitUnstagedVisibleItems.map(item => item.change);
 	const splitStagedVisibleChanges = splitStagedVisibleItems.map(item => item.change);
+	const hasUnstagedSection = splitUnstagedVisibleChanges.length > 0;
+	const hasStagedSection = splitStagedVisibleChanges.length > 0;
+	const showSplitSectionTitles = hasUnstagedSection && hasStagedSection;
 	const sectionVisibleItems = splitView
 		? [
-				{ scope: "unstaged" as const, title: "Unstaged", changes: splitUnstagedVisibleChanges },
-				{ scope: "staged" as const, title: "Staged", changes: splitStagedVisibleChanges },
+				...(hasUnstagedSection
+					? [
+							{
+								scope: "unstaged" as const,
+								title: showSplitSectionTitles ? "Unstaged" : undefined,
+								changes: splitUnstagedVisibleChanges,
+							},
+						]
+					: []),
+				...(hasStagedSection
+					? [
+							{
+								scope: "staged" as const,
+								title: showSplitSectionTitles ? "Staged" : undefined,
+								changes: splitStagedVisibleChanges,
+							},
+						]
+					: []),
 			]
 		: [
 				{
@@ -1715,6 +1734,9 @@ export function ChangesPanel({
 							) : null}
 							{splitError ? (
 								<div className="changes-review-state changes-review-state--error">{splitError}</div>
+							) : null}
+							{!splitLoading && !splitError && sectionVisibleItems.length === 0 ? (
+								<p className="changes-empty">{renderedItems.length === 0 ? "No changes." : "No files to show."}</p>
 							) : null}
 							{sectionVisibleItems.map(section => (
 								<ChangeSection

@@ -8,6 +8,7 @@ import { SideChatPanel } from "../src/components/SideChatPanel";
 import { WorktreeManager } from "../src/components/WorktreeManager";
 import { ChangesPanel } from "../src/components/ChangesPanel";
 import { DiagnosticsPanel } from "../src/components/DiagnosticsPanel";
+import { Transcript } from "../src/components/Transcript";
 import type { ExtensionUIResponse, ReviewScope, WorkspaceFileChange } from "../src/lib/rpc-protocol";
 
 
@@ -98,6 +99,24 @@ test("diagnostics panel renders recent session timeline", () => {
 	expect(markup).toContain("failed");
 });
 
+test("transcript renders gutter-labeled chat rows", () => {
+	const markup = renderToStaticMarkup(
+		<Transcript
+			assistantName="Router Agent"
+			messages={[
+				{ id: "u1", role: "user", text: "Improve the chat view" },
+				{ id: "a1", role: "assistant", text: "Done with a clearer agent row." },
+			]}
+		/>,
+	);
+
+	expect(markup).toContain("transcript--rows");
+	expect(markup).toContain("chat-row--user");
+	expect(markup).toContain("chat-row--assistant");
+	expect(markup).toContain(">you<");
+	expect(markup).toContain("Router Agent");
+});
+
 test("changes panel splits staged and unstaged changes", async () => {
 	const { container, restore } = installDom();
 	const root = createRoot(container);
@@ -155,6 +174,61 @@ test("changes panel splits staged and unstaged changes", async () => {
 	}
 });
 
+test("changes panel avoids duplicate split labels for a single dirty scope", async () => {
+	const { container, restore } = installDom();
+	const root = createRoot(container);
+	const unstaged = makeChange("src/only-unstaged.ts", "modified", 3, 1);
+	try {
+		await act(async () => {
+			root.render(
+				<ChangesPanel
+					changes={[unstaged]}
+					workspaceEntries={[]}
+					workspaceFilesLoading={false}
+					workspaceFilesTruncated={false}
+					onRefreshWorkspaceFiles={noop}
+					gitStatus={{
+						branch: "main",
+						upstream: "origin/main",
+						baseBranch: "main",
+						branches: ["main"],
+						localBranches: ["main"],
+						staged: 0,
+						unstaged: 1,
+						untracked: 0,
+					}}
+					onRefresh={noop}
+					onLoadReview={async scope => (scope === "unstaged" ? [unstaged] : [])}
+					onLoadReviewCommits={async () => []}
+					onStageHunks={noop}
+					onUnstage={noop}
+					onRevertFiles={noop}
+					onCommit={noop}
+					onPush={noop}
+					onCreatePullRequest={noop}
+					disabled={false}
+				/>,
+			);
+			await Promise.resolve();
+			await Promise.resolve();
+		});
+		await waitForText(container, "src/only-unstaged.ts");
+		const scopeButton = container.querySelector(".changes-scope-button")?.textContent ?? "";
+		const sectionTitles = Array.from(container.querySelectorAll(".changes-section-title h3")).map(
+			title => title.textContent,
+		);
+		expect(scopeButton).toContain("Changes");
+		expect(scopeButton).not.toContain("Split");
+		expect(sectionTitles).toEqual([]);
+		expect(container.textContent).toContain("Stage all");
+		expect(container.textContent).not.toContain("No staged changes.");
+	} finally {
+		await act(async () => root.unmount());
+		restore();
+	}
+});
+
+
 test("changes panel split summary follows loaded split scopes", async () => {
 	const { container, restore } = installDom();
 	const root = createRoot(container);
@@ -193,7 +267,7 @@ test("changes panel split summary follows loaded split scopes", async () => {
 			await Promise.resolve();
 			await Promise.resolve();
 		});
-		await waitForText(container, "No unstaged changes.");
+		await waitForText(container, "No changes.");
 		const summary = container.querySelector(".changes-summary")?.textContent ?? "";
 		expect(summary).toContain("+0");
 		expect(summary).toContain("-0");

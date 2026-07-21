@@ -388,6 +388,13 @@
 	padding-bottom: 20px;
 }
 
+.transcript.transcript--rows {
+	--chat-gutter-width: clamp(72px, 10vw, 104px);
+	--chat-text-measure: 76ch;
+	gap: 0;
+	padding-bottom: 20px;
+}
+
 .scroll-to-work-button {
 	position: fixed;
 	left: 50%;
@@ -596,11 +603,84 @@
 	width: 100%;
 }
 
-.bubble-role {
-	margin-bottom: 7px;
+.chat-row {
+	display: grid;
+	grid-template-columns: var(--chat-gutter-width) minmax(0, 1fr);
+	gap: 0 12px;
+	padding: 8px 0;
+}
+
+.chat-row + .chat-row {
+	border-top: 1px solid color-mix(in srgb, var(--color-border-subtle) 62%, transparent);
+}
+
+.chat-gutter {
+	min-width: 0;
+	padding-top: 4px;
 	color: var(--text-faint);
-	font-size: 11px;
+	font-family: var(--font-mono);
+	font-size: 10px;
+	font-weight: 650;
+	letter-spacing: 0.08em;
+	line-height: 1.4;
+	text-align: right;
 	text-transform: uppercase;
+	user-select: none;
+}
+
+.chat-role-label {
+	display: inline-block;
+	max-width: 100%;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.chat-row--user .chat-gutter {
+	color: var(--accent);
+}
+
+.chat-row--assistant .chat-gutter,
+.chat-row--tool .chat-gutter {
+	color: var(--text-dim);
+}
+
+.chat-row--error .chat-gutter {
+	color: var(--color-text-danger);
+}
+
+.chat-body {
+	min-width: 0;
+}
+
+.chat-row--assistant .chat-body,
+.chat-row--tool .chat-body {
+	border-left: 1px solid var(--color-border-subtle);
+	padding-left: 14px;
+}
+
+.chat-row--tool {
+	padding-top: 4px;
+}
+
+.chat-tool-body {
+	padding-top: 1px;
+}
+
+.bubble-role {
+	margin: 0;
+	color: inherit;
+	font-size: inherit;
+	text-transform: none;
+}
+
+.chat-gutter .bubble-role {
+	max-width: 100%;
+	justify-content: flex-end;
+	padding: 1px 3px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
 }
 
 .bubble-role-button {
@@ -610,7 +690,6 @@
 	border: 0;
 	border-radius: 4px;
 	background: transparent;
-	padding: 1px 3px;
 	cursor: text;
 }
 
@@ -634,7 +713,6 @@
 	display: block;
 	width: min(220px, 100%);
 	height: 24px;
-	margin-bottom: 5px;
 	border: 1px solid var(--border);
 	border-radius: 5px;
 	background: var(--bg-control);
@@ -648,31 +726,28 @@
 	outline: 2px solid color-mix(in srgb, var(--accent) 22%, transparent);
 }
 
-.bubble-text {
+.chat-body .bubble-text {
 	white-space: pre-wrap;
-	word-break: break-word;
-	line-height: 1.65;
+	overflow-wrap: break-word;
+	line-height: 1.58;
 }
 
-.bubble-user {
-	align-self: flex-end;
-	max-width: min(82%, 680px);
-	margin-left: auto;
-	padding: 12px 14px;
-	border-radius: 8px;
-	background: var(--bg-control);
+.chat-row--user .bubble-user {
+	width: fit-content;
+	max-width: min(100%, 720px);
+	margin-left: 0;
+	padding: 10px 12px;
 	border: 1px solid var(--color-border-subtle);
+	border-radius: 10px;
+	background: var(--bg-control);
 }
 
-.bubble-user .bubble-role {
-	display: none;
-}
-
-.bubble-assistant {
+.chat-row--assistant .bubble-assistant {
+	max-width: min(100%, var(--chat-text-measure));
 	color: var(--text);
 }
 
-.bubble-system {
+.chat-row--system .bubble-system {
 	padding: 10px 12px;
 	border: 1px solid var(--border);
 	border-radius: 8px;
@@ -680,20 +755,15 @@
 	color: var(--text-dim);
 }
 
-.bubble-error {
+.chat-row--error .bubble-error {
 	padding: 12px 14px;
 	border: 1px solid rgba(240, 93, 85, 0.25);
 	border-radius: 8px;
 	background: rgba(240, 93, 85, 0.08);
 }
 
-.bubble-error .bubble-role,
-.bubble-error .bubble-text {
+.chat-row--error .bubble-text {
 	color: var(--color-text-danger);
-}
-
-.bubble-tool {
-	font-size: 13px;
 }
 
 .bubble-images {
@@ -706,8 +776,8 @@
 .bubble-images img {
 	max-width: 220px;
 	max-height: 220px;
-	border-radius: 8px;
 	border: 1px solid var(--border);
+	border-radius: 8px;
 	cursor: pointer;
 }
 
@@ -718,6 +788,28 @@
 	color: var(--text-dim);
 	font-size: 13px;
 	padding: 2px 0;
+}
+
+@container app-content (max-width: 560px) {
+	.chat-row {
+		grid-template-columns: 1fr;
+		gap: 4px;
+		padding: 10px 0;
+	}
+
+	.chat-gutter {
+		padding-top: 0;
+		text-align: left;
+	}
+
+	.chat-row--assistant .chat-body,
+	.chat-row--tool .chat-body {
+		padding-left: 12px;
+	}
+
+	.chat-row--user .bubble-user {
+		width: 100%;
+	}
 }
 
 .switching-indicator {
@@ -775,8 +867,9 @@
 }
 
 .tr-md {
-	line-height: 1.62;
-	word-break: break-word;
+	line-height: 1.58;
+	overflow-wrap: break-word;
+	word-break: keep-all;
 }
 
 .tr-md > *:first-child {
@@ -788,16 +881,56 @@
 }
 
 .tr-md p {
-	margin: 0.55em 0;
+	margin: 6px 0;
+}
+
+.tr-md p,
+.tr-md li {
+	white-space: pre-wrap;
+}
+
+.tr-md h1,
+.tr-md h2,
+.tr-md h3,
+.tr-md h4,
+.tr-md h5,
+.tr-md h6 {
+	margin: 14px 0 6px;
+	font-weight: 600;
+	line-height: 1.3;
+}
+
+.tr-md h1 {
+	font-size: 18px;
+}
+
+.tr-md h2 {
+	font-size: 16px;
+}
+
+.tr-md h3 {
+	font-size: 15px;
+}
+
+.tr-md h4,
+.tr-md h5,
+.tr-md h6 {
+	font-size: 14px;
 }
 
 .tr-md a {
 	color: var(--color-accent);
+	text-decoration: none;
+}
+
+.tr-md a:hover {
+	text-decoration: underline;
 }
 
 .tr-md pre {
+	margin: 8px 0;
 	overflow-x: auto;
-	padding: 12px 14px;
+	padding: 10px 12px;
 	border: 1px solid var(--border);
 	border-radius: 8px;
 	background: var(--color-bg-inset);
@@ -809,7 +942,7 @@
 }
 
 .tr-md :not(pre) > code {
-	padding: 2px 5px;
+	padding: 1px 4px;
 	border: 1px solid var(--border);
 	border-radius: 5px;
 	background: var(--color-bg-raised);
@@ -819,29 +952,47 @@
 	padding: 0;
 	border: none;
 	background: none;
+	font-size: 12px;
+	line-height: 1.5;
 }
 
 .tr-md ul,
 .tr-md ol {
-	margin: 0.6em 0;
-	padding-left: 1.35em;
+	margin: 6px 0;
+	padding-left: 22px;
+}
+
+.tr-md li {
+	margin: 2px 0;
 }
 
 .tr-md blockquote {
-	margin: 0.6em 0;
-	padding-left: 12px;
-	border-left: 3px solid var(--border);
+	margin: 8px 0;
+	padding: 2px 12px;
+	border-left: 3px solid var(--border-strong);
 	color: var(--text-dim);
 }
 
 .tr-md table {
+	display: block;
+	max-width: 100%;
+	margin: 8px 0;
+	overflow-x: auto;
 	border-collapse: collapse;
 }
 
 .tr-md th,
 .tr-md td {
-	padding: 5px 8px;
+	padding: 4px 8px;
 	border: 1px solid var(--border);
+	overflow-wrap: anywhere;
+	text-align: left;
+	word-break: keep-all;
+}
+
+.tr-md th {
+	background: var(--color-bg-inset);
+	font-weight: 600;
 }
 
 .stderr-panel {

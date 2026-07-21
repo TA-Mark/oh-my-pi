@@ -1,4 +1,5 @@
-import { type ToolResultLike, ToolView } from "@oh-my-pi/collab-web/src/tool-render";
+import { ToolView } from "@oh-my-pi/collab-web/src/tool-render/ToolView";
+import type { ToolResultLike } from "@oh-my-pi/collab-web/src/tool-render/types";
 import { ArrowDown } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { agentWorkingLabel, DEFAULT_AGENT_DISPLAY_NAME } from "../lib/agent-display-name";
@@ -17,15 +18,20 @@ interface TranscriptProps {
 
 function ToolBubble({ message, elementId }: { message: ChatMessage; elementId: string }) {
 	return (
-		<div id={elementId} className="tool-row">
-			<ToolView
-				name={message.toolName ?? "tool"}
-				args={message.toolArgs}
-				result={message.toolResult as ToolResultLike | undefined}
-				running={message.toolRunning}
-				intent={message.toolIntent}
-				partial={message.toolPartial}
-			/>
+		<div id={elementId} className="chat-row chat-row--tool tool-row">
+			<div className="chat-gutter">
+				<span className="chat-role-label">tool</span>
+			</div>
+			<div className="chat-body chat-tool-body">
+				<ToolView
+					name={message.toolName ?? "tool"}
+					args={message.toolArgs}
+					result={message.toolResult as ToolResultLike | undefined}
+					running={message.toolRunning}
+					intent={message.toolIntent}
+					partial={message.toolPartial}
+				/>
+			</div>
 		</div>
 	);
 }
@@ -115,49 +121,56 @@ export function Transcript({
 	}
 
 	return (
-		<div className="transcript">
+		<div className="transcript transcript--rows">
 			{messages.map(message => {
 				const elementId = transcriptMessageDomId(message.id);
 				if (message.role === "tool") {
 					return <ToolBubble key={message.id} message={message} elementId={elementId} />;
 				}
 				const plain = message.role === "user" || message.error;
+				const rowRole = message.error ? "error" : message.role;
+				const gutterLabel = message.error ? "error" : message.role === "user" ? "you" : message.role;
 				return (
-					<div
-						id={elementId}
-						key={message.id}
-						className={`bubble bubble-${message.role}${message.error ? " bubble-error" : ""}`}
-					>
-						{message.role === "assistant" && !message.error ? (
-							<AgentNameLabel name={assistantName} onRename={onRenameAssistant} />
-						) : (
-							<div className="bubble-role">{message.error ? "error" : message.role}</div>
-						)}
-						{message.images && message.images.length > 0 && (
-							<div className="bubble-images">
-								{message.images.map((img, i) => (
-									<img key={i} src={`data:${img.mimeType};base64,${img.data}`} alt={`attachment ${i + 1}`} />
-								))}
-							</div>
-						)}
-						{message.text ? (
-							plain ? (
-								<div className="bubble-text">{message.text}</div>
+					<div id={elementId} key={message.id} className={`chat-row chat-row--${rowRole}`}>
+						<div className="chat-gutter">
+							{message.role === "assistant" && !message.error ? (
+								<AgentNameLabel name={assistantName} onRename={onRenameAssistant} />
 							) : (
-								<Markdown text={message.text} />
-							)
-						) : null}
+								<span className="chat-role-label">{gutterLabel}</span>
+							)}
+						</div>
+						<div className={`chat-body bubble bubble-${message.role}${message.error ? " bubble-error" : ""}`}>
+							{message.images && message.images.length > 0 && (
+								<div className="bubble-images">
+									{message.images.map((img, i) => (
+										<img key={i} src={`data:${img.mimeType};base64,${img.data}`} alt={`attachment ${i + 1}`} />
+									))}
+								</div>
+							)}
+							{message.text ? (
+								plain ? (
+									<div className="bubble-text">{message.text}</div>
+								) : (
+									<Markdown text={message.text} />
+								)
+							) : null}
+						</div>
 					</div>
 				);
 			})}
 			{showThinking ? (
-				<div className="thinking-indicator" role="status" aria-live="polite">
-					<span className="thinking-dots" aria-hidden="true">
-						<span />
-						<span />
-						<span />
-					</span>
-					<span className="thinking-label">{agentWorkingLabel(assistantName)}</span>
+				<div className="chat-row chat-row--assistant chat-row--thinking">
+					<div className="chat-gutter">
+						<span className="chat-role-label">{assistantName}</span>
+					</div>
+					<div className="chat-body thinking-indicator" role="status" aria-live="polite">
+						<span className="thinking-dots" aria-hidden="true">
+							<span />
+							<span />
+							<span />
+						</span>
+						<span className="thinking-label">{agentWorkingLabel(assistantName)}</span>
+					</div>
 				</div>
 			) : null}
 			{showScrollToWork && preview ? (
