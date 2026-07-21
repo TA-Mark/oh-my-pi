@@ -155,6 +155,56 @@ test("changes panel splits staged and unstaged changes", async () => {
 	}
 });
 
+test("changes panel split summary follows loaded split scopes", async () => {
+	const { container, restore } = installDom();
+	const root = createRoot(container);
+	const staleBranchChange = makeChange("src/old-branch.ts", "modified", 1133, 16);
+	try {
+		await act(async () => {
+			root.render(
+				<ChangesPanel
+					changes={[staleBranchChange]}
+					workspaceEntries={[]}
+					workspaceFilesLoading={false}
+					workspaceFilesTruncated={false}
+					onRefreshWorkspaceFiles={noop}
+					gitStatus={{
+						branch: "main",
+						upstream: "origin/main",
+						baseBranch: "main",
+						branches: ["main"],
+						localBranches: ["main"],
+						staged: 0,
+						unstaged: 0,
+						untracked: 0,
+					}}
+					onRefresh={noop}
+					onLoadReview={async () => []}
+					onLoadReviewCommits={async () => []}
+					onStageHunks={noop}
+					onUnstage={noop}
+					onRevertFiles={noop}
+					onCommit={noop}
+					onPush={noop}
+					onCreatePullRequest={noop}
+					disabled={false}
+				/>,
+			);
+			await Promise.resolve();
+			await Promise.resolve();
+		});
+		await waitForText(container, "No unstaged changes.");
+		const summary = container.querySelector(".changes-summary")?.textContent ?? "";
+		expect(summary).toContain("+0");
+		expect(summary).toContain("-0");
+		expect(summary).not.toContain("+1,133");
+		expect(summary).not.toContain("-16");
+	} finally {
+		await act(async () => root.unmount());
+		restore();
+	}
+});
+
 
 test("local confirm dialog resolves through rendered controls", async () => {
 	const { container, restore } = installDom();

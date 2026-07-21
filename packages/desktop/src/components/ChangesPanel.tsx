@@ -1300,7 +1300,9 @@ export function ChangesPanel({
 	const [commitsLoading, setCommitsLoading] = useState(false);
 	const jumpMenuRef = useRef<HTMLDivElement>(null);
 	const splitView = reviewSelection.scope === "all";
-	const summaryChanges = splitView ? changes : (reviewChanges ?? changes);
+	const summaryChanges = splitView
+		? [...(splitUnstagedChanges ?? []), ...(splitStagedChanges ?? [])]
+		: (reviewChanges ?? changes);
 	const additions = summaryChanges.reduce((sum, change) => sum + change.additions, 0);
 	const deletions = summaryChanges.reduce((sum, change) => sum + change.deletions, 0);
 	const normalizedNavigatorFilter = navigatorFilter.trim().toLowerCase();
