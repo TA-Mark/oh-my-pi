@@ -780,10 +780,21 @@ function rpcHarnessExpression(cwd: string, body: string): string {
 		};
 		const command = async (payload, label = payload.type, timeoutMs = 30000) => {
 			const commandId = payload.id || id(payload.type);
-			await send({ ...payload, id: commandId });
-			const frame = await waitFor(candidate => candidate.type === "response" && candidate.id === commandId, label, timeoutMs);
-			if (frame.success !== true) throw new Error(label + " failed: " + (frame.error || JSON.stringify(frame)));
-			return frame.data;
+			let lastError;
+			for (let attempt = 0; attempt < 3; attempt++) {
+				await send({ ...payload, id: commandId });
+				try {
+					const frame = await waitFor(candidate => candidate.type === "response" && candidate.id === commandId, label, timeoutMs);
+					if (frame.success !== true) throw new Error(label + " failed: " + (frame.error || JSON.stringify(frame)));
+					return frame.data;
+				} catch (error) {
+					const message = error instanceof Error ? error.message : String(error);
+					if (!message.includes(" did not occur")) throw error;
+					lastError = error;
+					await sleep(500);
+				}
+			}
+			throw lastError;
 		};
 		const getState = async (label = "state") => command({ type: "get_state", id: id(label) }, label);
 		const waitForState = async (predicate, label, timeoutMs = 30000) => {
