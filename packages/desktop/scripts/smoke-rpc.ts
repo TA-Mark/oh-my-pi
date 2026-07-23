@@ -20,14 +20,26 @@
 //   18. get_workspace_diff -> { files: [...] } (bounded scan; must not hang)
 //   19. unstage -> success (safe no-op; desktop-added staging command; core-touchpoints.md)
 //   20. stage_hunks [] -> success:false (empty-selection guard; core-touchpoints.md)
-//   21. set_workspace <cwd> -> { cwd: string } (in-place project switch; no respawn)
+//   21. set_workspace A -> B -> A keeps the process alive and restores A from the runtime cache
 // Exits non-zero on any drift. Keep in sync with src/lib/rpc-protocol.ts.
+import * as fs from "node:fs/promises";
+import * as os from "node:os";
 import * as path from "node:path";
 
 const cliPath = path.join(import.meta.dir, "..", "..", "coding-agent", "src", "cli.ts");
 const useSidecar = process.argv.includes("--sidecar");
 const sidecarPath = path.join(import.meta.dir, "..", "resources", `omp${process.platform === "win32" ? ".exe" : ""}`);
 const engineCommand = useSidecar ? [sidecarPath, "--mode", "rpc-ui"] : ["bun", cliPath, "--mode", "rpc-ui"];
+const workspaceFixtureRoot = await fs.mkdtemp(path.join(os.tmpdir(), "omp-desktop-workspace-switch-"));
+const workspaceA = path.join(workspaceFixtureRoot, "workspace-a");
+const workspaceB = path.join(workspaceFixtureRoot, "workspace-b");
+const workspaceAMarker = "OMP_DESKTOP_WORKSPACE_A_CONTEXT";
+const workspaceBMarker = "OMP_DESKTOP_WORKSPACE_B_CONTEXT";
+await Promise.all([fs.mkdir(workspaceA), fs.mkdir(workspaceB)]);
+await Promise.all([
+	Bun.write(path.join(workspaceA, "AGENTS.md"), `# ${workspaceAMarker}\n`),
+	Bun.write(path.join(workspaceB, "AGENTS.md"), `# ${workspaceBMarker}\n`),
+]);
 
 const child = Bun.spawn(engineCommand, {
 	stdin: "pipe",
@@ -51,10 +63,11 @@ function send(command: Record<string, unknown>): void {
 	child.stdin.flush();
 }
 
-const timeout = setTimeout(() => fail("contract not satisfied within 30s"), 30_000);
+const timeout = setTimeout(() => fail("contract not satisfied within 90s"), 90_000);
 
 const decoder = new TextDecoder();
 let buffer = "";
+let workspaceASessionId: string | undefined;
 try {
 	for await (const chunk of child.stdout as ReadableStream<Uint8Array>) {
 		buffer += decoder.decode(chunk, { stream: true });
@@ -401,18 +414,68 @@ try {
 			} else if (frame.id === "s17") {
 				if (frame.success !== false) fail(`stage_hunks empty selection should fail: ${line}`);
 				console.log("OK: stage_hunks rejects empty selection (guard holds)");
-				// Re-root at the current cwd: a same-directory switch makes moveTo a
-				// no-op, so this exercises the command contract (fresh task + reroot +
-				// { cwd } reply) without chdir'ing the engine into an unrelated tree.
-				send({ type: "set_workspace", cwd: process.cwd(), id: "s18" });
+				send({ type: "set_workspace", cwd: workspaceA, id: "s18" });
 			} else if (frame.id === "s18") {
 				if (frame.success !== true || !isRecord(frame.data)) fail(`set_workspace failed: ${line}`);
-				if (typeof (frame.data as Record<string, unknown>).cwd !== "string") {
-					fail("set_workspace.data.cwd is not a string");
+				const data = frame.data as Record<string, unknown>;
+				if (path.resolve(String(data.cwd)) !== path.resolve(workspaceA)) {
+					fail(`set_workspace returned the wrong cwd: ${line}`);
 				}
-				console.log("OK: set_workspace contract holds (reroot without respawn, { cwd })");
+				if (data.restored !== false || typeof data.cacheSize !== "number") {
+					fail(`first workspace visit did not report a hydrated runtime: ${line}`);
+				}
+				send({ type: "get_state", id: "s18a" });
+			} else if (frame.id === "s18a") {
+				if (frame.success !== true || !isRecord(frame.data)) fail(`workspace A get_state failed: ${line}`);
+				const data = frame.data as Record<string, unknown>;
+				const systemPrompt = Array.isArray(data.systemPrompt) ? data.systemPrompt.join("\n") : "";
+				if (!systemPrompt.includes(workspaceAMarker)) fail("workspace A context was not loaded");
+				workspaceASessionId = typeof data.sessionId === "string" ? data.sessionId : undefined;
+				send({ type: "set_session_name", name: "Cached workspace A task", id: "s18name" });
+			} else if (frame.id === "s18name") {
+				if (frame.success !== true) fail(`workspace A task naming failed: ${line}`);
+				send({ type: "set_workspace", cwd: workspaceB, id: "s18b" });
+			} else if (frame.id === "s18b") {
+				if (frame.success !== true || !isRecord(frame.data)) fail(`workspace B switch failed: ${line}`);
+				if ((frame.data as Record<string, unknown>).restored !== false) {
+					fail(`first workspace B visit unexpectedly restored a cache entry: ${line}`);
+				}
+				send({ type: "get_state", id: "s18c" });
+			} else if (frame.id === "s18c") {
+				if (frame.success !== true || !isRecord(frame.data)) fail(`workspace B get_state failed: ${line}`);
+				const data = frame.data as Record<string, unknown>;
+				const systemPrompt = Array.isArray(data.systemPrompt) ? data.systemPrompt.join("\n") : "";
+				if (!systemPrompt.includes(workspaceBMarker)) fail("workspace B context was not loaded");
+				if (systemPrompt.includes(workspaceAMarker)) fail("workspace A context leaked into workspace B");
+				if (typeof data.sessionId !== "string" || data.sessionId === workspaceASessionId) {
+					fail("workspace switch did not create an isolated task session");
+				}
+				send({ type: "set_workspace", cwd: workspaceA, id: "s18d" });
+			} else if (frame.id === "s18d") {
+				if (frame.success !== true || !isRecord(frame.data)) fail(`workspace A restore failed: ${line}`);
+				if ((frame.data as Record<string, unknown>).restored !== true) {
+					fail(`workspace A was not restored from the runtime cache: ${line}`);
+				}
+				send({ type: "get_state", id: "s18e" });
+			} else if (frame.id === "s18e") {
+				if (frame.success !== true || !isRecord(frame.data)) fail(`restored workspace A get_state failed: ${line}`);
+				const data = frame.data as Record<string, unknown>;
+				const systemPrompt = Array.isArray(data.systemPrompt) ? data.systemPrompt.join("\n") : "";
+				if (!systemPrompt.includes(workspaceAMarker) || systemPrompt.includes(workspaceBMarker)) {
+					fail("restored workspace A context was not isolated");
+				}
+				if (data.sessionId !== workspaceASessionId) fail("workspace A task session was not restored");
+				if (data.sessionName !== "Cached workspace A task") fail("workspace A task metadata was not restored");
+				console.log("OK: workspace A → B → A restored the cached task without respawning the engine");
 				clearTimeout(timeout);
-				child.kill();
+				child.stdin.end();
+				await child.exited;
+				try {
+					await fs.rm(workspaceFixtureRoot, { recursive: true, force: true, maxRetries: 30, retryDelay: 250 });
+				} catch (err) {
+					if (process.platform !== "win32" || !isRecord(err) || err.code !== "EBUSY") throw err;
+					console.warn(`WARN: Windows kept the completed smoke fixture locked: ${workspaceFixtureRoot}`);
+				}
 				process.exit(0);
 			}
 		}

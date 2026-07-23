@@ -472,7 +472,13 @@ export type RpcResponse =
 	| { id?: string; type: "response"; command: "abort"; success: true }
 	| { id?: string; type: "response"; command: "abort_and_prompt"; success: true }
 	| { id?: string; type: "response"; command: "new_session"; success: true; data: { cancelled: boolean } }
-	| { id?: string; type: "response"; command: "set_workspace"; success: true; data: { cwd: string } }
+	| {
+			id?: string;
+			type: "response";
+			command: "set_workspace";
+			success: true;
+			data: { cwd: string; restored: boolean; cacheSize: number; evictedCwds: string[] };
+	  }
 
 	// State
 	| { id?: string; type: "response"; command: "get_state"; success: true; data: RpcSessionState }

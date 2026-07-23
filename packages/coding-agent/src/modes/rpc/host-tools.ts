@@ -87,9 +87,13 @@ export class RpcHostToolBridge {
 		return Array.from(this.#definitions.keys());
 	}
 
+	createTools(): AgentTool[] {
+		return Array.from(this.#definitions.values(), definition => new RpcHostToolAdapter(definition, this));
+	}
+
 	setTools(tools: RpcHostToolDefinition[]): AgentTool[] {
 		this.#definitions = new Map(tools.map(tool => [tool.name, tool]));
-		return tools.map(tool => new RpcHostToolAdapter(tool, this));
+		return this.createTools();
 	}
 
 	handleResult(frame: RpcHostToolResult): boolean {

@@ -151,11 +151,13 @@ function wireEngine(
 	exitChannel: string,
 	rememberReady: boolean,
 	onReady: (frame: string) => void,
+	isCurrent: () => boolean,
 ): void {
 	child.stdout.setEncoding("utf8");
 	child.stderr.setEncoding("utf8");
 	let buffer = "";
 	child.stdout.on("data", (chunk: string) => {
+		if (!isCurrent()) return;
 		buffer += chunk;
 		const lines = buffer.split("\n");
 		buffer = lines.pop() ?? "";
@@ -171,17 +173,20 @@ function wireEngine(
 			sendTo(windowId, frameChannel, line);
 		}
 	});
-	child.stderr.on("data", (chunk: string) => sendTo(windowId, stderrChannel, chunk));
+	child.stderr.on("data", (chunk: string) => {
+		if (isCurrent()) sendTo(windowId, stderrChannel, chunk);
+	});
 	child.once("error", error => {
 		const diagnosticId = `engine-${Date.now()}-${child.pid ?? "unknown"}`;
 		lastDiagnosticId = diagnosticId;
 		logMain("engine_error", { diagnosticId, message: error.message });
-		sendTo(windowId, stderrChannel, `Failed to start engine (${diagnosticId}): ${error.message}`);
+		if (isCurrent()) sendTo(windowId, stderrChannel, `Failed to start engine (${diagnosticId}): ${error.message}`);
 	});
 	child.once("exit", (code, signal) => {
 		const diagnosticId = `engine-${Date.now()}-${child.pid ?? "unknown"}`;
 		lastDiagnosticId = diagnosticId;
 		logMain("engine_exit", { diagnosticId, code, signal });
+		if (!isCurrent()) return;
 		if (buffer.trim()) sendTo(windowId, frameChannel, buffer);
 		sendTo(windowId, exitChannel, "");
 	});
@@ -203,9 +208,18 @@ function startEngine(windowId: number, cwd?: string): void {
 	const child = spawn(spec.command, spec.args, { cwd: engineCwd, stdio: ["pipe", "pipe", "pipe"] });
 	const runtime: EngineRuntime = { child, cwd: engineCwd, readyFrame: null };
 	engines.set(windowId, runtime);
-	wireEngine(windowId, child, "rpc:frame", "rpc:stderr", "rpc:exit", true, frame => {
-		if (engines.get(windowId)?.child === child) runtime.readyFrame = frame;
-	});
+	wireEngine(
+		windowId,
+		child,
+		"rpc:frame",
+		"rpc:stderr",
+		"rpc:exit",
+		true,
+		frame => {
+			if (engines.get(windowId)?.child === child) runtime.readyFrame = frame;
+		},
+		() => engines.get(windowId)?.child === child,
+	);
 	child.once("exit", () => {
 		if (engines.get(windowId)?.child === child) engines.delete(windowId);
 	});
@@ -224,7 +238,16 @@ function startSideEngine(windowId: number, cwd?: string): void {
 	const spec = engineCommand();
 	const child = spawn(spec.command, spec.args, { cwd: cwd ?? process.cwd(), stdio: ["pipe", "pipe", "pipe"] });
 	sideEngines.set(windowId, child);
-	wireEngine(windowId, child, "side-rpc:frame", "side-rpc:stderr", "side-rpc:exit", false, () => undefined);
+	wireEngine(
+		windowId,
+		child,
+		"side-rpc:frame",
+		"side-rpc:stderr",
+		"side-rpc:exit",
+		false,
+		() => undefined,
+		() => sideEngines.get(windowId) === child,
+	);
 	child.once("exit", () => {
 		if (sideEngines.get(windowId) === child) sideEngines.delete(windowId);
 	});

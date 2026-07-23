@@ -1191,9 +1191,9 @@ export function App() {
 	}, []);
 
 	// Boot the client exactly once when a workspace first exists. Project switches
-	// restart the engine through `DesktopRpcClient.setWorkspace` while preserving
-	// this client and its UI event handlers. The effect keys off a boolean, not the
-	// path, so folder-to-folder changes do not create a second client lifecycle.
+	// activate a cached runtime through `DesktopRpcClient.setWorkspace` while
+	// preserving the engine, transport, client, and UI event handlers. The effect
+	// keys off a boolean so folder changes do not create another client lifecycle.
 	const engineShouldRun = workspace !== null && workspaceResolved;
 	useEffect(() => {
 		if (!engineShouldRun) return;
@@ -1326,8 +1326,7 @@ export function App() {
 			clientRef.current = null;
 			// The Electron main process owns the sidecar for the lifetime of the
 			// window. Detach the renderer client so a remount/reload does not pay the
-			// engine cold-start cost again; explicit workspace changes and app quit
-			// still call stop() and reap it.
+			// engine cold-start cost again; app quit remains responsible for reaping it.
 			client.disconnect();
 		};
 	}, [
@@ -1615,14 +1614,15 @@ export function App() {
 		void rememberWorkspace(folder).catch(() => {});
 		setWorkspace(folder);
 
-		// Engine already running: restart it in the selected directory so project
-		// instructions, skills, settings, tools, and the system prompt are all
-		// discovered from the destination. Only the first-ever open (no client yet)
-		// falls through to the boot effect via setWorkspace.
+		// Engine already running: replace its project runtime over the existing RPC
+		// transport so instructions, skills, settings, tools, and the system prompt
+		// are hydrated for the destination without spawning another process. Only
+		// the first-ever open (no client yet) falls through to the boot effect.
 		if (client) {
 			try {
-				await client.setWorkspace(folder);
-				await Promise.all([
+				const switchResult = await client.setWorkspace(folder);
+				const [messages] = await Promise.all([
+					client.getMessages(),
 					refreshState(),
 					refreshSessions(),
 					refreshLoginProviders(),
@@ -1631,6 +1631,10 @@ export function App() {
 					refreshWorkspaceFiles(),
 					refreshContextSnapshot(),
 				]);
+				dispatch({ kind: "seed", messages });
+				if (switchResult.restored) {
+					addToast(`Restored cached project task (${switchResult.cacheSize} cached runtimes)`, "info");
+				}
 				setModels(await client.getAvailableModels().catch(() => []));
 			} catch (err) {
 				reportError("switch workspace failed", err);
@@ -1647,6 +1651,7 @@ export function App() {
 		refreshGitStatus,
 		refreshWorkspaceFiles,
 		refreshContextSnapshot,
+		addToast,
 		reportError,
 	]);
 

@@ -21,7 +21,9 @@ import {
 	VERSION,
 } from "@oh-my-pi/pi-utils";
 import chalk from "chalk";
+import { AsyncJobManager } from "./async/job-manager";
 import { reset as resetCapabilities } from "./capability";
+import { getActiveRules, setActiveRules } from "./capability/rule";
 import { type Args, reportUnrecognizedFlags } from "./cli/args";
 import { applyExtensionFlags, type ExtensionFlagSink } from "./cli/extension-flags";
 import { processFileArguments } from "./cli/file-processor";
@@ -40,6 +42,7 @@ import {
 	type ScopedModel,
 } from "./config/model-resolver";
 import { ModelsConfigFile } from "./config/models-config";
+import { applyProviderGlobalsFromSettings } from "./config/provider-globals";
 import { getDefault, type SettingPath, Settings, settings } from "./config/settings";
 import { initializeWithSettings } from "./discovery";
 import {
@@ -52,8 +55,9 @@ import { injectOmpExtensionCliRoots } from "./discovery/omp-extension-roots";
 import { ExtensionRunner } from "./extensibility/extensions/runner";
 import type { ExtensionUIContext } from "./extensibility/extensions/types";
 import { scheduleMarketplaceAutoUpdate } from "./extensibility/plugins/marketplace-auto-update";
+import { setActiveSkills } from "./extensibility/skills";
 import { registerDaemonProjectPresence } from "./launch/presence";
-import type { MCPManager } from "./mcp";
+import { MCPManager } from "./mcp";
 import { InteractiveMode } from "./modes/interactive-mode";
 import type { PrintModeOptions } from "./modes/print-mode";
 import { CURRENT_SETUP_VERSION } from "./modes/setup-version";
@@ -92,11 +96,17 @@ import { withTimeoutSignal } from "./utils/fetch-timeout";
 
 type RunAcpMode = (createSession: AcpSessionFactory) => Promise<never>;
 type RunPrintMode = (session: AgentSession, options: PrintModeOptions) => Promise<void>;
+type RpcWorkspaceRuntime = {
+	session: AgentSession;
+	setToolUIContext?: (uiContext: ExtensionUIContext, hasUI: boolean) => void;
+	mcpManager?: MCPManager;
+	activate: () => Promise<void>;
+	capture: () => void;
+};
 type RunRpcMode = (
-	session: AgentSession,
-	setToolUIContext?: (uiContext: ExtensionUIContext, hasUI: boolean) => void,
+	initialRuntime: RpcWorkspaceRuntime,
 	eventBus?: EventBus,
-	mcpManager?: MCPManager,
+	createWorkspaceRuntime?: (cwd: string) => Promise<RpcWorkspaceRuntime>,
 ) => Promise<never>;
 
 export function writeStartupNotice(parsedArgs: Pick<Args, "mode">, text: string): void {
@@ -1465,16 +1475,19 @@ export async function runRootCommand(
 		// its persisted JSONL (see persisted-revive.ts). Scoped to the non-ACP
 		// bootstrap: ACP keeps several concurrent top-level sessions and a single
 		// process-global factory must not be clobbered by the most recent one.
-		AgentLifecycleManager.global().setPersistedSubagentReviverFactory(
-			createPersistedSubagentReviverFactory({
-				session,
-				authStorage,
-				modelRegistry,
-				settings: settingsInstance,
-				enableLsp: sessionOptions.enableLsp ?? true,
-			}),
-			Math.trunc(Number(settingsInstance.get("task.agentIdleTtlMs") ?? 420_000) || 0),
-		);
+		const installPersistedSubagentReviver = (runtimeSession: AgentSession): void => {
+			AgentLifecycleManager.global().setPersistedSubagentReviverFactory(
+				createPersistedSubagentReviverFactory({
+					session: runtimeSession,
+					authStorage,
+					modelRegistry,
+					settings: runtimeSession.settings,
+					enableLsp: sessionOptions.enableLsp ?? true,
+				}),
+				Math.trunc(Number(runtimeSession.settings.get("task.agentIdleTtlMs") ?? 420_000) || 0),
+			);
+		};
+		installPersistedSubagentReviver(session);
 		if (parsedArgs.apiKey && !sessionOptions.model && session.model) {
 			authStorage.setRuntimeApiKey(session.model.provider, parsedArgs.apiKey);
 		}
@@ -1506,8 +1519,69 @@ export async function runRootCommand(
 		if (mode === "rpc" || mode === "rpc-ui") {
 			// Branch-only protocol runner: keep RPC host code out of normal interactive startup.
 			const runRpcMode: RunRpcMode = (await import("./modes/rpc/rpc-mode")).runRpcMode;
+			const activateWorkspaceDiscovery = async (cwd: string) => {
+				setProjectDir(cwd);
+				clearPluginRootsAndCaches();
+				resetCapabilities();
+				await preloadPluginRoots(home, cwd);
+			};
+			const wrapWorkspaceRuntime = (
+				runtimeSession: AgentSession,
+				installToolUIContext: ((uiContext: ExtensionUIContext, hasUI: boolean) => void) | undefined,
+				runtimeMcpManager: MCPManager | undefined,
+				runtimeCwd: string,
+			): RpcWorkspaceRuntime => {
+				let activeRules = [...getActiveRules()];
+				return {
+					session: runtimeSession,
+					setToolUIContext: installToolUIContext,
+					mcpManager: runtimeMcpManager,
+					activate: async () => {
+						await activateWorkspaceDiscovery(runtimeCwd);
+						applyProviderGlobalsFromSettings(runtimeSession.settings);
+						setActiveSkills(runtimeSession.skills);
+						setActiveRules(activeRules);
+						AsyncJobManager.setInstance(runtimeSession.asyncJobManager);
+						MCPManager.setInstance(runtimeMcpManager);
+						installPersistedSubagentReviver(runtimeSession);
+					},
+					capture: () => {
+						activeRules = [...getActiveRules()];
+					},
+				};
+			};
+			const initialRuntime = wrapWorkspaceRuntime(
+				session,
+				mode === "rpc-ui" ? setToolUIContext : undefined,
+				mcpManager,
+				session.sessionManager.getCwd(),
+			);
+			const createWorkspaceRuntime = async (nextCwd: string): Promise<RpcWorkspaceRuntime> => {
+				const workspaceSettings = await settingsInstance.cloneForCwd(nextCwd);
+				await activateWorkspaceDiscovery(nextCwd);
+				// Each cached top-level session owns its async job manager. Leaving the
+				// previous singleton installed makes createSession intentionally refuse
+				// to create one for a secondary in-process session.
+				AsyncJobManager.setInstance(undefined);
+				MCPManager.setInstance(undefined);
+				const result = await createSession({
+					...sessionOptions,
+					cwd: nextCwd,
+					sessionManager: undefined,
+					settings: workspaceSettings,
+					eventBus,
+					preloadedExtensions: undefined,
+				});
+				installPersistedSubagentReviver(result.session);
+				return wrapWorkspaceRuntime(
+					result.session,
+					mode === "rpc-ui" ? result.setToolUIContext : undefined,
+					result.mcpManager,
+					nextCwd,
+				);
+			};
 			stopStartupWatchdog();
-			await runRpcMode(session, mode === "rpc-ui" ? setToolUIContext : undefined, eventBus, mcpManager);
+			await runRpcMode(initialRuntime, eventBus, createWorkspaceRuntime);
 		} else if (isInteractive) {
 			const versionCheckPromise = checkForNewVersion(VERSION).catch(() => undefined);
 			const changelogMarkdown = await logger.time("main:getChangelogForDisplay", getChangelogForDisplay, parsedArgs);

@@ -970,19 +970,41 @@ describe("lifecycle: crash / restart / workspace switch (1.4)", () => {
 		await client.stop();
 	});
 
-	test("workspace switch: old client stops cleanly, a fresh client starts", async () => {
+	test("workspace switch stays on the live transport and preserves correlated requests", async () => {
 		const client = await startedClient();
 		const pInFlight = client.getState();
 		const switched = client.setWorkspace("/tmp/ws2");
 		await flush();
 
-		await expect(pInFlight).rejects.toBeInstanceOf(RpcTransportError);
-		expect(bridge.starts).toEqual(["/tmp/ws", "/tmp/ws2"]);
-		expect(bridge.stops).toBe(1);
-		expect(bridge.sent.some(line => JSON.parse(line).type === "set_workspace")).toBe(false);
+		const requests = bridge.sent.map(line => JSON.parse(line) as { id: string; type: string });
+		const stateRequest = requests.find(request => request.type === "get_state");
+		const workspaceRequest = requests.find(request => request.type === "set_workspace");
+		expect(stateRequest).toBeDefined();
+		expect(workspaceRequest).toBeDefined();
+		expect(bridge.starts).toEqual(["/tmp/ws"]);
+		expect(bridge.stops).toBe(0);
 
-		bridge.emitFrame({ type: "ready" });
-		await expect(switched).resolves.toEqual({ cwd: "/tmp/ws2" });
+		bridge.emitFrame({
+			id: stateRequest?.id,
+			type: "response",
+			command: "get_state",
+			success: true,
+			data: { sessionId: "old-session" },
+		});
+		bridge.emitFrame({
+			id: workspaceRequest?.id,
+			type: "response",
+			command: "set_workspace",
+			success: true,
+			data: { cwd: "/tmp/ws2", restored: true, cacheSize: 2, evictedCwds: [] },
+		});
+		await expect(pInFlight).resolves.toMatchObject({ sessionId: "old-session" });
+		await expect(switched).resolves.toEqual({
+			cwd: "/tmp/ws2",
+			restored: true,
+			cacheSize: 2,
+			evictedCwds: [],
+		});
 		await client.stop();
 	});
 

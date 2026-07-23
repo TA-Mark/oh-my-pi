@@ -21,6 +21,7 @@
 
 ### Fixed
 
+- Fixed OMP Desktop project switches restarting the RPC sidecar and misclassifying the old process's delayed exit as `Engine stopped`; the live RPC host now preserves the engine process and transport while restoring recent project tasks from a canonical-path, bounded LRU runtime cache.
 - Fixed RPC and Desktop hosts repeatedly losing the engine when no model credentials are configured; protocol mode now starts without an active model so clients can complete login and model selection.
 - Fixed Desktop settings classifying Retry and Context Compaction controls as generic advanced tools, and restored non-secret token-budget controls that were incorrectly filtered as credentials.
 - Fixed Desktop settings classifying MCP discovery and notification controls as generic advanced tools, and enriched GUI MCP status with the real discovery source and currently mounted tool names.

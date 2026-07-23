@@ -24,9 +24,9 @@ import {
 	getMCPConfigPath,
 	isEnoent,
 	isRecord,
+	logger,
 	readJsonl,
 	Snowflake,
-	setProjectDir,
 } from "@oh-my-pi/pi-utils";
 import { reset as resetCapabilities } from "../../capability";
 import type { ModelProviderConfig } from "../../config/model-registry";
@@ -106,6 +106,7 @@ import type {
 	RpcWorkspaceEntry,
 	RpcWorkspaceFileChange,
 } from "./rpc-types";
+import { type CanonicalWorkspace, canonicalWorkspace, RpcWorkspaceRuntimeCache } from "./workspace-runtime-cache";
 
 // Re-export types for consumers
 export type * from "./rpc-types";
@@ -966,12 +967,52 @@ export function requestRpcEditor(
  * Run in RPC mode.
  * Listens for JSON commands on stdin, outputs events and responses on stdout.
  */
+export interface RpcWorkspaceRuntime {
+	session: AgentSession;
+	setToolUIContext?: (uiContext: ExtensionUIContext, hasUI: boolean) => void;
+	mcpManager?: MCPManager;
+	activate: () => Promise<void>;
+	capture: () => void;
+}
+
+export type CreateRpcWorkspaceRuntime = (cwd: string) => Promise<RpcWorkspaceRuntime>;
+
+interface CachedRpcWorkspaceRuntime extends RpcWorkspaceRuntime {
+	canonicalCwd: string;
+	workspaceKey: string;
+}
+
 export async function runRpcMode(
-	session: AgentSession,
-	setToolUIContext?: (uiContext: ExtensionUIContext, hasUI: boolean) => void,
+	initialRuntime: RpcWorkspaceRuntime,
 	eventBus?: EventBus,
-	mcpManager?: MCPManager,
+	createWorkspaceRuntime?: CreateRpcWorkspaceRuntime,
 ): Promise<never> {
+	const initialWorkspace = await canonicalWorkspace(initialRuntime.session.sessionManager.getCwd());
+	let runtime: CachedRpcWorkspaceRuntime = {
+		...initialRuntime,
+		canonicalCwd: initialWorkspace.cwd,
+		workspaceKey: initialWorkspace.key,
+	};
+	const runtimeCache = new RpcWorkspaceRuntimeCache<CachedRpcWorkspaceRuntime>();
+	runtimeCache.set(runtime.workspaceKey, runtime);
+	let session = runtime.session;
+	let mcpManager = runtime.mcpManager;
+	let disposeWorkspaceRuntimesPromise: Promise<void> | undefined;
+	const disposeWorkspaceRuntimes = (): Promise<void> => {
+		if (!disposeWorkspaceRuntimesPromise) {
+			disposeWorkspaceRuntimesPromise = (async () => {
+				for (const cachedRuntime of runtimeCache.values()) {
+					await cachedRuntime.session.dispose().catch(err => {
+						logger.warn("Failed to dispose cached RPC workspace runtime", {
+							cwd: cachedRuntime.canonicalCwd,
+							error: err instanceof Error ? err.message : String(err),
+						});
+					});
+				}
+			})();
+		}
+		return disposeWorkspaceRuntimesPromise;
+	};
 	// Signal to RPC clients that the server is ready to accept commands
 	// Suppress terminal notifications: they write \x07 (BEL) or OSC sequences directly to
 	// process.stdout with no newline, which the reader merges with the next JSON line and
@@ -1249,29 +1290,34 @@ export async function runRpcMode(
 	// A single shared instance routes all responses received on stdin to the
 	// correct waiting promise regardless of which code path created the request.
 	const rpcUiContext = new RpcExtensionUIContext(pendingExtensionRequests, output);
-	setToolUIContext?.(rpcUiContext, true);
+	const initializeRpcSession = async (
+		runtimeSession: AgentSession,
+		installToolUIContext?: (uiContext: ExtensionUIContext, hasUI: boolean) => void,
+	): Promise<void> => {
+		installToolUIContext?.(rpcUiContext, true);
+		await initializeExtensions(runtimeSession, {
+			reportSendError: (action, err) => {
+				output(error(undefined, action, err.message));
+			},
+			reportRuntimeError: err => {
+				output({ type: "extension_error", extensionPath: err.extensionPath, event: err.event, error: err.error });
+			},
+			onShutdown: () => {
+				shutdownState.requested = true;
+			},
+			trackAgentInvokingMessage: task => {
+				extensionUserMessageTracker.trackAgentMessageTask(task);
+			},
+			uiContext: rpcUiContext,
+		});
+	};
+	const subscribeToSessionEvents = (runtimeSession: AgentSession): (() => void) =>
+		runtimeSession.subscribe(event => {
+			output(event);
+		});
 
-	// Set up extensions with RPC-based UI context
-	await initializeExtensions(session, {
-		reportSendError: (action, err) => {
-			output(error(undefined, action, err.message));
-		},
-		reportRuntimeError: err => {
-			output({ type: "extension_error", extensionPath: err.extensionPath, event: err.event, error: err.error });
-		},
-		onShutdown: () => {
-			shutdownState.requested = true;
-		},
-		trackAgentInvokingMessage: task => {
-			extensionUserMessageTracker.trackAgentMessageTask(task);
-		},
-		uiContext: rpcUiContext,
-	});
-
-	// Output all agent events as JSON
-	session.subscribe(event => {
-		output(event);
-	});
+	await initializeRpcSession(session, runtime.setToolUIContext);
+	let unsubscribeSessionEvents = subscribeToSessionEvents(session);
 
 	// ── Plan mode ────────────────────────────────────────────────────────────
 	// Mirrors AcpAgent's headless plan-mode wiring (acp-agent.ts). The engine
@@ -1400,7 +1446,7 @@ export async function runRpcMode(
 	const emitAvailableCommandsUpdate = async () => {
 		output({ type: "available_commands_update", commands: await getAvailableCommands() });
 	};
-	session.subscribeCommandMetadataChanged(() => {
+	let unsubscribeCommandMetadataChanged = session.subscribeCommandMetadataChanged(() => {
 		void emitAvailableCommandsUpdate();
 	});
 	await emitAvailableCommandsUpdate();
@@ -1513,37 +1559,88 @@ export async function runRpcMode(
 			}
 
 			case "set_workspace": {
-				// Re-root the live engine at a new project directory WITHOUT respawning
-				// (mirrors the TUI `/move` + `applyCwdChange` path). The desktop app
-				// calls this when the user switches projects so a fresh task opens in
-				// the new directory while the process, credentials, and RPC stream all
-				// stay alive.
 				if (session.isStreaming) {
 					return error(id, "set_workspace", "Cannot switch workspace while a response is in progress");
 				}
 				const newCwd = path.resolve(command.cwd);
+				let workspace: CanonicalWorkspace;
 				try {
 					const stat = await fs.stat(newCwd);
 					if (!stat.isDirectory()) {
 						return error(id, "set_workspace", `Not a directory: ${newCwd}`);
 					}
+					workspace = await canonicalWorkspace(newCwd);
 				} catch {
 					return error(id, "set_workspace", `Directory does not exist: ${newCwd}`);
 				}
-				// Open a fresh task first, then anchor it to the new project directory.
-				// The new (empty) session file has not been written to disk yet, so
-				// moveTo just re-points cwd/sessionDir — the previous session stays put
-				// in its own project.
-				await session.newSession();
-				await session.sessionManager.moveTo(newCwd);
+
+				const previousRuntime = runtime;
+				previousRuntime.capture();
+				let replacement = runtimeCache.get(workspace.key);
+				const restored = replacement !== undefined;
+				let createdRuntime: CachedRpcWorkspaceRuntime | undefined;
+				try {
+					if (replacement) {
+						await replacement.activate();
+					} else {
+						if (!createWorkspaceRuntime) {
+							return error(id, "set_workspace", "Workspace runtime replacement is unavailable");
+						}
+						const created = await createWorkspaceRuntime(workspace.cwd);
+						createdRuntime = {
+							...created,
+							canonicalCwd: workspace.cwd,
+							workspaceKey: workspace.key,
+						};
+						replacement = createdRuntime;
+						await initializeRpcSession(replacement.session, replacement.setToolUIContext);
+					}
+					await replacement.session.refreshRpcHostTools(hostToolBridge.createTools());
+				} catch (err) {
+					await createdRuntime?.session.dispose().catch(() => {});
+					try {
+						await previousRuntime.activate();
+						runtimeCache.get(previousRuntime.workspaceKey);
+					} catch (rollbackError) {
+						logger.warn("Failed to reactivate previous RPC workspace after switch error", {
+							cwd: previousRuntime.canonicalCwd,
+							error: rollbackError instanceof Error ? rollbackError.message : String(rollbackError),
+						});
+					}
+					return error(id, "set_workspace", err instanceof Error ? err.message : String(err));
+				}
+
+				unsubscribeSessionEvents();
+				unsubscribeCommandMetadataChanged();
+				runtime = replacement;
+				session = replacement.session;
+				mcpManager = replacement.mcpManager;
+				unsubscribeSessionEvents = subscribeToSessionEvents(session);
+				unsubscribeCommandMetadataChanged = session.subscribeCommandMetadataChanged(() => {
+					void emitAvailableCommandsUpdate();
+				});
+				vibeModePreviousTools = undefined;
 				subagentRegistry?.clear();
-				setProjectDir(newCwd);
-				await session.settings.reloadForCwd(newCwd);
-				applyProviderGlobalsFromSettings(session.settings);
-				await reloadPluginState();
+				const evictedRuntimes = createdRuntime ? runtimeCache.set(runtime.workspaceKey, runtime) : [];
+				const evictedCwds: string[] = [];
+				for (const evicted of evictedRuntimes) {
+					evictedCwds.push(evicted.canonicalCwd);
+					await evicted.session.dispose().catch(err => {
+						logger.warn("Failed to dispose evicted RPC workspace runtime", {
+							cwd: evicted.canonicalCwd,
+							error: err instanceof Error ? err.message : String(err),
+						});
+					});
+				}
+				await emitAvailableCommandsUpdate();
 				output({ type: "session_info_update", title: session.sessionName, sessionId: session.sessionId });
 				output({ type: "config_update", model: session.model, thinkingLevel: session.thinkingLevel });
-				return success(id, "set_workspace", { cwd: session.sessionManager.getCwd() });
+				return success(id, "set_workspace", {
+					cwd: session.sessionManager.getCwd(),
+					restored,
+					cacheSize: runtimeCache.size,
+					evictedCwds,
+				});
 			}
 
 			// =================================================================
@@ -2296,28 +2393,29 @@ export async function runRpcMode(
 
 			case "get_mcp_capabilities": {
 				if (!mcpManager) return error(id, "get_mcp_capabilities", "MCP is not enabled for this session");
+				const manager = mcpManager;
 				try {
-					const connected = mcpManager.getConnectedServers();
+					const connected = manager.getConnectedServers();
 					await Promise.all(
 						connected.flatMap(serverName => [
-							mcpManager.refreshServerResources(serverName),
-							mcpManager.refreshServerPrompts(serverName),
+							manager.refreshServerResources(serverName),
+							manager.refreshServerPrompts(serverName),
 						]),
 					);
-					const notificationState = mcpManager.getNotificationState();
+					const notificationState = manager.getNotificationState();
 					return success(id, "get_mcp_capabilities", {
 						resources: connected.map(serverName => ({
 							serverName,
-							...(mcpManager.getServerResources(serverName) ?? { resources: [], templates: [] }),
+							...(manager.getServerResources(serverName) ?? { resources: [], templates: [] }),
 						})),
 						prompts: connected.map(serverName => ({
 							serverName,
-							prompts: mcpManager.getServerPrompts(serverName) ?? [],
+							prompts: manager.getServerPrompts(serverName) ?? [],
 						})),
 						notifications: {
 							enabled: notificationState.enabled,
 							servers: connected.map(serverName => {
-								const capabilities = mcpManager.getConnection(serverName)?.capabilities;
+								const capabilities = manager.getConnection(serverName)?.capabilities;
 								return {
 									serverName,
 									toolsChanged: capabilities?.tools?.listChanged === true,
@@ -3060,7 +3158,7 @@ export async function runRpcMode(
 			// the process exits. dispose() also emits `session_shutdown`, so we
 			// must NOT emit it separately here or the event fires twice. Skipping
 			// dispose left OMP-owned Chromium alive after RPC shutdown (#5643).
-			await session.dispose();
+			await disposeWorkspaceRuntimes();
 			process.exit(0);
 		},
 	});
@@ -3100,6 +3198,6 @@ export async function runRpcMode(
 	// bounded teardown run on the stdin-EOF path too (#5643). Idempotent: a
 	// prior pi.shutdown() through the coordinator makes this await settle
 	// immediately.
-	await session.dispose();
+	await disposeWorkspaceRuntimes();
 	process.exit(0);
 }

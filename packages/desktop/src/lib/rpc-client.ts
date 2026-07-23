@@ -272,19 +272,12 @@ export class DesktopRpcClient {
 		return this.#data<{ cancelled: boolean }>(response);
 	}
 
-	/**
-	 * Restart the engine in a new project directory.
-	 *
-	 * Project discovery is performed while the coding-agent runtime is created.
-	 * Re-rooting the existing RPC session updates file tools, but leaves the
-	 * runtime's captured context files, skills, and system prompt scoped to the
-	 * previous project. A full restart keeps the client handlers/UI alive while
-	 * guaranteeing that every cwd-derived input is rebuilt for the destination.
-	 */
-	async setWorkspace(cwd: string): Promise<{ cwd: string }> {
-		await this.stop();
-		await this.start(cwd);
-		return { cwd };
+	/** Activate a cached project runtime, hydrating it on the first visit. */
+	async setWorkspace(
+		cwd: string,
+	): Promise<{ cwd: string; restored: boolean; cacheSize: number; evictedCwds: string[] }> {
+		const response = await this.#send({ type: "set_workspace", cwd }, READY_TIMEOUT_MS);
+		return this.#data<{ cwd: string; restored: boolean; cacheSize: number; evictedCwds: string[] }>(response);
 	}
 
 	async getState(): Promise<SessionState> {
